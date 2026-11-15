@@ -97,7 +97,6 @@ import com.chen.doudoutv.ui.components.episodeLabel
 import com.chen.doudoutv.ui.listState
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.themeBackdrop
-import com.chen.doudoutv.ui.theme.themeSeamFade
 import com.chen.doudoutv.ui.theme.Radius
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -201,8 +200,10 @@ fun HomeScreen(
             // 轮播区常驻：没有可推荐内容时用同高度占位，避免首页在「加载中 / 空库」之间跳版。
             item {
                 if (heroItems.isNotEmpty()) {
-                    // 大图渐隐收到的纯 Bg，与下方渗了品牌色的页面背景对不上，
-                    // 接缝正压在轮播底边上 —— 用一条收色带把接缝挪进渐变中段（见 themeSeamFade）
+                    // 海报底边收到纯 Bg，接缝隐形靠一条色带；但 4998d3c 换主题光晕背景后，
+                    // 天光只铺到 0.40 屏高、全被轮播盖住，带子尾端露出的还是纯黑 —— 过渡等于没了。
+                    // 改成品牌色过渡带：顶边实心 Bg 接海报，中段透出当前主题的品牌色
+                    // （找回接主题色之前那条 Brand→Bg 顶部渐变的观感），底边减 alpha 归零接回页面背景。
                     Column {
                         HeroBanner(
                             items = heroItems,
@@ -210,7 +211,18 @@ fun HomeScreen(
                             onOpen = { onOpenDetail(it.id) },
                             onPlay = { onPlay(it) }
                         )
-                        Box(Modifier.themeSeamFade(if (isTv) 40.dp else 28.dp))
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(if (isTv) 120.dp else 96.dp)
+                                .background(
+                                    Brush.verticalGradient(
+                                        0f to AppColors.Bg,
+                                        0.35f to AppColors.Brand.copy(alpha = 0.10f),
+                                        1f to AppColors.Brand.copy(alpha = 0f)
+                                    )
+                                )
+                        )
                     }
                 } else {
                     HeroEmpty(

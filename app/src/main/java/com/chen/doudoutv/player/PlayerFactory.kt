@@ -9,18 +9,15 @@ import com.chen.doudoutv.core.VideoCache
 import androidx.media3.common.C
 import androidx.media3.common.FileTypes
 import androidx.media3.common.Player
-import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.RenderersFactory
-import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.image.ImageRenderer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.exoplayer.source.LoadEventInfo
-import androidx.media3.exoplayer.source.MediaLoadData
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -433,14 +430,25 @@ object PlayerFactory {
             ).filter { it !is ImageRenderer }.toTypedArray()
         }
 
-        val player = ExoPlayer.Builder(context)
+        // 电视端 tunnel 直通：让硬解绕过 SurfaceFlinger/GPU 合成，画面直送显示硬件。
+        // 这台 MT9653 显示合成锁 SDR，HDR10 走 GPU 既被压灰又慢到丢 85% 帧；tunnel 一并治。
+        // 默认 1x 开；倍速 != 1 时由 TvPlayerActivity 调 [setTunnelingEnabled] 关掉
+        // （tunnel 下硬件按原生速率渲染，变速会失效）。codec 不支持 tunnel 时选轨器自动回退普通路径。
+        val trackSelector = if (isTv) {
+            DefaultTrackSelector(context).apply {
+                setParameters(buildUponParameters().setTunnelingEnabled(true))
+            }
+        } else null
+
+        val playerBuilder = ExoPlayer.Builder(context)
             .setRenderersFactory(renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .setWakeMode(C.WAKE_MODE_NETWORK)
-            .build()
+        if (trackSelector != null) playerBuilder.setTrackSelector(trackSelector)
+        val player = playerBuilder.build()
 
         // 一个播放器实例一份预读会话；释放必须走 [release]，否则缓存引用计数减不下来，
         // 设置页清空时只能退化成逐条删资源（SQLite 与目录都留着）。
@@ -459,15 +467,30 @@ object PlayerFactory {
                 playingUrl.get()?.let { filler.onItemEnded(it) }
             }
         })
-        attachDiagnostics(player)
-        sessions[player] = CacheSession(filler, useRef)
+        sessions[player] = CacheSession(filler, useRef, trackSelector)
         return player
     }
 
     /** 播放器 → 它的预读会话。用 WeakHashMap：万一哪个界面漏调 [release]，不至于一直拽住 */
     private val sessions = Collections.synchronizedMap(WeakHashMap<ExoPlayer, CacheSession>())
 
-    private class CacheSession(val filler: VideoCacheFiller, val useRef: Boolean)
+    private class CacheSession(
+        val filler: VideoCacheFiller,
+        val useRef: Boolean,
+        val trackSelector: DefaultTrackSelector?
+    )
+
+    /**
+     * 电视端倍速联动 tunnel：1x 开直通（治 HDR10 偏灰+掉帧），非 1x 关（tunnel 下变速失效）。
+     * 手机端没有 trackSelector（null），直接 no-op。codec 不支持 tunnel 时选轨器自动回退，
+     * 所以这里只管「想不想开」，能不能开交给 Media3 判定。
+     */
+    fun setTunnelingEnabled(player: ExoPlayer?, enabled: Boolean) {
+        if (player == null) return
+        val ts = sessions[player]?.trackSelector ?: return
+        if (ts.parameters.tunnelingEnabled == enabled) return
+        ts.setParameters(ts.buildUponParameters().setTunnelingEnabled(enabled))
+    }
 
     /**
      * 释放播放器：先停预读线程、放掉缓存引用计数，再交给 ExoPlayer 自己收尾。
@@ -480,121 +503,6 @@ object PlayerFactory {
         session?.filler?.cancel()
         if (session?.useRef == true) VideoCache.endUse()
         player.release()
-    }
-
-    /**
-     * 播放链路探针。
-     *
-     * 「转圈不出画面」有两种完全不同的成因：网卡在收数据，或数据到了但解不出轨道。
-     * 系统 ACodec / MediaCodec 日志是 D 级，这台电视 ROM 直接吞掉，所以必须在
-     * app 侧用 W 级把「读了多少字节 → 解出什么轨道 → 建没建解码器」串起来。
-     * 只打状态跃迁，不打每帧，正常播放时日志量很小。
-     */
-    @UnstableApi
-    private fun attachDiagnostics(player: ExoPlayer) {
-        // 【临时取证】卡顿现场：谁进缓冲、卡了多久、当时手里还剩多少存粮
-        var lastState = Player.STATE_IDLE
-        var bufferingSince = 0L
-        var videoBitrateBps = 0L
-        player.addAnalyticsListener(object : AnalyticsListener {
-
-            /**
-             * 「播半集开始一会一加载」要的正是这条线：每次卡住时的存粮与时长。
-             * 存粮还很足却还在转 → 数据到了解不开（解析/解码问题）；
-             * 存粮掉到 0 → 下载跟不上消费，拿块账的「32MB ÷ 距上块」跟下面这行的码率对。
-             */
-            override fun onPlaybackStateChanged(
-                eventTime: AnalyticsListener.EventTime,
-                state: Int
-            ) {
-                if (state == Player.STATE_BUFFERING && lastState == Player.STATE_READY) {
-                    bufferingSince = eventTime.realtimeMs
-                    Log.w(
-                        "PlayerDiag",
-                        "卡顿进缓冲 存粮=${eventTime.totalBufferedDurationMs}ms " +
-                            "pos=${eventTime.currentPlaybackPositionMs} " +
-                            "码率=${if (videoBitrateBps > 0) "${videoBitrateBps / 1000}kbps" else "未知"}"
-                    )
-                } else if (state == Player.STATE_READY && lastState == Player.STATE_BUFFERING) {
-                    val stuck =
-                        if (bufferingSince == 0L) -1L else eventTime.realtimeMs - bufferingSince
-                    Log.w(
-                        "PlayerDiag",
-                        "恢复播放 卡了=${stuck}ms 出缓冲存粮=${eventTime.totalBufferedDurationMs}ms"
-                    )
-                    bufferingSince = 0L
-                }
-                lastState = state
-            }
-
-            override fun onTracksChanged(
-                eventTime: AnalyticsListener.EventTime,
-                tracks: Tracks
-            ) {
-                videoBitrateBps = tracks.groups
-                    .firstOrNull { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
-                    ?.let { group ->
-                        (0 until group.length)
-                            .mapNotNull { runCatching { group.getTrackFormat(it).bitrate.toLong() }.getOrNull() }
-                            .filter { it > 0 }
-                            .maxOrNull() ?: 0L
-                    } ?: 0L
-                if (videoBitrateBps > 0) {
-                    Log.w(
-                        "PlayerDiag",
-                        "视频码率 ${videoBitrateBps / 1000}kbps ≈ 每秒吃 ${videoBitrateBps / 8 / 1024}KB"
-                    )
-                }
-            }
-
-            override fun onLoadError(
-                eventTime: AnalyticsListener.EventTime,
-                loadEventInfo: LoadEventInfo,
-                mediaLoadData: MediaLoadData,
-                error: IOException,
-                wasCanceled: Boolean
-            ) {
-                // 这个回调在 LoadErrorHandlingPolicy 重试之前触发，是唯一能看到
-                // 「被重试吞掉的 IO 错误」的地方
-                Log.w(
-                    "PlayerDiag",
-                    "load失败 实收=${loadEventInfo.bytesLoaded}B wasCanceled=$wasCanceled " +
-                        "${error.javaClass.simpleName}: ${error.message}"
-                )
-            }
-
-            override fun onVideoDecoderInitialized(
-                eventTime: AnalyticsListener.EventTime,
-                decoderName: String,
-                initializedTimestampMs: Long,
-                initializationDurationMs: Long
-            ) {
-                Log.w("PlayerDiag", "视频解码器就绪 $decoderName (${initializationDurationMs}ms)")
-            }
-
-            override fun onAudioDecoderInitialized(
-                eventTime: AnalyticsListener.EventTime,
-                decoderName: String,
-                initializedTimestampMs: Long,
-                initializationDurationMs: Long
-            ) {
-                Log.w("PlayerDiag", "音频解码器就绪 $decoderName (${initializationDurationMs}ms)")
-            }
-
-            override fun onVideoCodecError(
-                eventTime: AnalyticsListener.EventTime,
-                videoCodecError: Exception
-            ) {
-                Log.w("PlayerDiag", "视频解码器失败 ${videoCodecError.javaClass.simpleName}: ${videoCodecError.message}")
-            }
-
-            override fun onAudioCodecError(
-                eventTime: AnalyticsListener.EventTime,
-                audioCodecError: Exception
-            ) {
-                Log.w("PlayerDiag", "音频解码器失败 ${audioCodecError.javaClass.simpleName}: ${audioCodecError.message}")
-            }
-        })
     }
 
     /**

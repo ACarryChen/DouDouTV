@@ -1133,6 +1133,36 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /** 分集媒体流信息（内存缓存）：详情拉分集时写入，面板按 remoteId 读；没有返回 null */
     fun embyMediaInfoOf(remoteId: String): EmbyClient.MediaInfo? = EmbyMediaCache.get(remoteId)
 
+    /**
+     * 媒体流缓存补填完成信号：缓存是普通对象、不是 Compose 状态，后台填好不会自动触发重组。
+     * 详情页读它订阅，补填成功递增 → 重组重读缓存 → 面板随即出现。
+     */
+    var embyMediaInfoTick by mutableStateOf(0)
+        private set
+
+    /** 本进程已补填/试过的剧集壳：避免服务器本就不给媒体流时每次进详情都重复拉网络 */
+    private val embyMediaInfoTried =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+
+    /**
+     * 库里已有分集时详情不再阻塞重拉（保返回秒开），但进程重建后媒体流缓存可能为空、面板会消失。
+     * 这里非阻塞补一次详情把缓存填上：保留已有分集行 id 与进度（upsert 合并），只刷内存缓存。
+     */
+    fun ensureEmbyMediaInfoBackground(sourceId: Long, remoteId: String, seriesKey: String) {
+        if (!embyMediaInfoTried.add(seriesKey)) return
+        viewModelScope.launch {
+            val first = repo.episodes(seriesKey).firstOrNull() ?: return@launch
+            if (EmbyMediaCache.get(first.remoteId) != null) return@launch
+            val src = repo.getSource(sourceId) ?: return@launch
+            if (runCatching { repo.loadEmbyDetail(src, remoteId) }.getOrDefault(false)) {
+                embyMediaInfoTick++
+            } else {
+                // 网络抖动等失败：放开标记，下次进详情再补一次；成功或服务器本就不给则不再重试
+                embyMediaInfoTried.remove(seriesKey)
+            }
+        }
+    }
+
     /** 分集行所属的剧集壳：详情页把「继续观看」的分集记录换成整部剧来展示 */
     suspend fun shellOf(seriesKey: String): MediaEntity? = repo.shellOf(seriesKey)
 

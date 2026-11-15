@@ -152,7 +152,8 @@ fun TvApp(vm: LibraryViewModel) {
     val context = LocalContext.current
     var navStack by remember { mutableStateOf(restorableStack(TvNavHistory.stack)) }
     LaunchedEffect(navStack) { TvNavHistory.stack = navStack }
-    // 搜索页状态放在导航层：进详情再返回时结果不丢，真正退出搜索页才清空
+    // 搜索页状态放在导航层：从搜索页进详情再退回来结果不丢（pop 出的是 Detail，不触发清理）；
+    // 手动切走 tab 或按返回退出搜索页才算结束，缓存清空
     val searchState = remember { TvSearchUiState() }
     val push: (TvRoute) -> Unit = {
         navStack = navStack + it
@@ -166,6 +167,9 @@ fun TvApp(vm: LibraryViewModel) {
     }
     // Netflix 版导航条：四颗 tab 互切走 tabStack 规则，并带上当前布局风格（切风格要重建栈底）
     val switchTab: (TvRoute) -> Unit = { route ->
+        // 手动切 tab 离开搜索（哪怕此刻站在搜索页推进去的详情页上）：搜索缓存作废。
+        // 只有这一条和返回键直接退出搜索页会清 —— 从详情退回搜索页不走这里，结果原样留着
+        if (route !is TvRoute.Search && navStack.any { it is TvRoute.Search }) searchState.clear()
         // 从详情页切走（导航条常驻时不会发生，抽屉/其他入口会）就把「刚才播的那一集」清掉：
         // 留着它，下次正常进同一部剧的详情页会照着老记录跳季 / 跳页，首屏大图构图就没了
         if (navStack.last() is TvRoute.Detail) TvNavHistory.forgetEpisode()

@@ -74,8 +74,16 @@ class EmbyClient(
         val isDefault: Boolean = false
     )
 
+    /** 一条字幕轨的展示参数（语言已译成中文名，未知语言回退服务端 Title） */
+    data class SubtitleTrack(
+        val language: String = "",
+        val codec: String = "",
+        val forced: Boolean = false,
+        val isDefault: Boolean = false
+    )
+
     /**
-     * 单个条目的媒体流信息（分辨率 / 编码 / HDR / 码率 / 体积 / 音轨）。
+     * 单个条目的媒体流信息（分辨率 / 编码 / HDR / 码率 / 体积 / 音轨 / 字幕）。
      * 只有请求带 MediaSources,MediaStreams 字段时才解析得出，否则为 null。
      */
     data class MediaInfo(
@@ -94,7 +102,8 @@ class EmbyClient(
         val frameRate: Double = 0.0,
         /** 视频流码率（bps） */
         val videoBitrate: Long = 0L,
-        val audioTracks: List<AudioTrack> = emptyList()
+        val audioTracks: List<AudioTrack> = emptyList(),
+        val subtitleTracks: List<SubtitleTrack> = emptyList()
     )
 
     /**
@@ -608,23 +617,44 @@ class EmbyClient(
     // 播放中的 Progress 按位置差累计时长、停播收尾并写续播点。
     // 只写 UserData 续播点不进这套统计 —— 那是「上次看到哪」，不是「看了多久」。
 
-    /** 起播上报：服务端从这里建立播放会话 */
-    suspend fun reportPlaybackStart(itemId: String, positionTicks: Long) = withContext(Dispatchers.IO) {
-        sendJson("/Sessions/Playing", sessionPayload(itemId, positionTicks, paused = false))
+    /** 起播上报：服务端从这里建立播放会话（按 PlaySessionId 建键，缺它会 HTTP 400 空键） */
+    suspend fun reportPlaybackStart(
+        itemId: String,
+        positionTicks: Long,
+        playSessionId: String,
+        mediaSourceId: String
+    ) = withContext(Dispatchers.IO) {
+        sendJson("/Sessions/Playing", sessionPayload(itemId, positionTicks, false, playSessionId, mediaSourceId))
     }
 
     /** 播放中进度上报：服务端按它累计观看时长；暂停时置 IsPaused，暂停段不计时长 */
-    suspend fun reportPlaybackProgress(itemId: String, positionTicks: Long, paused: Boolean) =
-        withContext(Dispatchers.IO) {
-            sendJson("/Sessions/Playing/Progress", sessionPayload(itemId, positionTicks, paused))
-        }
-
-    /** 停播上报：写续播点；位置报到结尾时服务端按「看完」标记已看 */
-    suspend fun reportPlaybackStopped(itemId: String, positionTicks: Long) = withContext(Dispatchers.IO) {
-        sendJson("/Sessions/Playing/Stopped", sessionPayload(itemId, positionTicks, paused = true))
+    suspend fun reportPlaybackProgress(
+        itemId: String,
+        positionTicks: Long,
+        paused: Boolean,
+        playSessionId: String,
+        mediaSourceId: String
+    ) = withContext(Dispatchers.IO) {
+        sendJson("/Sessions/Playing/Progress", sessionPayload(itemId, positionTicks, paused, playSessionId, mediaSourceId))
     }
 
-    private fun sessionPayload(itemId: String, positionTicks: Long, paused: Boolean): String =
+    /** 停播上报：写续播点；位置报到结尾时服务端按「看完」标记已看 */
+    suspend fun reportPlaybackStopped(
+        itemId: String,
+        positionTicks: Long,
+        playSessionId: String,
+        mediaSourceId: String
+    ) = withContext(Dispatchers.IO) {
+        sendJson("/Sessions/Playing/Stopped", sessionPayload(itemId, positionTicks, true, playSessionId, mediaSourceId))
+    }
+
+    private fun sessionPayload(
+        itemId: String,
+        positionTicks: Long,
+        paused: Boolean,
+        playSessionId: String,
+        mediaSourceId: String
+    ): String =
         JSONObject().apply {
             put("ItemId", itemId)
             put("PositionTicks", positionTicks)
@@ -632,6 +662,10 @@ class EmbyClient(
             put("IsPaused", paused)
             put("IsMuted", false)
             put("PlayMethod", "DirectPlay")
+            // 服务端按 PlaySessionId 建/查会话，空键会 400；MediaSourceId 指明是哪条媒体源。
+            // 取不到时留空（停播接口不查这个键，仍可写续播点）。
+            if (playSessionId.isNotBlank()) put("PlaySessionId", playSessionId)
+            if (mediaSourceId.isNotBlank()) put("MediaSourceId", mediaSourceId)
         }.toString()
 
     /** 标记已看（POST /Users/{uid}/PlayedItems/{id}） */
@@ -673,7 +707,12 @@ class EmbyClient(
             .build()
         execute(request).use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException("Emby 回传失败：HTTP ${response.code}")
+                // 取证：把服务端拒绝的确切原因（响应体）和我们发的字段一起带进异常，
+                // 上层 EmbyReport 在 W 级打印它。请求体只含 ItemId/PositionTicks 等，无 token。
+                val errBody = runCatching { response.body?.string().orEmpty() }.getOrDefault("")
+                throw IllegalStateException(
+                    "Emby 回传失败：HTTP ${response.code} $path 请求=$payload 响应=${errBody.take(400)}"
+                )
             }
         }
     }
@@ -791,6 +830,7 @@ class EmbyClient(
         var frameRate = 0.0
         var videoBitrate = 0L
         val audio = mutableListOf<AudioTrack>()
+        val subtitles = mutableListOf<SubtitleTrack>()
 
         if (streams != null) {
             for (i in 0 until streams.length()) {
@@ -862,6 +902,24 @@ class EmbyClient(
                             isDefault = s.optBoolean("IsDefault", false)
                         )
                     }
+                    "Subtitle" -> {
+                        val title = s.optString("Title")
+                        subtitles += SubtitleTrack(
+                            language = audioLanguageName(s.optString("Language")).ifBlank { title },
+                            codec = when (s.optString("Codec").lowercase()) {
+                                "subrip", "srt" -> "SRT"
+                                "ass" -> "ASS"
+                                "ssa" -> "SSA"
+                                "webvtt", "vtt" -> "VTT"
+                                "pgssub", "hdmv_pgs_subtitle" -> "PGS"
+                                "dvdsub", "dvd_subtitle" -> "DVD"
+                                "mov_text", "tx3g" -> "TX3G"
+                                else -> s.optString("Codec").uppercase()
+                            },
+                            forced = s.optBoolean("IsForced", false),
+                            isDefault = s.optBoolean("IsDefault", false)
+                        )
+                    }
                 }
             }
         }
@@ -880,7 +938,8 @@ class EmbyClient(
             bitDepth = bitDepth,
             frameRate = frameRate,
             videoBitrate = videoBitrate,
-            audioTracks = audio
+            audioTracks = audio,
+            subtitleTracks = subtitles
         )
     }
 

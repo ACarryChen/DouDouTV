@@ -635,6 +635,13 @@ class MediaRepository(private val context: Context) {
     /** 某 Emby 来源已入库的媒体库清单（本地、离线）：动态分类按库分区用 */
     suspend fun embyLibraries(sourceId: Long): List<String> = mediaDao.distinctLibraries(sourceId)
 
+    /**
+     * Emby 刮削信息进程级缓存（键 sourceId:remoteId）。
+     * 返回详情页时系统常把后台 Activity 整只重建，重建会重跑加载链；这条信息以往每次都联网，
+     * 是返回「又刷新了一遍」的大头。命中缓存直接回，未命中才联网并写缓存；同步时清。
+     */
+    private val embyDetailCache = java.util.concurrent.ConcurrentHashMap<String, EmbyClient.ItemDetail>()
+
     /** Emby 刮削信息（导演/演员/分级/工作室），仅 Emby 源可用 */
     suspend fun embyDetail(sourceId: Long, remoteId: String): EmbyClient.ItemDetail? =
         withContext(Dispatchers.IO) {
@@ -642,9 +649,17 @@ class MediaRepository(private val context: Context) {
             if (src.kind != SourceKind.EMBY || src.token.isBlank()) return@withContext null
             val itemId = remoteId.removePrefix("emby:${src.id}:")
             if (itemId.isBlank() || ':' in itemId) return@withContext null
+            val cacheKey = "$sourceId:$remoteId"
+            embyDetailCache[cacheKey]?.let {
+                Log.i("TvDetailFocus", "embyDetail 缓存命中 key=$cacheKey")
+                return@withContext it
+            }
             runCatching {
                 EmbyClient(src.location, src.token, src.userId).fetchItemDetail(itemId)
-            }.getOrNull()
+            }.getOrNull()?.also {
+                Log.i("TvDetailFocus", "embyDetail 联网取 key=$cacheKey")
+                embyDetailCache[cacheKey] = it
+            }
         }
 
     /** Emby 全库题材清单：直接问服务端 /Genres，仅 Emby 源可用；失败回退空列表（上层再退本地聚合） */
@@ -1003,6 +1018,8 @@ class MediaRepository(private val context: Context) {
         sinceMs: Long?,
         onProgress: (Int, Int) -> Unit
     ): Int {
+        // 同步会刷新元数据，刮削信息缓存作废，下次进详情页重新联网取
+        embyDetailCache.clear()
         val pushes = EmbyStatePushes()
         val views = client.fetchViews()
         if (views.isEmpty()) {
@@ -1639,6 +1656,13 @@ class MediaRepository(private val context: Context) {
     // ---------------- Emby 回传：观看进度 / 已看 / 收藏 ----------------
 
     /**
+     * 播放会话的 PlaySessionId / MediaSourceId：起播时向服务端取一次，心跳 / 停播复用。
+     * 服务端按 PlaySessionId 建会话键，缺它会 HTTP 400（空键），观看时长也就无从累计。
+     * 进程级缓存（repo 随共享 ViewModel 常驻），停播后摘掉，避免越积越多。
+     */
+    private val embySessions = java.util.concurrent.ConcurrentHashMap<Long, EmbyClient.PlaybackInfo>()
+
+    /**
      * 起播上报（Emby 源）。非 Emby 条目返回 false，播放器据此决定要不要开进度心跳。
      * 服务端从这条请求建立播放会话，观看时长统计由此开始累计。
      */
@@ -1647,7 +1671,16 @@ class MediaRepository(private val context: Context) {
         val itemId = embyItemIdOf(row) ?: return false
         val client = embyClientOf(row) ?: return false
         return runCatching {
-            client.reportPlaybackStart(itemId, positionMs * 10_000L)
+            // 先取服务端权威的 PlaySessionId / MediaSourceId（直链播放本身不带这两个值）。
+            // 取不到就不建会话：这次观看时长不计，但不打断播放。
+            val info = client.fetchPlaybackInfo(itemId)
+            if (info == null) {
+                Log.w("EmbyReport", "起播未取到 PlaySessionId，跳过会话 item=$itemId")
+                return@runCatching false
+            }
+            embySessions[mediaId] = info
+            client.reportPlaybackStart(itemId, positionMs * 10_000L, info.playSessionId, info.mediaSourceId)
+            Log.w("EmbyReport", "起播上报成功 item=$itemId pos=${positionMs}ms psid=${info.playSessionId}")
             true
         }.onFailure {
             Log.w("EmbyReport", "起播上报失败：${it.message}")
@@ -1659,7 +1692,11 @@ class MediaRepository(private val context: Context) {
         val row = mediaDao.get(mediaId) ?: return
         val itemId = embyItemIdOf(row) ?: return
         val client = embyClientOf(row) ?: return
-        runCatching { client.reportPlaybackProgress(itemId, positionMs * 10_000L, paused) }
+        val info = embySessions[mediaId] ?: return
+        runCatching {
+            client.reportPlaybackProgress(itemId, positionMs * 10_000L, paused, info.playSessionId, info.mediaSourceId)
+        }
+            .onSuccess { Log.w("EmbyReport", "心跳上报成功 item=$itemId pos=${positionMs}ms paused=$paused") }
             .onFailure { Log.w("EmbyReport", "进度上报失败：${it.message}") }
     }
 
@@ -1674,10 +1711,15 @@ class MediaRepository(private val context: Context) {
         val row = mediaDao.get(mediaId) ?: return
         val itemId = embyItemIdOf(row) ?: return
         val client = embyClientOf(row) ?: return
+        val info = embySessions[mediaId]
         val watched = durationMs > 0L && positionMs >= durationMs * 9 / 10
         val ticks = (if (watched) durationMs else positionMs) * 10_000L
-        runCatching { client.reportPlaybackStopped(itemId, ticks) }
+        runCatching {
+            client.reportPlaybackStopped(itemId, ticks, info?.playSessionId.orEmpty(), info?.mediaSourceId.orEmpty())
+        }
+            .onSuccess { Log.w("EmbyReport", "停播上报成功 item=$itemId pos=${positionMs}ms watched=$watched") }
             .onFailure { Log.w("EmbyReport", "停播上报失败：${it.message}") }
+        embySessions.remove(mediaId)
     }
 
     /** 收藏同步回服务端；非 Emby 条目直接跳过 */

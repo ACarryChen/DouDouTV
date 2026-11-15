@@ -23,9 +23,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -217,6 +215,8 @@ fun TvDetailScreen(
     var epPage by remember(mediaId) { mutableStateOf(0) }
     /** 整页重建后要把焦点交回的那一集（0 = 没有），由 [LaunchedEffect] 的接址逻辑填 */
     var recallEpisodeId by remember(mediaId) { mutableStateOf(0L) }
+    /** 返回重建时 Emby 货架要滚到的那一格（页内序号，-1=无）；滚一次即消费，正常翻页仍回第一格 */
+    var recallScrollTarget by remember(mediaId) { mutableStateOf(-1) }
     /**
      * 这一页是不是「播放器把宿主 Activity 打断后重建」进来的（true 才需要接回原来那一集）。
      *
@@ -240,12 +240,24 @@ fun TvDetailScreen(
     val playFocusRequester = remember { FocusRequester() }
     val controlsFocusRequester = remember { FocusRequester() }
     val firstEpFocusRequester = remember { FocusRequester() }
+    /**
+     * Emby 横滑货架「最后聚焦那一集」的活落点。
+     * 货架右移后首格会被 LazyRow 回收，死钉首格的 [firstEpFocusRequester] 变成死节点，
+     * 下键就回不到选集（同首页继续观看行 #59 的根因）。最后聚焦那集停在当前滚动位置、
+     * 必然还组合着，进货架优先落它。换季 / 翻页时重置（见 embyRowState 的 LaunchedEffect）。
+     */
+    val epStand = remember { StandTarget() }
     /** 翻页行（剧集网格右下角）首颗按钮的焦点器：网格末行 ↓ / 主演 ↑ 都经过它 */
     val pageFocusRequester = remember { FocusRequester() }
     /** 视频信息面板（整页最后一站）：主演 ↓ 落这里，面板 ↑ 回主演 */
     val mediaInfoFocusRequester = remember { FocusRequester() }
     // 滚动状态提到抢焦之前建：入口抢焦要在焦点落定后把首屏构图压回顶部
     val scrollState = rememberScrollState()
+    // 离开这一页（进播放器被系统回收 / 导航走）时记下竖滚位置，返回重建时接回那一屏。
+    // 进程级记忆穿得过 Activity 重建；onDispose 在旧树销毁时跑，此刻 scrollState 还是离开那一屏。
+    DisposableEffect(mediaId) {
+        onDispose { detailScrollMemory[mediaId] = scrollState.value }
+    }
 
     /**
      * 离开时焦点站在哪个元件上（播放 / 收藏 / 控制条 / 某一集），回来就还站在它上面。
@@ -317,11 +329,17 @@ fun TvDetailScreen(
 
     LaunchedEffect(mediaId) {
         loading = true
+        val loadStart = android.os.SystemClock.uptimeMillis()
+        // 取证：分段计时，定位返回重建时加载链慢在哪一步（只记日志，不改逻辑）
+        fun step(name: String) =
+            Log.i(FOCUS_TAG, "加载链 $name +${android.os.SystemClock.uptimeMillis() - loadStart}ms")
         // 整个加载过程兜底：任何 IO/解析异常都不允许冒泡到 Composition，
         // 否则电视端会直接崩溃退出（用户看到的就是「点详情闪退」）。
         try {
         // 首页分类行是内存临时条目（负 id）：先落库换成真实 id，否则 mediaOf() 查不到
         var id = mediaId
+        // 「继续观看」进来那条分集行的 id：换绑成剧集壳后焦点也要落回这一集，与播放器返回同口径
+        var continueEpisodeId = 0L
         var m = vm.mediaOf(id)
         if (m == null && id < 0) {
             val realId = runCatching { vm.materializeRemote(id) }.getOrNull()
@@ -343,6 +361,7 @@ fun TvDetailScreen(
                 val shell = vm.shellOf(m.seriesKey)
                 if (shell != null) {
                     resumeEpisode = m.takeIf { it.positionMs > 5_000L }
+                    continueEpisodeId = m.id
                     id = shell.id
                     m = shell
                 }
@@ -352,8 +371,16 @@ fun TvDetailScreen(
             isEmbySource = src?.kind == SourceKind.EMBY
             if (src?.kind == SourceKind.EMBY) {
                 scraped = runCatching { vm.embyDetailOf(m.sourceId, m.remoteId) }.getOrNull()
-                if (m.kind == MediaKind.SERIES) {
+                step("embyDetailOf")
+                // 与 TVBox 同口径：库里已有分集就不重拉。返回详情页时系统常把后台 Activity
+                // 回收重建（进程还活着，分集/媒体信息都在库和进程内存里），无条件重拉会白等
+                // 一两秒网络、骨架再走一遍；直接读本地即可，焦点由下面的 recall 接回那一集。
+                if (m.kind == MediaKind.SERIES && vm.episodesOf(m.seriesKey).isEmpty()) {
                     runCatching { vm.loadEmbyEpisodes(m.sourceId, m.remoteId) }
+                } else if (m.kind == MediaKind.SERIES) {
+                    // 库里已有分集：不阻塞重拉（保返回秒开）。但进程重建后媒体流缓存可能为空、
+                    // 主演下方的影片信息面板会消失，后台非阻塞补一次详情把缓存填上。
+                    vm.ensureEmbyMediaInfoBackground(m.sourceId, m.remoteId, m.seriesKey)
                 }
             } else if (src?.kind == SourceKind.TVBOX && m.kind == MediaKind.SERIES &&
                 vm.episodesOf(m.seriesKey).isEmpty()
@@ -365,6 +392,7 @@ fun TvDetailScreen(
             }
             val latest = vm.mediaOf(id) ?: m
             media = latest
+            step("分集守卫+mediaOf")
 
             // 演员/更新备注是这次才入库的字段：老条目里是空串，而上面的分集守卫又让它们
             // 没机会重拉详情。这里补一次「只写壳」的详情请求——不动分集行，
@@ -381,6 +409,7 @@ fun TvDetailScreen(
             // Emby 无源概念，playSources 为空时走全量分集。
             val sources = runCatching { vm.playSourcesOf(latest.seriesKey) }.getOrDefault(emptyList())
             playSources = sources
+            step("playSourcesOf")
             if (sources.isNotEmpty()) {
                 if (selectedPlaySource !in sources) selectedPlaySource = sources.first()
                 episodes = runCatching { vm.episodesBySource(latest.seriesKey, selectedPlaySource) }
@@ -389,15 +418,19 @@ fun TvDetailScreen(
                 episodes = runCatching { vm.episodesOf(latest.seriesKey) }.getOrDefault(emptyList())
             }
             episodes.firstOrNull()?.season?.let { if (selectedSeason == 0) selectedSeason = it }
+            step("episodes")
 
             // 「看完视频回来还站在那一集」：爬虫壳在播放期间 finish 宿主 → MainActivity recreate()，
             // 这一页连同季 / 页码 / 焦点全是一份新组合的默认值。用进程级记下的分集 id 把线路、季、页码接回去，
             // 并把该格的 requester 交给 [stand]，下面的 tvClaimFocusOnEnter 就以它为第一顺位锚点。
             // 正常进出播放器时子树没销毁，这个 LaunchedEffect 不会再跑，落点仍由 stand 原路接住。
-            val playedId = TvNavHistory.playedEpisodeId
+            // 落点优先级：播放器返回记的那一集 > 「继续观看」进来那一集 > 没有（落播放键）。
+            // 两条入口共用下面这套换源 / 季 / 页码 / 横滑接回，TVBox 与 Emby 行为一致。
+            val playedId = TvNavHistory.playedEpisodeId.takeIf { it != 0L } ?: continueEpisodeId
             if (playedId != 0L) {
                 val all = runCatching { vm.episodesOf(latest.seriesKey) }.getOrDefault(emptyList())
                 val played = all.firstOrNull { it.id == playedId }
+                Log.i(FOCUS_TAG, "recall: playedId=$playedId kind=${latest.kind} eps=${all.size} matched=${played != null}")
                 if (played != null) {
                     if (sources.isNotEmpty() && played.playSource.isNotBlank() &&
                         played.playSource in sources && played.playSource != selectedPlaySource
@@ -412,11 +445,20 @@ fun TvDetailScreen(
                     val inSeason =
                         if (seasons.size <= 1) episodes else episodes.filter { it.season == played.season }
                     val pos = inSeason.indexOfFirst { it.id == playedId }
-                    if (pos >= 0) epPage = pos / (if (src?.kind == SourceKind.EMBY) TV_EMBY_EPS_PAGE else TV_EPS_PAGE)
+                    if (pos >= 0) {
+                        val perPage = if (src?.kind == SourceKind.EMBY) TV_EMBY_EPS_PAGE else TV_EPS_PAGE
+                        epPage = pos / perPage
+                        // Emby 货架默认滚到第一格，会把这一集甩到视口外、焦点环看不见；
+                        // 记下页内序号，下面那条滚动效果改滚到它，焦点才落在刚播那集上。
+                        if (src?.kind == SourceKind.EMBY) recallScrollTarget = pos % perPage
+                    }
                     recallEpisodeId = playedId
                     restoredStand = true
                 }
+            } else {
+                Log.i(FOCUS_TAG, "recall: playedId=0 kind=${latest.kind}（没记到播放集，落播放键）")
             }
+            step("recall")
 
             // 刮削结果一律问仓储层：它先读 scraped_meta 表，表里没有才轮到「联网刮削」开关
             // 和凭据决定要不要发请求。这里再拦一道开关，会把已经刮到、躺在表里的数据一起藏掉。
@@ -431,6 +473,7 @@ fun TvDetailScreen(
             e.printStackTrace()
         } finally {
             loading = false
+            Log.i(FOCUS_TAG, "加载链耗时 ${android.os.SystemClock.uptimeMillis() - loadStart}ms mediaId=$mediaId")
         }
     }
 
@@ -443,7 +486,7 @@ fun TvDetailScreen(
     }
 
     /**
-     * 加载态两段：骨架晚 250ms 才出现，内容到位后用 200ms 淡入。
+     * 加载态两段：骨架晚 250ms 才出现；内容到位后，挂过骨架才 200ms 淡入，没挂过直接上屏。
      *
      * 为什么要晚这 250ms：刮削表命中的片子整条链路只有几十毫秒，骨架立刻挂上就是
      * 「白框架闪一下」，比原来干等更晃眼；真正慢的是 TVBox 拉分集和 TMDB 联网那两类，
@@ -457,9 +500,17 @@ fun TvDetailScreen(
             delay(250L)
             skeletonArmed = true
         } else {
+            // 骨架没挂过（缓存命中、整条链几十毫秒就完）说明内容直接到位，没有「骨架→内容」
+            // 的过渡要平滑，再淡入 200ms 纯属让返回详情页干等 —— 直接 snap 上屏。
+            // 只有真挂过骨架的慢加载才保留淡入。
+            val showedSkeleton = skeletonArmed
             skeletonArmed = false
-            reveal.snapTo(0f)
-            reveal.animateTo(1f, tween(200))
+            if (showedSkeleton) {
+                reveal.snapTo(0f)
+                reveal.animateTo(1f, tween(200))
+            } else {
+                reveal.snapTo(1f)
+            }
         }
     }
 
@@ -554,6 +605,17 @@ fun TvDetailScreen(
         }
     }
 
+    // 返回重建：焦点落定前把竖滚 instant 接回离开那一屏（货架），目标已在视口，
+    // bring-into-view 不再补滚 —— 消掉「先在顶部露一下再滚下去」那一下闪。
+    LaunchedEffect(contentReady, restoredStand) {
+        if (!contentReady || !restoredStand) return@LaunchedEffect
+        val saved = detailScrollMemory[mediaId] ?: return@LaunchedEffect
+        if (saved <= 0) return@LaunchedEffect
+        withFrameNanos { }
+        scrollState.scrollTo(saved)
+        Log.i(FOCUS_TAG, "scroll 接回离开那一屏 saved=$saved")
+    }
+
     val item = media
 
     // 主演名单源数据：Emby 刮削优先、TMDB 补齐，最后才回落到源自己给的 vod_actor。
@@ -595,8 +657,25 @@ fun TvDetailScreen(
     // Emby 横滑货架的滚动状态：翻页 / 换季把货架收回头一格，
     // 保证 firstEpFocusRequester（控制条下键的落点）始终挂在已组合的节点上。
     val embyRowState = rememberLazyListState()
+    // 翻页 / 换季：货架收回头一格，保证 firstEpFocusRequester（控制条下键的落点）挂在已组合节点上。
+    // 有 recall 目标时跳过——那一格由下面专用效果负责，这里抢滚回 0 会把它甩出横滑视口、组合不出来。
     LaunchedEffect(pageIndex, selectedSeason, isEmbySource) {
-        if (isEmbySource) embyRowState.scrollToItem(0)
+        if (isEmbySource && recallScrollTarget < 0) {
+            embyRowState.scrollToItem(0)
+            // 换季 / 翻页后旧那集的节点已回收，落点记录作废，回到首格
+            epStand.requester = null
+        }
+    }
+    // 返回重建 / 继续观看：只要 recall 记下了页内序号就滚到它。key 带上 recallScrollTarget 本身——
+    // 那一集在第 0 页时 epPage 不变，旧的「只 key pageIndex」写法不会重跑，目标格永远组合不出来，
+    // stand 拿不到焦点就退回播放键（真机时好时坏的根因）。滚一次即消费。
+    LaunchedEffect(recallScrollTarget, isEmbySource) {
+        if (isEmbySource && recallScrollTarget >= 0) {
+            val target = recallScrollTarget
+            embyRowState.scrollToItem(target)
+            recallScrollTarget = -1
+            Log.i(FOCUS_TAG, "货架滚到 recall 格 target=$target")
+        }
     }
     /** 焦点停在货架哪一集：下方视频信息面板跟着它走；离开货架保留最后一集 */
     var focusedEpId by remember(mediaId) { mutableStateOf(0L) }
@@ -604,6 +683,8 @@ fun TvDetailScreen(
     val infoEpisode = pagedEpisodes.firstOrNull { it.id == focusedEpId }
         ?: pagedEpisodes.firstOrNull { it.id == recallEpisodeId }
         ?: pagedEpisodes.firstOrNull()
+    // 订阅后台补填信号：缓存填好递增 tick → 本屏重组 → 下面重读缓存，面板随即出现
+    vm.embyMediaInfoTick
     val episodeMediaInfo = if (isEmbySource) infoEpisode?.let { vm.embyMediaInfoOf(it.remoteId) } else null
     val hasMediaInfoPanel = episodeMediaInfo != null && infoEpisode != null
     val hasEpisodes = episodes.isNotEmpty()
@@ -733,9 +814,13 @@ fun TvDetailScreen(
          * 同一次按键滚两段动画（真机轨迹 0→694→1099），观感就是画面跳两次。
          * 对齐那一步是多余的 —— 最小滚动落定后内容顶本来就在视口里。
          */
+        /** 进货架的活落点：右移后首格可能被 LazyRow 回收，优先最后聚焦那集（停在当前滚动位置、必活） */
+        fun shelfEntry(): FocusRequester =
+            if (isEmbySource) (epStand.requester ?: firstEpFocusRequester) else firstEpFocusRequester
+
         fun enterEpisodeSection(target: FocusRequester) {
-            // 控制条这次没渲染出来（单源单季单页）时退回网格首格
-            tvMoveFocus(target, firstEpFocusRequester)
+            // 控制条这次没渲染出来（单源单季单页）时退回货架活落点
+            tvMoveFocus(target, shelfEntry())
         }
 
         /**
@@ -1068,6 +1153,13 @@ fun TvDetailScreen(
                                             up = descUpTarget
                                             down = belowDesc
                                         }
+                                        .onPreviewKeyEvent { e ->
+                                            // 有分集时下键走活落点回退，避免右移后首格死节点（#59 同款）
+                                            if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionDown && hasEpisodes) {
+                                                enterEpisodeSection(belowDesc)
+                                                true
+                                            } else false
+                                        }
                                         .then(publishStand(descFocusRequester, "desc")),
                                     onClick = {
                                         descExpanded = !descExpanded
@@ -1121,7 +1213,15 @@ fun TvDetailScreen(
                                         // ↑ 按版面顺序往回走：展开按钮 > 播放键
                                         // （主演已下移到选集之后，不再是控制条的上一站）
                                         up = if (descTruncated) descFocusRequester else playFocusRequester
-                                        down = if (hasEpisodes) firstEpFocusRequester else FocusRequester.Cancel
+                                        // ↓ 有分集时交给按键拦截落活节点；无分集留在原地
+                                        down = FocusRequester.Cancel
+                                    }.onPreviewKeyEvent { e ->
+                                        // 落点要在按键这一刻读「最后聚焦那集」：组合期写死会攥着
+                                        // 右移后被回收的首格死节点，下键回不到选集（#59 同款）。
+                                        if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionDown && hasEpisodes) {
+                                            tvMoveFocus(shelfEntry(), firstEpFocusRequester)
+                                            true
+                                        } else false
                                     }.then(publishStand(controlsFocusRequester, "controls"))
                                     // 播放源 / 云盘切换：多条源时展示，默认第一条
                                     if (playSources.size > 1) {
@@ -1225,7 +1325,12 @@ fun TvDetailScreen(
                                             focusDown = if (hasPageRow) pageFocusRequester
                                                 else if (hasCast) castFocusRequesters.first()
                                                 else FocusRequester.Cancel,
-                                            onFocused = { if (it) focusedEpId = ep.id },
+                                            onFocused = {
+                                                if (it) {
+                                                    focusedEpId = ep.id
+                                                    epStand.requester = cellTarget
+                                                }
+                                            },
                                             onClick = {
                                                 TvNavHistory.playedEpisodeId = ep.id
                                                 onPlay(ep.id)
@@ -1751,6 +1856,14 @@ private val EMBY_CARD_HEIGHT = 135.dp
 /** 取证日志的 tag：进页抢焦与滚动位置都记在这里 */
 private const val FOCUS_TAG = "TvDetailFocus"
 
+/**
+ * 详情页竖滚位置进程级记忆（键 mediaId）。
+ * 返回时系统把 Activity 整只重建，新组合的 scrollState 从 0 起；焦点落到货架那一集后
+ * bring-into-view 再动画滚下去 —— 用户看到的就是「先在顶部闪一下才停到那一集」。
+ * 离开时记下滚到哪，返回内容到位后先 instant 滚回那一屏，焦点落定时目标已在视口，不再补滚。
+ */
+private val detailScrollMemory = java.util.concurrent.ConcurrentHashMap<Long, Int>()
+
 /** 分集网格列数：分集名是源给的原名（如 "[5.4GB]E01.mkv【…】"），
  *  10 列时一格不到 90dp，名字全被省略号吃掉；4 列后单格够宽，集名能看清。 */
 private const val TV_GRID_COLS = 4
@@ -1942,19 +2055,19 @@ private fun TvEpisodeMediaInfoPanel(
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
 
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
-        Box(
-            Modifier
-                .requiredWidth(maxWidth + 24.dp)
-                .offset(x = (-12).dp)
-                .focusProperties {
-                    up = focusUp
-                    down = FocusRequester.Cancel
-                }
-                .focusRequester(focusRequester)
-                .focusable(interactionSource = interaction)
-                .tvFocusRing(focused)
-        ) {
+    // 外框与内容网格同宽：焦点环左缘 = 主演 / 简介的左缘，不再浮进页边距显得左移。
+    // 文字作为卡片内缩进（horizontal padding），块边缘与上方各分区对齐。
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .focusProperties {
+                up = focusUp
+                down = FocusRequester.Cancel
+            }
+            .focusRequester(focusRequester)
+            .focusable(interactionSource = interaction)
+            .tvFocusRing(focused)
+    ) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
                 // 头：分区标题 + 当前集 + 帧率码率 + 来源说明
                 // 帧率/码率放头排右侧：880dp 内容宽下第一行放不下「视频一条线 + 文件四项 + 子行」，
@@ -2075,8 +2188,57 @@ private fun TvEpisodeMediaInfoPanel(
                         }
                     }
                 }
+
+                // 第三行：字幕横铺（最多展示 3 条，总数在标签里），追加在音频下方
+                if (info.subtitleTracks.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(Edge.Hairline))
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text(
+                            "字幕 · ${info.subtitleTracks.size} 条",
+                            color = TvText.Meta,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 1.sp
+                        )
+                        info.subtitleTracks.take(3).forEachIndexed { idx, sub ->
+                            if (idx > 0) Box(Modifier.width(1.dp).height(24.dp).background(Edge.Hairline))
+                            Row(
+                                Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    sub.language.ifBlank { "字幕 ${idx + 1}" },
+                                    color = TvText.Section,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                if (sub.isDefault) {
+                                    Text("默认", color = TvText.Muted, fontSize = 11.sp)
+                                }
+                                if (sub.forced) {
+                                    Text("强制", color = TvText.Muted, fontSize = 11.sp)
+                                }
+                                if (sub.codec.isNotBlank()) {
+                                    Text(
+                                        sub.codec,
+                                        color = TvText.Meta,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
-        }
     }
 }
 

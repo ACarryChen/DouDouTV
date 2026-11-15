@@ -22,9 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.lazy.items
@@ -56,24 +54,22 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.chen.doudoutv.core.Prefs
 import com.chen.doudoutv.data.model.MediaEntity
 import com.chen.doudoutv.data.model.SourceEntity
-import com.chen.doudoutv.data.model.SourceKind
 import com.chen.doudoutv.ui.LibraryViewModel
 import com.chen.doudoutv.ui.ReturnSpot
 import com.chen.doudoutv.ui.StandTarget
 import com.chen.doudoutv.ui.PrecomposeWindow
 import com.chen.doudoutv.ui.cardStand
+import com.chen.doudoutv.ui.gridState
 import com.chen.doudoutv.ui.listState
 import com.chen.doudoutv.ui.tv.TvPagePadding
 import com.chen.doudoutv.ui.tv.TvSearchUiState
 import com.chen.doudoutv.ui.tv.tvClaimFocusOnEnter
-import com.chen.doudoutv.ui.tv.tvPosterColumns
 import com.chen.doudoutv.ui.tv.tvFocusRing
 import com.chen.doudoutv.ui.tv.tvMoveFocus
 import com.chen.doudoutv.ui.tv.tvResumeTick
@@ -108,7 +104,6 @@ fun NfSearchScreen(
     val fieldFocus = remember { FocusRequester() }
     // 首行/首卡的锚点随「那一格换成谁了」重建：同一实例先后挂两个节点会留下指向废弃节点的记录
     val sugFirstFocus = remember(state.suggestions.firstOrNull()) { FocusRequester() }
-    val gridFirstFocus = remember(state.results.firstOrNull()?.id) { FocusRequester() }
     val stand = remember { StandTarget() }
     // 搜索历史：和手机端同一份 Prefs 记录，提交一次搜索或清空历史时 historyEpoch 自增触发重读
     val history = remember(state.historyEpoch) { Prefs.getSearchHistory() }
@@ -172,30 +167,41 @@ fun NfSearchScreen(
     // 组内再按线路（站点）。Emby 没有线路概念，那一组就只有来源这一层。
     val sources by vm.enabledSources.collectAsStateWithLifecycle()
     val sourceGroups = remember(state.results, sources) { nfSearchGroups(state.results, sources) }
-    val sourceCount = sourceGroups.size
-    // 真的按线路铺开成多组的来源数
-    val routeGroupCount = sourceGroups.count { it.isTvBox && it.routes.size > 1 }
 
-    // 每个来源的折叠状态 —— 默认第一个来源展开，其余折叠
+    // 每个来源的折叠状态 —— 默认第一个来源展开，其余折叠。
+    // 只有「来源」这一层可折叠；组内线路行常显、不折叠（点线路聚焦即切右侧，折叠反而多一层按键）。
     val expandedSources = remember(sourceGroups.size) {
         mutableStateMapOf<String, Boolean>().apply {
             sourceGroups.firstOrNull()?.let { this[it.key] = true }
         }
     }
-    // 线路（站点）默认全部折叠：状态表初始为空即「没展开过」，OK 一次才铺那一行海报
-    val expandedRoutes = remember(sourceGroups.size) { mutableStateMapOf<String, Boolean>() }
-    // 全折叠时结果区没有任何卡片可聚焦，↑↓ 与进页抢焦改落到第一颗来源表头（规范 R6 不留焦点死区）
+    // 左栏第一颗可聚焦行（首个来源表头）：输入框 ↓ 与进页抢焦的落点（规范 R6 不留焦点死区）
     val firstHeaderFocus = remember(sourceGroups.firstOrNull()?.key) { FocusRequester() }
-    val resultsCardsVisible = sourceGroups.any { group ->
-        (expandedSources[group.key] ?: false) &&
-            group.routes.any { (routeName, _) -> routeName.isBlank() || (expandedRoutes["${group.key}/$routeName"] ?: false) }
+    // 当前选中的线路：焦点移到线路行即切换右侧。改词 / 折叠让选中失效时回落第一条线路。
+    var selectedRouteKey by remember { mutableStateOf("") }
+    // 每条线路行的锚点：网格首卡 ← 交回「刚离开的那一行」
+    val railFocusers = remember { mutableStateMapOf<String, FocusRequester>() }
+    // 摊平的线路表：key →（展示名，命中列表）。Emby 的线路名为空，展示名用来源名。
+    val routeIndex = remember(sourceGroups) {
+        LinkedHashMap<String, Pair<String, List<MediaEntity>>>().apply {
+            sourceGroups.forEach { g ->
+                g.routes.forEach { (routeName, items) ->
+                    put("${g.key}/$routeName", (routeName.ifBlank { g.label }) to items)
+                }
+            }
+        }
     }
-    val resultsAnchor = if (resultsCardsVisible) gridFirstFocus else firstHeaderFocus
-    // 输入框 ↓ / 导航条 ↓ 的落点：联想列表 > 结果首卡（全折叠时是第一颗来源表头）> 历史首行 > 输入框自身
+    val activeKey = routeIndex.keys.firstOrNull { it == selectedRouteKey }
+        ?: routeIndex.keys.firstOrNull().orEmpty()
+    val activeRoute = routeIndex[activeKey]
+    // 右栏首卡锚点：随「当前线路的首卡换成谁」重建 —— 切线路时旧首卡正在销毁、
+    // 新首卡又挂同一个实例，同一 FocusRequester 同时占两个节点会撞 claim
+    val gridFirstFocus = remember(activeRoute?.second?.firstOrNull()?.id) { FocusRequester() }
+    // 输入框 ↓ / 导航条 ↓ 的落点：联想列表 > 左栏首行 > 历史首行 > 输入框自身
     // （空态且没有历史时页面只有输入框可聚焦，不能留焦点死区 —— 规范 R6）。
     val belowField = when {
         showSuggestions -> sugFirstFocus
-        state.results.isNotEmpty() -> resultsAnchor
+        state.results.isNotEmpty() -> firstHeaderFocus
         showHistory -> histFirstFocus
         else -> fieldFocus
     }
@@ -205,16 +211,21 @@ fun NfSearchScreen(
     // 一旦进 tick，抢焦就会把焦点从 BasicTextField 挪到输入框外层那颗 focusable 节点上 ——
     // 输入法面板跟着关闭，用户才打了一个字就得重新按 OK 弹框。
     // 联想出现时焦点该留在原处：往下走由输入框自己的 ↓（nfFocusRoute）显式交点。
-    // 从别的 tab 点「搜索」切过来：焦点留在标签上，不交给输入框（NfTabSwitch）
-    val viaTab = remember { NfTabSwitch.consume(NfTab.Search) }
+    // 从别的 tab 点「搜索」切过来：焦点留在标签上，不交给输入框（NfTabSwitch）。
+    // 一次性消费：只有进页那一次落标签；tick 也不再挂 results.size —— 否则提交搜索、
+    // 远程批次每追加一次结果就重放一遍抢焦，焦点被从输入行拽回导航条（clearFocus 先闪首页 tab）。
+    var viaTab by remember { mutableStateOf(NfTabSwitch.consume(NfTab.Search)) }
     tvClaimFocusOnEnter(
-        tick = listOf(resumeTick, state.results.size),
+        tick = resumeTick,
         // 输入 / 联想阶段这一串锚点只留输入框自己：
         // 焦点往下走只有两条正当路径：用户自己按 ↓（nfFocusRoute 显式交点），或提交搜索出结果。
         // 提交之后（submittedKeyword 非空）恢复原来的抢焦：还站在离开时那张卡，没有记录才落首卡。
         anchorsProvider = {
             when {
-                viaTab -> listOf(chrome.tabOf(NfTab.Search))
+                viaTab -> {
+                    viaTab = false
+                    listOf(chrome.tabOf(NfTab.Search))
+                }
                 state.submittedKeyword.isEmpty() -> listOf(fieldFocus)
                 else -> listOfNotNull(stand.requester, belowField, fieldFocus)
             }
@@ -317,31 +328,79 @@ fun NfSearchScreen(
 
                     state.loading -> NfSearchBusy("搜索中…")
 
-                    state.results.isNotEmpty() -> Column(Modifier.fillMaxSize()) {
-                        Row(
+                    // 左 4 右 6 分栏：左栏来源/线路轨道，右侧当前线路的影片
+                    state.results.isNotEmpty() -> Row(Modifier.fillMaxSize()) {
+                        Column(
                             Modifier
-                                .fillMaxWidth()
-                                .padding(start = TvPagePadding, end = TvPagePadding, bottom = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .weight(4f)
+                                .padding(start = TvPagePadding, end = 10.dp)
                         ) {
-                            Text(
-                                "搜索结果 ${state.results.size} 条 · ${sourceCount} 个来源" +
-                                    (if (routeGroupCount > 0) " · $routeGroupCount 个来源按线路分组" else "") +
-                                    if (state.remoteSearching) "，远程站点搜索中…" else "",
-                                color = TvText.Meta,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
+                            LazyColumn(
+                                state = ReturnSpot.listState(
+                                    "$NfSearchKey/rail", precompose = PrecomposeWindow.Tv
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                contentPadding = PaddingValues(bottom = 24.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                sourceGroups.forEachIndexed { sourceIdx, group ->
+                                    val isExpanded = expandedSources[group.key] ?: false
+                                    item(key = "nf_rail_src_${group.key}") {
+                                        NfSourceHeader(
+                                            label = group.label,
+                                            meta = if (group.isTvBox)
+                                                "${group.routes.sumOf { it.second.size }} 条 · ${group.routes.size} 线路"
+                                            else "${group.routes.firstOrNull()?.second?.size ?: 0} 条",
+                                            expanded = isExpanded,
+                                            // 第一颗来源表头交回页面持有的锚点：输入框的 ↓ 和进页抢焦都落在这儿
+                                            focusRequester = if (sourceIdx == 0) firstHeaderFocus
+                                                else remember(group.key) { FocusRequester() },
+                                            upFocusRequester = if (sourceIdx == 0) fieldFocus else null,
+                                            onToggle = {
+                                                expandedSources[group.key] = !isExpanded
+                                            }
+                                        )
+                                    }
+                                    if (isExpanded) {
+                                        group.routes.forEach { (routeName, routeItems) ->
+                                            val routeKey = "${group.key}/$routeName"
+                                            item(key = "nf_rail_$routeKey") {
+                                                val fr = railFocusers.getOrPut(routeKey) { FocusRequester() }
+                                                NfRailRouteRow(
+                                                    label = routeName.ifBlank { group.label },
+                                                    kind = if (group.isTvBox) "站点" else "服务器",
+                                                    count = routeItems.size,
+                                                    selected = routeKey == activeKey,
+                                                    focusRequester = fr,
+                                                    rightFocusRequester = gridFirstFocus,
+                                                    onFocused = { selectedRouteKey = routeKey },
+                                                    // OK：进右侧网格首卡
+                                                    onEnter = { tvMoveFocus(gridFirstFocus) }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        NfSearchGroupedGrid(
-                            groups = sourceGroups,
-                            expandedSources = expandedSources,
-                            expandedRoutes = expandedRoutes,
-                            firstHeaderFocus = firstHeaderFocus,
-                            stand = stand,
-                            firstFocus = gridFirstFocus,
-                            upFocusRequester = fieldFocus,
-                            onDetail = onDetail
-                        )
+                        Column(
+                            Modifier
+                                .weight(6f)
+                                .padding(end = TvPagePadding)
+                        ) {
+                            activeRoute?.let { (_, items) ->
+                                NfSearchRouteGrid(
+                                    routeKey = activeKey,
+                                    items = items,
+                                    stand = stand,
+                                    firstFocus = gridFirstFocus,
+                                    upFocusRequester = fieldFocus,
+                                    leftFocusRequester = railFocusers[activeKey] ?: firstHeaderFocus,
+                                    modifier = Modifier.weight(1f),
+                                    onDetail = onDetail
+                                )
+                            }
+                        }
                     }
 
                     // 远程还没回来时不要急着判「没找到」，否则用户看到的是搜索中的空屏
@@ -349,7 +408,7 @@ fun NfSearchScreen(
 
                     state.searched -> NfInlineEmpty(
                         text = "没有找到「${state.submittedKeyword}」",
-                        hint = "换个关键词试试，结果按来源分组铺开"
+                        hint = "换个关键词试试，左栏切线路看右侧影片"
                     )
 
                     else -> if (showHistory) {
@@ -607,127 +666,142 @@ private fun nfSearchGroups(results: List<MediaEntity>, sources: List<SourceEntit
     }
 
 /**
- * 搜索结果分组：一个来源一组（TVBox 一整份配置、Emby 一台服务器），组内按线路（站点）铺开。
- * 外层 [LazyColumn]，每个来源组一个 section header（可聚焦，OK 键切换展开/折叠）。
- * 展开后：TVBox 每条线路一个小标题（同样可聚焦切换），OK 才铺那一行竖版海报；Emby 没有线路这一层，来源展开即出海报。
- * 默认第一个来源展开、其下线路全部折叠 —— 一次搜索几十个站点全铺开，滚到哪儿都找不到片名。
+ * 左栏的线路行：常显、不折叠 —— 焦点落到哪条，右栏立刻换成那条线路的影片。
+ * 选中行给一条品牌红竖条作静态标识；聚焦态仍是全页统一的 [tvFocusRing] 双环。
+ * → / OK 进右栏首卡；↑↓ 交给系统几何寻焦（轨道本身就是纵向列表）。
  */
 @Composable
-private fun NfSearchGroupedGrid(
-    groups: List<NfSearchGroup>,
-    expandedSources: MutableMap<String, Boolean>,
-    expandedRoutes: MutableMap<String, Boolean>,
-    firstHeaderFocus: FocusRequester,
+private fun NfRailRouteRow(
+    label: String,
+    kind: String,
+    count: Int,
+    selected: Boolean,
+    focusRequester: FocusRequester,
+    rightFocusRequester: FocusRequester,
+    onFocused: () -> Unit,
+    onEnter: () -> Unit
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(Radius.Md)
+            .background(if (selected || focused) AppColors.SurfaceHi else AppColors.Surface)
+            .tvFocusRing(focused)
+            .nfFocusRoute(right = rightFocusRequester)
+            .focusRequester(focusRequester)
+            .onFocusEvent { if (it.hasFocus) onFocused() }
+            .clickable(interactionSource = interaction, indication = null, onClick = onEnter)
+            .focusable(interactionSource = interaction)
+            .padding(start = 12.dp, end = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (selected) {
+            Box(
+                Modifier
+                    .padding(end = 10.dp)
+                    .size(width = 3.dp, height = 26.dp)
+                    .clip(Radius.Md)
+                    .background(AppColors.Brand)
+            )
+        }
+        Text(
+            label,
+            color = if (focused) Color.White else TvText.Title,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(Modifier.width(10.dp))
+        // 种类小徽章：站点 / 服务器
+        Box(
+            Modifier
+                .clip(Radius.Md)
+                .background(Edge.HairlineStrong)
+                .padding(horizontal = 8.dp, vertical = 3.dp)
+        ) {
+            Text(kind, color = TvText.Meta, style = MaterialTheme.typography.labelMedium)
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            "$count 条",
+            color = TvText.Meta,
+            style = MaterialTheme.typography.labelMedium
+        )
+    }
+}
+
+/**
+ * 右栏：当前线路的影片，常规尺寸的竖版海报网格 —— 顶对齐、不拉伸铺满。
+ * 列数按海报默认宽自适应，滚动位置按线路记账（[ReturnSpot.gridState]），切回来还站在原来那一屏。
+ * 首卡 ↑ 显式还给输入行、← 还给左栏线路行；其余卡片走系统几何寻焦。
+ */
+@Composable
+private fun NfSearchRouteGrid(
+    routeKey: String,
+    items: List<MediaEntity>,
     stand: StandTarget,
     firstFocus: FocusRequester,
     upFocusRequester: FocusRequester,
+    leftFocusRequester: FocusRequester,
+    modifier: Modifier = Modifier,
     onDetail: (Long) -> Unit
 ) {
-    val listState = ReturnSpot.listState("$NfSearchKey/results", precompose = PrecomposeWindow.Tv)
-    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-    // 竖版海报：一屏约 6-7 列，按 5:7 比例算卡片宽
-    val posterWidth: Dp = (screenWidth / 7f).coerceAtLeast(110.dp).coerceAtMost(160.dp)
-    val firstId = groups.firstOrNull()?.routes?.firstOrNull()?.second?.firstOrNull()?.id
+    val rowKey = "route/$routeKey"
+    val gridState = ReturnSpot.gridState("$NfSearchKey/$rowKey", precompose = PrecomposeWindow.Tv)
+    val firstId = items.firstOrNull()?.id
+    // 单卡高度对齐左栏三行线路行（52dp×3 + 行距 6dp×2 ≈ 168dp）：卡片 = 2:3 海报图 + 图下约 24dp 片名行，
+    // 反推卡宽 ≈ 96dp。列数不写死，按右栏实际宽度动态算 —— 屏更宽的电视自然排下更多列
+    val cardWidth = (52.dp * 3 + 6.dp * 2 - 24.dp) / 1.5f
+    val panelWidth = (LocalConfiguration.current.screenWidthDp.dp - TvPagePadding * 2) * 0.6f - 10.dp
+    val columns = ((panelWidth + NfCardGap) / (cardWidth + NfCardGap)).toInt().coerceAtLeast(1)
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = TvPagePadding, end = TvPagePadding,
-            top = 4.dp, bottom = 24.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+    LazyVerticalGrid(
+        state = gridState,
+        columns = GridCells.Fixed(columns),
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(top = NfGridTopPadding, bottom = 24.dp),
+        horizontalArrangement = Arrangement.spacedBy(NfCardGap),
+        verticalArrangement = Arrangement.spacedBy(NfRowVerticalPadding)
     ) {
-        groups.forEachIndexed { sourceIdx, group ->
-            val isFirstSource = sourceIdx == 0
-            val isExpanded = expandedSources[group.key] ?: false
-            val total = group.routes.sumOf { it.second.size }
-
-            // 来源组标题：可聚焦，OK 键切换展开/折叠
-            item(key = "nf_src_header_${group.key}") {
-                NfSourceHeader(
-                    label = group.label,
-                    meta = if (group.isTvBox) "$total 条 · ${group.routes.size} 条线路" else "$total 条",
-                    expanded = isExpanded,
-                    // 第一颗来源表头交回页面持有的那颗锚点：全折叠时结果区只有表头可聚焦，
-                    // 输入框的 ↓ 和进页抢焦都落在这儿，不能留焦点死区（规范 R6）
-                    focusRequester = if (isFirstSource) firstHeaderFocus else remember(group.key) { FocusRequester() },
-                    upFocusRequester = if (isFirstSource) upFocusRequester else null,
-                    onToggle = {
-                        expandedSources[group.key] = !(expandedSources[group.key] ?: false)
-                    }
-                )
-            }
-
-            // 展开后渲染各线路
-            if (isExpanded) {
-                group.routes.forEachIndexed { routeIdx, (routeName, routeItems) ->
-                    val isFirstCardEver = isFirstSource && routeIdx == 0
-                    val siteRowKey = "${group.key}/$routeName"
-                    // Emby 那一组只有一个空线路名的桶：没有线路这一层，来源展开就直接铺海报
-                    val routeExpanded = routeName.isBlank() || (expandedRoutes[siteRowKey] ?: false)
-
-                    if (routeName.isNotBlank()) {
-                        item(key = "nf_site_header_$siteRowKey") {
-                            NfSourceHeader(
-                                label = routeName,
-                                meta = "${routeItems.size} 条",
-                                expanded = routeExpanded,
-                                focusRequester = remember(siteRowKey) { FocusRequester() },
-                                upFocusRequester = null,
-                                indent = true,
-                                onToggle = {
-                                    expandedRoutes[siteRowKey] = !(expandedRoutes[siteRowKey] ?: false)
-                                }
-                            )
-                        }
-                    }
-
-                    // 该线路的海报横排
-                    if (routeExpanded) {
-                        item(key = "nf_site_row_$siteRowKey") {
-                            val rowState = ReturnSpot.listState("$NfSearchKey/$siteRowKey", precompose = PrecomposeWindow.Tv)
-                            LazyRow(
-                                state = rowState,
-                                modifier = Modifier.fillMaxWidth(),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(NfCardGap)
-                            ) {
-                                items(routeItems, key = { "nf_s_${it.id}" }) { mediaItem ->
-                                    val cardFocus = remember(mediaItem.id) { FocusRequester() }
-                                    NfPosterCard(
-                                        item = mediaItem,
-                                        onClick = { onDetail(mediaItem.id) },
-                                        width = posterWidth,
-                                        modifier = Modifier
-                                            .then(
-                                                if (isFirstCardEver && mediaItem.id == firstId)
-                                                    Modifier.nfFocusRoute(up = upFocusRequester)
-                                                else Modifier
-                                            )
-                                            .then(
-                                                ReturnSpot.cardStand(
-                                                    pageKey = NfSearchKey,
-                                                    rowKey = siteRowKey,
-                                                    mediaId = mediaItem.id,
-                                                    target = stand,
-                                                    requester = if (mediaItem.id == firstId) firstFocus else cardFocus
-                                                )
-                                            )
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        gridItemsIndexed(
+            items,
+            key = { _, it -> "nf_rt_${it.id}" },
+            contentType = { _, _ -> "poster" }
+        ) { index, mediaItem ->
+            val ownFocus = remember(mediaItem.id) { FocusRequester() }
+            NfPosterCard(
+                item = mediaItem,
+                onClick = { onDetail(mediaItem.id) },
+                fillCell = true,
+                anchorStart = index % columns == 0,
+                modifier = Modifier
+                    .then(
+                        if (mediaItem.id == firstId)
+                            Modifier.nfFocusRoute(up = upFocusRequester, left = leftFocusRequester)
+                        else Modifier
+                    )
+                    .then(
+                        ReturnSpot.cardStand(
+                            pageKey = NfSearchKey,
+                            rowKey = rowKey,
+                            mediaId = mediaItem.id,
+                            target = stand,
+                            requester = if (mediaItem.id == firstId) firstFocus else ownFocus
+                        )
+                    )
+            )
         }
     }
 }
 
 /**
- * 分组表头行：可聚焦 + OK 键切换展开/折叠，来源层和线路层共用。
- * 来源层是「来源名 · 条数（TVBox 再带线路数）」，线路层是「站点名 · 条数」且整体右移一档表示层级。
+ * 来源组表头：整页唯一可折叠的一层 —— 可聚焦，OK 键切换展开/折叠，组内线路行常显。
  */
 @Composable
 private fun NfSourceHeader(
@@ -736,7 +810,6 @@ private fun NfSourceHeader(
     expanded: Boolean,
     focusRequester: FocusRequester,
     upFocusRequester: FocusRequester?,
-    indent: Boolean = false,
     onToggle: () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -756,7 +829,7 @@ private fun NfSourceHeader(
                 onClick = onToggle
             )
             .focusable(interactionSource = interaction)
-            .padding(start = if (indent) 28.dp else 12.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+            .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -767,8 +840,8 @@ private fun NfSourceHeader(
         )
         Text(
             label,
-            color = if (focused) Color.White else if (indent) TvText.Section else TvText.Title,
-            style = if (indent) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
+            color = if (focused) Color.White else TvText.Title,
+            style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,

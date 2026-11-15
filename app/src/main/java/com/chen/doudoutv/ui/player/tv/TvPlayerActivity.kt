@@ -138,6 +138,9 @@ class TvPlayerActivity : ComponentActivity() {
     /** 本集是否已经为下一集预热过直链：一集最多一次，失败也不重试，不去反复敲源站 */
     private var prefetched = false
 
+    /** 本集是否已经预热过上一集 + 下一集（开播早期）：一集最多一次，切集复位 */
+    private var adjacentPrefetched = false
+
     /**
      * 已做过「死链重试」的分集 id：播放中收到 404/403/412（缓存的签名直链已失效，
      * 典型场景是夸克重新分享/令牌过期）时，丢弃解析缓存强制重新解析并重播一次。
@@ -294,6 +297,7 @@ class TvPlayerActivity : ComponentActivity() {
                     if (p.isPlaying) {
                         saveProgress(force = false)
                         prefetchNextEpisode()
+                        prefetchAdjacentEpisodes()
                     }
                     // 跳过片头：位置进入区间即 seek（本集只跳一次，切集自动复位）。
                     // 挂在 500ms ticker 上，不另开定时器。
@@ -393,28 +397,6 @@ class TvPlayerActivity : ComponentActivity() {
                     val info = FormatProbe.fromTracks(tracks) ?: return
                     val item = current ?: return
                     lifecycleScope0 { repo.savePlaybackFormat(item, info) }
-                }
-
-                /**
-                 * 出画后打一条画面几何证据：杜比视界片源「上下多出遮罩」时，
-                 * 靠这行区分是片源自带黑边（宽银幕）、像素比异常，还是 PlayerView 的适配问题。
-                 */
-                override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
-                    val v = playerView
-                    val surface = v?.videoSurfaceView
-                    val dm = resources.displayMetrics
-                    val format = (player?.currentTracks?.groups?.firstOrNull {
-                        it.type == C.TRACK_TYPE_VIDEO
-                    }?.mediaTrackGroup?.let { g -> if (g.length > 0) g.getFormat(0) else null })
-                    Log.i(
-                        "TvPlayer",
-                        "videoSize=${videoSize.width}x${videoSize.height} par=${videoSize.pixelWidthHeightRatio} " +
-                            "frame=${surface?.width}x${surface?.height} view=${v?.width}x${v?.height} " +
-                            "screen=${dm.widthPixels}x${dm.heightPixels} density=${dm.density} " +
-                            "videoFormat=${format?.width}x${format?.height} " +
-                            "color=${format?.colorInfo?.colorSpace}/${format?.colorInfo?.colorTransfer} " +
-                            "codecs=${format?.codecs}"
-                    )
                 }
 
                 override fun onPlaybackStateChanged(state: Int) {
@@ -591,6 +573,7 @@ class TvPlayerActivity : ComponentActivity() {
         // 这一集还没播完过，闸门打开（否则「从头开始」再播到末尾不会连播下一集）
         endedEpisodeId = 0L
         prefetched = false
+        adjacentPrefetched = false
 
         // 云盘 scheme 地址需要先解析出真实视频 URL + 请求头再喂给播放器
         val gen = ++playGeneration
@@ -632,6 +615,7 @@ class TvPlayerActivity : ComponentActivity() {
             p.prepare()
             if (startMs > 3_000L) p.seekTo(startMs)
             p.setPlaybackSpeed(speed)
+            PlayerFactory.setTunnelingEnabled(p, speed == 1f)
             p.playWhenReady = true
         }
         // Emby 会话从这里挂上（内部等装载完成才报起播）；非 Emby 源起播返回 false 直接退出
@@ -920,6 +904,31 @@ class TvPlayerActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 开播早期把上一集 + 下一集都预解析进缓存（对齐 FongMi 的切集预热）：
+     * 手动按上/下集时命中进程级缓存直接起播，不再现等「刷分享令牌 + 问 spider 要直链」那 ~20s。
+     *
+     * 直链带签名、有时效，缓存窗口（[com.chen.doudoutv.data.MediaRepository] 的 3 分钟）内切集才命中；
+     * 窗口外切集回退到正常解析、临近片尾由 [prefetchNextEpisode] 再热一次，过期由死链重试兜底，不会更慢。
+     * 起播 3 秒后才跑、一集只跑一次：避免和当前集的首帧缓冲抢网络，也不反复敲源站。
+     */
+    private fun prefetchAdjacentEpisodes() {
+        if (adjacentPrefetched) return
+        val p = player ?: return
+        if (p.currentPosition < 3_000L) return
+        adjacentPrefetched = true
+        val idx = currentEpisodeIndex()
+        if (idx < 0) return
+        val neighbors = listOfNotNull(episodes.getOrNull(idx - 1), episodes.getOrNull(idx + 1))
+        if (neighbors.isEmpty()) return
+        workScope.launch(Dispatchers.IO) {
+            for (ep in neighbors) {
+                runCatching { repo.resolveTvBoxPlayUrl(ep) }
+                    .onFailure { Log.w("TvPlayer", "相邻集预热失败 mediaId=${ep.id}：${it.message}") }
+            }
+        }
+    }
+
     /** 把选集窗口挪到当前集居中；整表不足一窗时贴左 */
     private fun centerEpisodeWindow() {
         val idx = currentEpisodeIndex()
@@ -965,6 +974,8 @@ class TvPlayerActivity : ComponentActivity() {
     private fun cycleSpeed(value: Float) {
         speed = value
         player?.setPlaybackSpeed(value)
+        // 倍速与 tunnel 互斥：非 1x 关直通保住变速，回 1x 再开（治 HDR10 偏灰+掉帧）
+        PlayerFactory.setTunnelingEnabled(player, value == 1f)
         toast = "倍速 ${fmtSpeed(value)}"
         tick++
     }
