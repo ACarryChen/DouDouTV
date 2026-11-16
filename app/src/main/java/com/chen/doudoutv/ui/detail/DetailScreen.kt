@@ -82,6 +82,7 @@ import com.chen.doudoutv.ui.components.ButtonMaterial
 import com.chen.doudoutv.ui.components.EpisodeStill
 import com.chen.doudoutv.ui.components.FormatBadgesRow
 import com.chen.doudoutv.ui.components.GlassBarClearance
+import com.chen.doudoutv.ui.components.badgeInfoFor
 import com.chen.doudoutv.ui.components.matchEpisodeInSource
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.Radius
@@ -258,6 +259,10 @@ fun DetailScreen(
                         }
                         null -> Unit
                     }
+                } else if (isEmbySource) {
+                    // 库里已有分集：分集行的画质字段是空的，徽章只能靠媒体流缓存（进程内内存），
+                    // 进程重建后缓存是空的 → 徽章只剩 TMDB。后台非阻塞补一次详情把缓存填上。
+                    vm.ensureEmbyMediaInfoBackground(m.sourceId, m.remoteId, m.seriesKey)
                 }
 
                 // TVBox：读取全部播放源（云盘/线路），默认选第一条；按选中源过滤分集。
@@ -273,6 +278,10 @@ fun DetailScreen(
 
                 episodes = eps
                 selectedSeason = eps.firstOrNull()?.season ?: 1
+            } else if (isEmbySource) {
+                // 电影没有分集拉取这条路，媒体流缓存不会被顺带写上 → 音轨徽章永远缺一块。
+                // 非阻塞补拉一次单条媒体流信息写进缓存（与电视端同口径）。
+                vm.ensureEmbyItemInfoBackground(m.sourceId, m.remoteId)
             }
 
             // 演员/更新备注是这次才入库的列，老条目里是空串（而分集守卫又让它们没机会重拉）。
@@ -327,6 +336,26 @@ fun DetailScreen(
     val visibleEpisodes = remember(episodes, selectedSeason) {
         if (seasons.size <= 1) episodes else episodes.filter { it.season == selectedSeason }
     }
+
+    /**
+     * 徽章取值：电影取该电影那个文件，剧集取当前季第一集那个文件。
+     *
+     * 剧集页上的当前条目是剧集壳，壳行没有画质字段 —— 直接用壳，徽章行会整行取空，
+     * 画质徽章连同「共 N 集」一起消失。取值规则见 [badgeInfoFor]。
+     */
+    val badgeSource = if (media?.kind == MediaKind.SERIES) {
+        visibleEpisodes.firstOrNull()
+    } else media
+    // 媒体流缓存是普通对象、不是 Compose 状态：后台补填好不会自动重组，订阅这个 tick
+    vm.embyMediaInfoTick
+    val badgeMediaInfo = badgeSource?.let { vm.embyMediaInfoOf(it.remoteId) }
+    val badgeInfo = badgeInfoFor(
+        isEmbySource = isEmbySource,
+        item = media,
+        badgeSource = badgeSource,
+        scraped = scraped,
+        mediaInfo = badgeMediaInfo
+    )
 
     /**
      * 手机端分集分页：一部剧几十上百集时一次性铺出来，手机上要滑很久才够到最后一集。
@@ -548,10 +577,10 @@ fun DetailScreen(
                             // 有数据才显示，什么都没有就自然留出空行不占位
                             FormatBadgesRow(
                                 tmdbEnabled = tmdb != null,
-                                resolution = scraped?.videoResolution.orEmpty().ifBlank { item.videoResolution },
-                                hdr = scraped?.hdrType.orEmpty().ifBlank { item.hdrType },
-                                codec = scraped?.videoCodec.orEmpty().ifBlank { item.videoCodec },
-                                audio = item.audioType
+                                resolution = badgeInfo.resolution,
+                                hdr = badgeInfo.hdr,
+                                codec = badgeInfo.codec,
+                                audio = badgeInfo.audio
                             )
                         }
                     }

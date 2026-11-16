@@ -567,6 +567,18 @@ class EmbyClient(
             }
         }
 
+        // 条目级宽高兜底：与媒体流解析同一口径
+        if (videoResolution.isBlank()) {
+            val itemHeight = json.optInt("Height", 0)
+            if (itemHeight > 0) {
+                videoResolution = when {
+                    itemHeight >= 2160 -> "4K"
+                    itemHeight >= 1080 -> "1080p"
+                    itemHeight >= 720 -> "720p"
+                    else -> "${itemHeight}p"
+                }
+            }
+        }
         ItemDetail(
             tagline, officialRating, studios,
             directors.take(3), actors.take(12),
@@ -939,6 +951,20 @@ class EmbyClient(
             }
         }
 
+        // 条目级宽高兜底：有些条目 Emby 不给 MediaStreams，但顶层仍带 Width/Height
+        if (height <= 0) {
+            val itemHeight = o.optInt("Height", 0)
+            if (itemHeight > 0) {
+                height = itemHeight
+                width = o.optInt("Width", 0)
+                resolution = when {
+                    itemHeight >= 2160 -> "4K"
+                    itemHeight >= 1080 -> "1080p"
+                    itemHeight >= 720 -> "720p"
+                    else -> "${itemHeight}p"
+                }
+            }
+        }
         return MediaInfo(
             container = source?.optString("Container").orEmpty().uppercase(),
             sizeBytes = source?.optLong("Size", 0L)?.takeIf { it > 0 } ?: o.optLong("Size", 0L),

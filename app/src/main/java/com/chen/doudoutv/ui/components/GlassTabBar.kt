@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,13 +42,8 @@ import com.chen.doudoutv.ui.theme.AppColors
 /** 玻璃底栏的一格：图标 + 文字 */
 data class GlassTabItem(val label: String, val icon: ImageVector)
 
-/**
- * 玻璃底栏压在内容上的高度（条高 50dp + 离底留白 16dp）。
- *
- * 底栏是浮在内容之上的，所以页面自己的滚动容器必须留出这么一段底部内边距，
- * 最后一行才能滚到栏顶上边去，而不是永远压在玻璃条底下。
- */
-val GlassBarClearance: Dp = 66.dp
+// 滚动内容需避让底栏高度 50dp 与底部留白 24dp。
+val GlassBarClearance: Dp = 74.dp
 
 /** 记一个坐标：绘制时现读，不进重组 */
 private class MutableOffset {
@@ -105,12 +101,122 @@ fun Modifier.glassBackdropCapture(
 }
 
 /**
+ * 一块玻璃面板：底栏和独立的玻璃按钮共用这一套材质。
+ *
+ * 材质分层（自下而上）：
+ *   ① 栏脚下方的内容，离屏录下来模糊后垫底 —— Android 没有系统级 backdrop blur，
+ *     Modifier.blur 模糊的是节点自己，看不见下层，所以只能自己录一份再取；
+ *   ② 暗底 20%（压不下去，压暗就变成一块黑玻璃）；
+ *   ③ 磨砂白 9% —— 磨砂是往上调的；
+ *   ④ 斜向镜面扫光 + 顶边高光描边。
+ */
+@Composable
+private fun GlassSurface(
+    shape: RoundedCornerShape,
+    backdrop: GlassBackdrop?,
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit
+) {
+    // Modifier.blur 只在 Android 12（API 31）以上真正生效，低版本上它是个空操作：
+    // 那时会把底下的内容原样（不模糊）切一块出来贴在栏里，比不透明底还难看，
+    // 所以低版本直接退回半透明底色。
+    val blurUsable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+
+    // 面板自己在根坐标里的位置：抓取层按这个差值平移，才对得上面板脚下的内容
+    val selfRoot = remember { MutableOffset() }
+
+    Box(
+        modifier
+            .onGloballyPositioned { selfRoot.value = it.positionInRoot() }
+            .clip(shape)
+    ) {
+        // ① 面板脚下的内容：抓来模糊后垫底。抓不到（或系统不支持模糊）就退回半透明底色
+        if (backdrop != null && blurUsable) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .blur(10.dp)
+                    .drawBehind {
+                        val dx = backdrop.originInRoot.x - selfRoot.value.x
+                        val dy = backdrop.originInRoot.y + backdrop.stripTop - selfRoot.value.y
+                        translate(dx, dy) { drawLayer(backdrop.layer) }
+                    }
+            )
+        } else {
+            Box(Modifier.fillMaxSize().background(Color(0xFF161618).copy(alpha = 0.62f)))
+        }
+
+        // ② 暗底只留薄薄一层，再叠一层磨砂白把玻璃「提亮」
+        Box(Modifier.fillMaxSize().background(Color(0xFF0B0B0D).copy(alpha = 0.20f)))
+        Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = 0.09f)))
+
+        // ③ 斜向扫光 + ④ 顶边高光
+        Box(Modifier.fillMaxSize().glassSweep())
+        Box(
+            Modifier.fillMaxSize().border(
+                1.dp,
+                Brush.verticalGradient(
+                    listOf(Color.White.copy(alpha = 0.30f), Color.White.copy(alpha = 0.06f))
+                ),
+                shape
+            )
+        )
+
+        content()
+    }
+}
+
+/**
+ * 玻璃图标按钮：和底栏同一块材质，只是换成独立的一小块（圆角方块）。
+ *
+ * 单独用是因为它不属于「标签栏」：底栏切的是页面，这个按钮是动作。
+ */
+@Composable
+fun GlassIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    /** 页面背景抓取器；传 null 就退回半透明底色（没有模糊） */
+    backdrop: GlassBackdrop? = null,
+    modifier: Modifier = Modifier,
+    selected: Boolean = false,
+    iconSize: Dp = 19.dp
+) {
+    val brand = AppColors.Brand
+    val brandSoft = AppColors.BrandSoft
+    GlassSurface(
+        shape = RoundedCornerShape(17.dp),
+        backdrop = backdrop,
+        modifier = modifier
+            .size(50.dp)
+            .clickable(interactionSource = null, indication = null) { onClick() }
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (selected) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(brand.copy(alpha = 0.14f))
+                )
+            }
+            Icon(
+                icon,
+                contentDescription = contentDescription,
+                // 未选中用白（半透），选中用主题色 —— 与底栏完全一致
+                tint = if (selected) brandSoft else Color.White.copy(alpha = 0.78f),
+                modifier = Modifier.size(if (selected) 22.dp else iconSize)
+            )
+        }
+    }
+}
+
+/**
  * 手机端底部标签栏：悬浮在屏幕上方的一条液态玻璃横条。
  *
  * 原来是 Material 的 [androidx.compose.material3.NavigationBar]：通栏、实色、贴死底边，
  * 52dp 实打实切掉屏幕底部一条，页面看着像被盖了块玻璃砖。
  * 现在改成「浮起来 + 真透出下面的内容」：
- *   · 高度 50dp、离底 16dp（再让开系统手势条），整条只有原来通栏导航条的一半高；
+ *   · 高度 50dp、离底 24dp（再让开系统手势条），整条只有原来通栏导航条的一半高；
  *   · 底色不是一块黑玻璃，而是把页面底部那条离屏录下来、模糊后垫在栏底下 ——
  *     透过栏能看见下面滚动的内容（糊的），不是一片死黑；
  *   · 磨砂是往上调的：暗底只留 20%，再叠一层磨砂白提亮，
@@ -140,54 +246,11 @@ fun GlassTabBar(
     val barShape = RoundedCornerShape(17.dp)
     val cellShape = RoundedCornerShape(13.dp)
 
-    // Modifier.blur 只在 Android 12（API 31）以上真正生效，低版本上它是个空操作：
-    // 那时会把底下的内容原样（不模糊）切一块出来贴在栏里，比不透明底还难看，
-    // 所以低版本直接退回半透明底色。
-    val blurUsable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-
-    // 底栏自己在根坐标里的位置：抓取层按这个差值平移，才对得上栏脚下的内容
-    val selfRoot = remember { MutableOffset() }
-
-    Box(
-        modifier
-            .height(50.dp)
-            .onGloballyPositioned { selfRoot.value = it.positionInRoot() }
-            .clip(barShape)
+    GlassSurface(
+        shape = barShape,
+        backdrop = backdrop,
+        modifier = modifier.height(50.dp)
     ) {
-        // ① 栏脚下的内容：抓来模糊后垫底。抓不到（或系统不支持模糊）就退回半透明底色
-        if (backdrop != null && blurUsable) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .blur(10.dp)
-                    .drawBehind {
-                        val dx = backdrop.originInRoot.x - selfRoot.value.x
-                        val dy = backdrop.originInRoot.y + backdrop.stripTop - selfRoot.value.y
-                        translate(dx, dy) { drawLayer(backdrop.layer) }
-                    }
-            )
-        } else {
-            Box(Modifier.fillMaxSize().background(Color(0xFF161618).copy(alpha = 0.62f)))
-        }
-
-        // ② 玻璃底色：暗底只留薄薄一层（原来 34% 黑，压得下面什么都看不见，
-        // 整条读起来还是一块黑玻璃），再叠一层磨砂白把玻璃「提亮」——
-        // 磨砂玻璃是往上调的，不是往下压的。
-        Box(Modifier.fillMaxSize().background(Color(0xFF0B0B0D).copy(alpha = 0.20f)))
-        Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = 0.09f)))
-
-        // ③ 斜向扫光 + ④ 顶边高光
-        Box(Modifier.fillMaxSize().glassSweep())
-        Box(
-            Modifier.fillMaxSize().border(
-                1.dp,
-                Brush.verticalGradient(
-                    listOf(Color.White.copy(alpha = 0.30f), Color.White.copy(alpha = 0.06f))
-                ),
-                barShape
-            )
-        )
-
         // ⑤ 三格
         Row(
             Modifier.fillMaxSize().padding(horizontal = 4.dp),

@@ -592,32 +592,41 @@ class MediaRepository(private val context: Context) {
     }
 
     /**
-     * 播放期把 Media3 读到的真实画质回写到剧集壳（方案C 的校正一步）。
+     * 播放期把 Media3 读到的真实画质回写进库（方案C 的校正一步）。
      *
-     * 只对 TVBox 生效：Emby 的画质来自 MediaSources 接口，本来就是真值，别让播放器覆盖。
-     * 新值为空时保留库里的旧值（轨道里没有的信息不该被抹掉）。
+     * · TVBox：回写剧集壳行 —— 分集共用一条，徽章取分集行时靠壳行兜底。
+     * · Emby：回写被播的那一行，剧集再回写壳行。Emby 的 .strm 直链条目服务端不做
+     *   媒体探测（MediaSources 里没有流信息），画质只能从码流读，不写回来详情页永远空。
+     *
+     * 服务端已有真值时不会被覆盖：新值只填空位（DAO 层用 CASE WHEN 保证）。
      */
     suspend fun savePlaybackFormat(item: MediaEntity, info: FormatProbe.Info) = withContext(Dispatchers.IO) {
         if (info.isEmpty) return@withContext
         val source = sourceDao.get(item.sourceId) ?: return@withContext
-        if (source.kind != SourceKind.TVBOX) return@withContext
+        if (source.kind != SourceKind.TVBOX && source.kind != SourceKind.EMBY) return@withContext
 
-        val target = if (item.kind == MediaKind.EPISODE) mediaDao.shellOf(item.seriesKey) else item
-        if (target == null) return@withContext
-        val merged = target.copy(
-            videoResolution = info.resolution.ifBlank { target.videoResolution },
-            hdrType = info.hdr.ifBlank { target.hdrType },
-            videoCodec = info.codec.ifBlank { target.videoCodec },
-            audioType = info.audio.ifBlank { target.audioType }
-        )
-        if (merged == target) return@withContext
-        mediaDao.update(merged)
-        // W 级：电视 ROM 吞 D 级日志，画质回写是排障时要核对的事实
-        Log.w(
-            "FormatProbe",
-            "画质回写 ${target.title}：${merged.videoResolution}/${merged.hdrType}/" +
-                "${merged.videoCodec}/${merged.audioType}"
-        )
+        val targets = ArrayList<MediaEntity>(2)
+        if (source.kind == SourceKind.TVBOX) {
+            if (item.kind == MediaKind.EPISODE) {
+                mediaDao.shellOf(item.seriesKey)?.let { targets += it }
+            } else {
+                targets += item
+            }
+        } else {
+            targets += item
+            if (item.kind == MediaKind.EPISODE) {
+                mediaDao.shellOf(item.seriesKey)?.let { targets += it }
+            }
+        }
+        for (target in targets) {
+            mediaDao.saveFormat(target.id, info.resolution, info.hdr, info.codec, info.audio)
+            // W 级：电视 ROM 吞 D 级日志，画质回写是排障时要核对的事实
+            Log.w(
+                "FormatProbe",
+                "画质回写 ${target.title}：${info.resolution}/${info.hdr}/" +
+                    "${info.codec}/${info.audio}"
+            )
+        }
     }
 
     // ---------------- 首页分类 / 浏览页 ----------------

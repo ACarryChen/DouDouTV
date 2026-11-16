@@ -116,7 +116,6 @@ import kotlinx.coroutines.launch
 fun HomeScreen(
     vm: LibraryViewModel,
     isTv: Boolean,
-    onOpenSearch: () -> Unit,
     onOpenDetail: (Long) -> Unit,
     onOpenGenre: (kind: String?, genre: String?, library: String?) -> Unit,
     onOpenCategory: (typeId: String, typeName: String) -> Unit,
@@ -374,7 +373,7 @@ fun HomeScreen(
                 )
             }
 
-            // 来源/线路图标按钮（搜索按钮左侧）＋ 选了 TVBox 源后动态追加的线路按钮
+            // 来源/线路图标按钮 ＋ 选了 TVBox 源后动态追加的线路按钮
             // 工具栏统一 40dp 见方的按钮：48dp 时图标之间视觉间隔有 24~29dp，看着像散开在两角
             if (sources.isNotEmpty()) {
                 HomeSourceSelector(
@@ -391,10 +390,7 @@ fun HomeScreen(
                 }
             }
 
-            // 右侧：搜索/刷新工具栏，常驻不淡出
-            IconButton(onClick = onOpenSearch, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Filled.Search, contentDescription = "搜索", tint = Color.White)
-            }
+            // 右侧：刷新按钮（搜索入口已经移到底部导航栏右侧那块玻璃按钮上）
             // 刷新按钮：同步中就地禁用并转圈（不换成别的指示器，按钮位置不跳）
             IconButton(
                 onClick = { vm.refreshHome() },
@@ -1197,6 +1193,14 @@ class SearchUiState {
     /** 热门榜缓存版本，刷新后自增以触发联想重查 */
     var hotEpoch by mutableStateOf(0)
 
+    /**
+     * 输入框焦点请求：由导航层的搜索按钮置位，页面消费后自己清掉。
+     *
+     * 用「置位/消费」而不是每次都自动聚焦：从详情页返回搜索页时页面会整个重建，
+     * 无脑聚焦就等于每退一次详情都把输入法弹回来盖住结果列表。
+     */
+    var pendingFocus by mutableStateOf(false)
+
     fun clear() {
         query = ""
         results = emptyList()
@@ -1205,6 +1209,7 @@ class SearchUiState {
         suggestions = emptyList()
         submittedKeyword = ""
         searchedKeyword = ""
+        pendingFocus = false
     }
 }
 
@@ -1327,13 +1332,15 @@ fun SearchScreen(
         state.searching = false
     }
 
-    // 进页自动聚焦输入框 —— 但只在「还没搜过」的时候聚焦。
-    // 从详情页返回时这一页会整个重建（搜索状态挂在导航层，所以结果还在），
-    // 无脑 requestFocus 就等于每退一次详情都把输入法弹回来盖住列表。
-    LaunchedEffect(Unit) {
-        if (state.query.isBlank() && state.submittedKeyword.isBlank()) {
-            runCatching { inputFocus.requestFocus() }
-        }
+    // 点搜索按钮进来：把焦点交给输入框，键盘跟着起来，用户直接能打字。
+    // 延一小会儿再要焦点 —— 转场没走完时输入框还没真正接上焦点，requestFocus 会落空。
+    LaunchedEffect(state.pendingFocus) {
+        if (!state.pendingFocus) return@LaunchedEffect
+        delay(160)
+        runCatching { inputFocus.requestFocus() }
+        keyboardController?.show()
+        // 消费掉：从详情页返回时页面重建也不会再抢焦点弹键盘
+        state.pendingFocus = false
     }
 
     val hSpacing = if (isTv) 14.dp else 9.dp

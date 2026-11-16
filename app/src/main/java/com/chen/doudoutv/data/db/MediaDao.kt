@@ -172,6 +172,28 @@ interface MediaDao {
     @Query("UPDATE media SET positionMs = :position, lastPlayedAt = :ts WHERE id = :id")
     suspend fun saveProgress(id: Long, position: Long, ts: Long)
 
+    /**
+     * 只写画质四列：分辨率 / HDR / 编码 / 音轨。
+     *
+     * 空值不覆盖：传空串就保留原来的值（轨道里没有的信息不该被抹掉）。
+     * 只动这四列，不整行回写 —— 整行 update 会把同时写入的进度/收藏用旧快照盖掉。
+     */
+    @Query(
+        "UPDATE media SET " +
+            "videoResolution = CASE WHEN :resolution = '' THEN videoResolution ELSE :resolution END, " +
+            "hdrType = CASE WHEN :hdr = '' THEN hdrType ELSE :hdr END, " +
+            "videoCodec = CASE WHEN :codec = '' THEN videoCodec ELSE :codec END, " +
+            "audioType = CASE WHEN :audio = '' THEN audioType ELSE :audio END " +
+            "WHERE id = :id"
+    )
+    suspend fun saveFormat(
+        id: Long,
+        resolution: String,
+        hdr: String,
+        codec: String,
+        audio: String
+    )
+
     @Query("UPDATE media SET favorite = :favorite WHERE id = :id")
     suspend fun setFavorite(id: Long, favorite: Boolean)
 

@@ -22,15 +22,15 @@ import com.chen.doudoutv.R
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.Radius
 
+// 品牌色统一取自 BadgeColors.Tmdb。此前本文件私有一份 TmdbBlue = Color(0xFF01B4E4)，
+// 而 FormatBadges 里又写了一次同样的字面量 —— 同一个品牌蓝两个来源，改一处漏一处。
+
 /**
  * TMDB 品牌与署名组件。
  *
  * 用于标注数据来自 TMDB，把图文组合抽成可复用组件，
  * 详情页与设置页共用，避免两处样式写岔。
  */
-
-/** TMDB 品牌色 */
-private val TmdbBlue = Color(0xFF01B4E4)
 
 /**
  * TMDB 标识徽章：品牌蓝底 + 胶片图标 + "TMDB" 文字。
@@ -41,7 +41,7 @@ fun TmdbLogoBadge(modifier: Modifier = Modifier, compact: Boolean = false) {
     Row(
         modifier = modifier
             .clip(Radius.Sm)
-            .background(TmdbBlue)
+            .background(BadgeColors.Tmdb)
             .padding(
                 horizontal = if (compact) 6.dp else 8.dp,
                 vertical = if (compact) 2.dp else 4.dp

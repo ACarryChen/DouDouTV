@@ -8,13 +8,16 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.Scaffold
@@ -35,6 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.chen.doudoutv.data.model.MediaEntity
 import com.chen.doudoutv.ui.LibraryViewModel
+import com.chen.doudoutv.ui.components.GlassIconButton
 import com.chen.doudoutv.ui.components.GlassTabBar
 import com.chen.doudoutv.ui.components.GlassTabItem
 import com.chen.doudoutv.ui.components.SyncProgressBar
@@ -126,10 +130,13 @@ fun PhoneApp(vm: LibraryViewModel) {
         is PhoneRoute.Settings -> PhoneTab.SETTINGS
     }
 
+    // 搜索页是盖在底栏之上的独立动作：选中态归搜索按钮，底栏不亮任何一格
+    val onSearch = navStack.last() is PhoneRoute.Search
+
     Scaffold(
         snackbarHost = {
             // 玻璃底栏浮在内容之上，提示条默认贴在内容区底部会被它压住，额外让开一段
-            SnackbarHost(snackbarHost, Modifier.padding(bottom = 84.dp))
+            SnackbarHost(snackbarHost, Modifier.padding(bottom = 92.dp))
         },
         containerColor = AppColors.Bg
     ) { padding ->
@@ -171,7 +178,6 @@ fun PhoneApp(vm: LibraryViewModel) {
                             is PhoneRoute.Home -> HomeScreen(
                                 vm = vm,
                                 isTv = false,
-                                onOpenSearch = { push(PhoneRoute.Search) },
                                 onOpenDetail = { id -> push(PhoneRoute.Detail(id)) },
                                 onOpenGenre = { kind, genre, library -> push(PhoneRoute.Genre(kind, genre, library)) },
                                 onOpenCategory = { tid, tname -> push(PhoneRoute.Category(tid, tname)) },
@@ -236,21 +242,39 @@ fun PhoneApp(vm: LibraryViewModel) {
                 }
             }
 
-            // 悬浮玻璃条：离底 16dp（再让开系统手势条），宽度收到 300dp 以内让左右流出空间。
-            // 内容是从它底下穿过去的（页面自己留了 GlassBarClearance 的底部内边距），
-            // 所以这条玻璃能看到下面滚过去的内容。
-            GlassTabBar(
-                items = PhoneTab.entries.map { GlassTabItem(it.label, it.icon) },
-                selectedIndex = PhoneTab.entries.indexOf(currentTab),
-                onSelect = { resetTo(PhoneTab.entries[it].route()) },
-                backdrop = backdrop,
+            Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(vertical = 16.dp)
-                    .widthIn(max = 300.dp)
+                    .padding(top = 16.dp, bottom = 24.dp)
                     .padding(horizontal = 12.dp)
-            )
+                    .widthIn(max = 300.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                GlassTabBar(
+                    items = PhoneTab.entries.map { GlassTabItem(it.label, it.icon) },
+                    // 搜索页不属于任何一格 tab：高亮让给右侧的搜索按钮，底栏整条不选中
+                    selectedIndex = if (onSearch) -1 else PhoneTab.entries.indexOf(currentTab),
+                    onSelect = { resetTo(PhoneTab.entries[it].route()) },
+                    backdrop = backdrop,
+                    modifier = Modifier.weight(1f)
+                )
+                GlassIconButton(
+                    icon = Icons.Filled.Search,
+                    contentDescription = "搜索",
+                    // 已经在搜索页就别再压一层同样的页面
+                    onClick = {
+                        if (!onSearch) {
+                            // 进去就把焦点交给输入框，用户直接能打字
+                            searchState.pendingFocus = true
+                            push(PhoneRoute.Search)
+                        }
+                    },
+                    backdrop = backdrop,
+                    selected = onSearch
+                )
+            }
         }
     }
 }
