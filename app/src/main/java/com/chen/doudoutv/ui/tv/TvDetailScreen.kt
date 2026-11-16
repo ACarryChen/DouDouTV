@@ -381,6 +381,10 @@ fun TvDetailScreen(
                     // 库里已有分集：不阻塞重拉（保返回秒开）。但进程重建后媒体流缓存可能为空、
                     // 主演下方的影片信息面板会消失，后台非阻塞补一次详情把缓存填上。
                     vm.ensureEmbyMediaInfoBackground(m.sourceId, m.remoteId, m.seriesKey)
+                } else {
+                    // 电影没有分集拉取这条路，媒体流缓存永远不会被顺带写 —— 单独非阻塞补拉一次，
+                    // 否则主演下方的信息面板永远取不到缓存、不显示
+                    vm.ensureEmbyItemInfoBackground(m.sourceId, m.remoteId)
                 }
             } else if (src?.kind == SourceKind.TVBOX && m.kind == MediaKind.SERIES &&
                 vm.episodesOf(m.seriesKey).isEmpty()
@@ -679,10 +683,12 @@ fun TvDetailScreen(
     }
     /** 焦点停在货架哪一集：下方视频信息面板跟着它走；离开货架保留最后一集 */
     var focusedEpId by remember(mediaId) { mutableStateOf(0L) }
-    // 面板跟焦：优先焦点所在集，其次接址那一集，最后本页首集
+    // 面板跟焦：优先焦点所在集，其次接址那一集，最后本页首集；
+    // Emby 电影没有分集，壳行本身就是可播实体，影片信息挂在它上面
     val infoEpisode = pagedEpisodes.firstOrNull { it.id == focusedEpId }
         ?: pagedEpisodes.firstOrNull { it.id == recallEpisodeId }
         ?: pagedEpisodes.firstOrNull()
+        ?: media?.takeIf { isEmbySource && it.kind != MediaKind.SERIES }
     // 订阅后台补填信号：缓存填好递增 tick → 本屏重组 → 下面重读缓存，面板随即出现
     vm.embyMediaInfoTick
     val episodeMediaInfo = if (isEmbySource) infoEpisode?.let { vm.embyMediaInfoOf(it.remoteId) } else null

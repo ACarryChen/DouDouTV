@@ -401,6 +401,21 @@ class EmbyClient(
     }
 
     /**
+     * 单个条目的媒体流信息：电影不走分集列表（fetchEpisodes）那条路，
+     * 详情页主演下方的信息面板只能这样单条问一次 MediaSources,MediaStreams。
+     */
+    suspend fun fetchItemMediaInfo(itemId: String): MediaInfo? = withContext(Dispatchers.IO) {
+        val uid = currentUserId() ?: return@withContext null
+        val json = runCatching {
+            getJson(
+                "/Users/$uid/Items/$itemId",
+                mapOf("Fields" to "MediaSources,MediaStreams")
+            )
+        }.getOrNull() ?: return@withContext null
+        parseMediaInfo(json)
+    }
+
+    /**
      * 全库题材清单：直接问服务端 /Genres，而不是从已入库条目里按频次统计。
      * 后者样本有限又取前 N，冷门题材永远挤不进、换库也是那几个高频词；服务端清单跟库内容相关且完整。
      */

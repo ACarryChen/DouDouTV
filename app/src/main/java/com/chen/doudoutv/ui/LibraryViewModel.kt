@@ -1163,6 +1163,22 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 电影不走分集拉取，媒体流缓存从来没被顺带写过 —— 主演下方的信息面板取不到数。
+     * 非阻塞补拉一次单条媒体流信息写进缓存；每个 remoteId 一个进程只试一次。
+     */
+    fun ensureEmbyItemInfoBackground(sourceId: Long, remoteId: String) {
+        if (EmbyMediaCache.get(remoteId) != null) return
+        if (!embyMediaInfoTried.add(remoteId)) return
+        viewModelScope.launch {
+            if (runCatching { repo.loadEmbyItemMediaInfo(sourceId, remoteId) }.getOrDefault(false)) {
+                embyMediaInfoTick++
+            } else {
+                embyMediaInfoTried.remove(remoteId)
+            }
+        }
+    }
+
     /** 分集行所属的剧集壳：详情页把「继续观看」的分集记录换成整部剧来展示 */
     suspend fun shellOf(seriesKey: String): MediaEntity? = repo.shellOf(seriesKey)
 

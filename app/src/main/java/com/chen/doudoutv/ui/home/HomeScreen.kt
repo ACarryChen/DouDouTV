@@ -200,30 +200,14 @@ fun HomeScreen(
             // 轮播区常驻：没有可推荐内容时用同高度占位，避免首页在「加载中 / 空库」之间跳版。
             item {
                 if (heroItems.isNotEmpty()) {
-                    // 海报底边收到纯 Bg，接缝隐形靠一条色带；但 4998d3c 换主题光晕背景后，
-                    // 天光只铺到 0.40 屏高、全被轮播盖住，带子尾端露出的还是纯黑 —— 过渡等于没了。
-                    // 改成品牌色过渡带：顶边实心 Bg 接海报，中段透出当前主题的品牌色
-                    // （找回接主题色之前那条 Brand→Bg 顶部渐变的观感），底边减 alpha 归零接回页面背景。
-                    Column {
-                        HeroBanner(
-                            items = heroItems,
-                            isTv = isTv,
-                            onOpen = { onOpenDetail(it.id) },
-                            onPlay = { onPlay(it) }
-                        )
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(if (isTv) 120.dp else 96.dp)
-                                .background(
-                                    Brush.verticalGradient(
-                                        0f to AppColors.Bg,
-                                        0.35f to AppColors.Brand.copy(alpha = 0.10f),
-                                        1f to AppColors.Brand.copy(alpha = 0f)
-                                    )
-                                )
-                        )
-                    }
+                    // 过渡不再单独占一行：减淡带由 HeroBanner 内部悬出下边界绘制，
+                    // 海报和「继续观看」之间只剩区块本身的留白
+                    HeroBanner(
+                        items = heroItems,
+                        isTv = isTv,
+                        onOpen = { onOpenDetail(it.id) },
+                        onPlay = { onPlay(it) }
+                    )
                 } else {
                     HeroEmpty(
                         vm = vm,

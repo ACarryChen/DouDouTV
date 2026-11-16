@@ -662,6 +662,20 @@ class MediaRepository(private val context: Context) {
             }
         }
 
+    /** 拉单条 Emby 条目的媒体流信息写内存缓存：电影没有分集拉取，详情面板要这个单独入口 */
+    suspend fun loadEmbyItemMediaInfo(sourceId: Long, remoteId: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val src = sourceDao.get(sourceId) ?: return@withContext false
+            if (src.kind != SourceKind.EMBY || src.token.isBlank()) return@withContext false
+            val itemId = remoteId.removePrefix("emby:${src.id}:")
+            if (itemId.isBlank() || ':' in itemId) return@withContext false
+            val info = runCatching {
+                EmbyClient(src.location, src.token, src.userId).fetchItemMediaInfo(itemId)
+            }.getOrNull() ?: return@withContext false
+            EmbyMediaCache.putAll(mapOf(remoteId to info))
+            true
+        }
+
     /** Emby 全库题材清单：直接问服务端 /Genres，仅 Emby 源可用；失败回退空列表（上层再退本地聚合） */
     suspend fun embyGenres(source: SourceEntity): List<String> = withContext(Dispatchers.IO) {
         if (source.kind != SourceKind.EMBY || source.token.isBlank()) return@withContext emptyList()
