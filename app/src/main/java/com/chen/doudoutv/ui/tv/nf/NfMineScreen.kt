@@ -244,7 +244,8 @@ private fun NfFavoriteGrid(
                 NfGroupHead(group, isFirstGroup = group === groups.first())
             }
             gridItemsIndexed(group.items, key = { _, it -> "nf_mine_${it.id}" }) { index, item ->
-                val cardFocus = remember(item.id) { FocusRequester() }
+                val ownFocus = remember(item.id) { FocusRequester() }
+                val cardFocus = if (item.id == firstItemId) firstFocus else ownFocus
                 NfPosterCard(
                     item = item,
                     onClick = { onOpen(group, item, cardFocus) },
@@ -264,7 +265,7 @@ private fun NfFavoriteGrid(
                                 rowKey = "grid_${group.key}",
                                 mediaId = item.id,
                                 target = stand,
-                                requester = if (item.id == firstItemId) firstFocus else cardFocus
+                                requester = cardFocus
                             )
                         )
                 )

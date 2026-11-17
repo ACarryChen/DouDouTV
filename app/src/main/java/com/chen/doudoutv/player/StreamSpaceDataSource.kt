@@ -1,9 +1,10 @@
 package com.chen.doudoutv.player
 
 import android.net.Uri
-import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.C
+import androidx.media3.common.PriorityTaskManager
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DataSource
@@ -85,11 +86,6 @@ internal class StreamSpaceProbe(
                 ?: PlaybackNormalizer.Plan(0L, PlaybackNormalizer.Container.UNKNOWN, "文件头即容器")
         }
         val total = first.totalBytes
-        Log.w(
-            "VideoCache",
-            "流坐标 前缀=${plan.prefixBytes}B 容器=${plan.container.label} " +
-                "文件=${total / 1048576}MB 流=${(total - plan.prefixBytes) / 1048576}MB ${plan.evidence}"
-        )
         return plan.copy(totalBytes = total)
     }
 
@@ -152,7 +148,6 @@ internal class StreamSpaceDataSource(
     /** 本次 open 还要交付多少流字节；归零就按约定返回 END_OF_INPUT */
     private var requestRemaining = 0L
     private var chunkDelivered = 0L
-    private var chunkOpenAt = 0L
     private var emptyChunks = 0
 
     override fun addTransferListener(transferListener: TransferListener) {
@@ -183,7 +178,6 @@ internal class StreamSpaceDataSource(
         listeners.forEach { source.addTransferListener(it) }
         http = source
         chunkDelivered = 0L
-        chunkOpenAt = SystemClock.elapsedRealtime()
         source.open(
             DataSpec.Builder()
                 .setUri(checkNotNull(requestUri))
@@ -199,7 +193,6 @@ internal class StreamSpaceDataSource(
         val source = http ?: return C.RESULT_END_OF_INPUT
         val n = source.read(buffer, offset, minOf(length.toLong(), requestRemaining).toInt())
         if (n == C.RESULT_END_OF_INPUT) {
-            logChunk()
             if (nextPos >= streamLength) return C.RESULT_END_OF_INPUT   // 真正的流末尾
             if (chunkDelivered == 0L) {
                 // 开口成功但一个字节没给，再来三次还是这样就报故障，别在这空转
@@ -214,16 +207,6 @@ internal class StreamSpaceDataSource(
         chunkDelivered += n
         requestRemaining -= n
         return n
-    }
-
-    private fun logChunk() {
-        val cost = SystemClock.elapsedRealtime() - chunkOpenAt
-        if (chunkDelivered == 0L || cost <= 0L) return
-        Log.w(
-            "PlayerHttp",
-            "块账 pos=$nextPos 交付=${chunkDelivered / 1048576}MB 用时=${cost}ms " +
-                "速率=${chunkDelivered / 1024 * 1000 / cost}KB/s"
-        )
     }
 
     override fun getUri(): Uri? = requestUri
@@ -265,11 +248,12 @@ internal class StreamSpaceDataSource(
  */
 @UnstableApi
 internal class CloudCachePipeline(
-    client: OkHttpClient,
-    headers: Map<String, String>,
+    private val client: OkHttpClient,
+    private val headers: Map<String, String>,
     normalizer: PlaybackNormalizer,
     private val httpFactory: DataSource.Factory,
     private val chunkBytes: Long,
+    private val priorityTaskManager: PriorityTaskManager,
 ) {
 
     val probe = StreamSpaceProbe(client, headers, normalizer)
@@ -282,19 +266,15 @@ internal class CloudCachePipeline(
         val cache = runCatching { VideoCache.cacheOrNull() }.getOrNull() ?: return null
         synchronized(lock) {
             built?.takeIf { it.cache === cache }?.let { return it }
-            return Bundle(
-                cache,
-                newFactory(cache, "播放"),
-                newFactory(cache, "预读"),
-            ).also { built = it }
+            return Bundle(cache).also { built = it }
         }
     }
 
-    private fun newFactory(cache: Cache, role: String): CacheDataSource.Factory =
+    private fun newFactory(cache: Cache, upstream: DataSource.Factory): CacheDataSource.Factory =
         CacheDataSource.Factory()
             .setCache(cache)
             .setUpstreamDataSourceFactory(
-                StreamSpaceDataSource.Factory(httpFactory, probe, chunkBytes)
+                StreamSpaceDataSource.Factory(upstream, probe, chunkBytes)
             )
             // key 已经在 VideoCacheDataSource 里查过一遍，这里只是把它交给 Media3
             .setCacheKeyFactory { dataSpec ->
@@ -302,34 +282,24 @@ internal class CloudCachePipeline(
             }
             // 缓存这一层出任何问题都只让缓存失效，不许把正在播的那一集拖下水
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-            .setEventListener(object : CacheDataSource.EventListener {
-                override fun onCachedBytesRead(cacheSizeBytes: Long, cachedBytesRead: Long) {
-                    if (cachedBytesRead > 0) {
-                        Log.w(
-                            "VideoCache",
-                            "[$role] 命中缓存 +${cachedBytesRead / 1048576}MB，累计占用 ${cacheSizeBytes / 1048576}MB"
-                        )
-                    }
-                }
 
-                override fun onCacheIgnored(reason: Int) {
-                    // 2 = 缓存出错后本次绕开缓存；预读器和播放器抢同一段时不算异常
-                    Log.w("VideoCache", "[$role] 本次绕开缓存 reason=$reason")
-                }
-            })
+    inner class Bundle(val cache: Cache) {
+        private val playbackFactory = newFactory(cache, httpFactory)
 
-    class Bundle(
-        val cache: Cache,
-        private val playbackFactory: CacheDataSource.Factory,
-        private val downloadFactory: CacheDataSource.Factory,
-    ) {
-
-        /** 播放器用：非阻塞。区域锁被预读器占着时直接绕开缓存读网络，绝不让播放等锁 */
+        /** 播放器不受预读优先级限制，也不等待预读占有的缓存区间锁。 */
         fun newPlaybackSource(): DataSource = playbackFactory.createDataSource()
 
-        /** 预读器用：阻塞等锁，让路靠线程中断 */
-        fun newDownloadSource(): DataSource = downloadFactory.createDataSourceForDownloading()
+        fun newDownload(): Download {
+            val calls = PreloadCallFactory(client)
+            val upstream = OkHttpDataSource.Factory(calls).setDefaultRequestProperties(headers)
+            val source = newFactory(cache, upstream)
+                .setUpstreamPriorityTaskManager(priorityTaskManager)
+                .createDataSourceForDownloading()
+            return Download(source, calls)
+        }
     }
+
+    class Download(val source: DataSource, val calls: PreloadCallFactory)
 }
 
 /**
@@ -343,7 +313,7 @@ internal class CloudCachePipeline(
 internal class VideoCacheDataSource(
     private val pipeline: CloudCachePipeline,
     private val httpFactory: DataSource.Factory,
-    private val onStreamMiss: (url: String, streamPos: Long) -> Unit,
+    private val onStreamOpen: (url: String, streamPos: Long) -> Unit,
     private val onStreamRead: (url: String, streamPos: Long) -> Unit,
 ) : DataSource {
 
@@ -364,6 +334,7 @@ internal class VideoCacheDataSource(
         val delegate = cacheSourceFor(dataSpec) ?: httpFactory.createDataSource().also { trackedUrl = null }
         listeners.forEach { delegate.addTransferListener(it) }
         active = delegate
+        trackedUrl?.let { onStreamOpen(it, dataSpec.position) }
         return delegate.open(dataSpec)
     }
 
@@ -392,8 +363,6 @@ internal class VideoCacheDataSource(
             return null
         }
         dropIfStale(bundle.cache, key, plan)
-        // 播放器要的是缓存里没有的字节 —— 预读器从它前面开始攒
-        onStreamMiss(url, dataSpec.position)
         trackedUrl = url
         readUntil = dataSpec.position
         lastReportedUntil = dataSpec.position
@@ -420,6 +389,7 @@ internal class VideoCacheDataSource(
 
     @Throws(IOException::class)
     override fun close() {
+        trackedUrl?.let { onStreamRead(it, readUntil) }
         trackedUrl = null
         val source = active ?: return
         active = null
@@ -429,11 +399,11 @@ internal class VideoCacheDataSource(
     class Factory(
         private val pipeline: CloudCachePipeline,
         private val httpFactory: DataSource.Factory,
-        private val onStreamMiss: (String, Long) -> Unit,
+        private val onStreamOpen: (String, Long) -> Unit,
         private val onStreamRead: (String, Long) -> Unit,
     ) : DataSource.Factory {
         override fun createDataSource(): DataSource =
-            VideoCacheDataSource(pipeline, httpFactory, onStreamMiss, onStreamRead)
+            VideoCacheDataSource(pipeline, httpFactory, onStreamOpen, onStreamRead)
     }
 
     private companion object {

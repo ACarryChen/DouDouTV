@@ -38,6 +38,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -72,6 +74,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.graphicsLayer
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** 抽屉左列的一行：分组小标题 / 一颗来源 / 一句提示 */
 private sealed interface ScopeRow {
@@ -112,8 +115,8 @@ fun NfScopeDrawer(
     var cursorId by remember { mutableStateOf(initialId) }
     // 左列当前那行的 requester（右列按 ← 要跳回它），以及右列第一格的 requester（左列按 → 跳过去）
     var cursorFocus by remember { mutableStateOf<FocusRequester?>(null) }
-    val firstSiteFocus = remember { FocusRequester() }
-    val onlySourceFocus = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    val onlySourceFocus = remember(cursorId) { FocusRequester() }
     val entryFocus = remember { FocusRequester() }
     val listState = rememberLazyListState()
     val siteListState = rememberLazyGridState()
@@ -124,6 +127,39 @@ fun NfScopeDrawer(
     val sitesVisible = cursorIsTvBox && sites.isNotEmpty()
     // 右列的高亮只描述「当前生效的那一条」，光标停在别的来源时不能拿上一个个来源的线路 key 来比
     val showSiteSelection = cursorId != null && cursorId == selectedSourceId
+    val siteEntryIndex = if (showSiteSelection) 1 + sites.indexOfFirst { it.key == selectedSiteKey } else 0
+    val siteEntryKey = sites.getOrNull(siteEntryIndex - 1)?.key
+    val siteEntryFocus = remember(cursorId, siteEntryKey) { FocusRequester() }
+
+    val focusSites by rememberUpdatedState<suspend () -> Unit>({
+        if (sitesVisible) {
+            if (!tvMoveFocus(siteEntryFocus)) {
+                siteListState.scrollToItem(siteEntryIndex)
+                withFrameNanos { }
+                tvMoveFocus(siteEntryFocus)
+            }
+        } else {
+            tvMoveFocus(onlySourceFocus)
+        }
+    })
+
+    fun enterSites(): Boolean {
+        if (!cursorIsTvBox) return false
+        scope.launch {
+            withFrameNanos { }
+            focusSites()
+        }
+        return true
+    }
+
+    fun leaveSites(): Boolean {
+        val target = cursorFocus ?: return false
+        scope.launch {
+            withFrameNanos { }
+            tvMoveFocus(target)
+        }
+        return true
+    }
 
     val rows: List<ScopeRow> = remember(sources) {
         buildList {
@@ -145,9 +181,8 @@ fun NfScopeDrawer(
 
     // 右列打开时要停在当前生效的那条线路上，而不是从「全部站点」往下找。
     // 「全部站点」占第 0 格，真实站点的下标要 +1；光标不在当前来源上（没有高亮）就回到顶部。
-    LaunchedEffect(cursorId, sites, selectedSiteKey) {
-        val at = if (showSiteSelection) 1 + sites.indexOfFirst { it.key == selectedSiteKey } else 0
-        if (at > 0) siteListState.scrollToItem(at)
+    LaunchedEffect(cursorId, sites, siteEntryIndex) {
+        siteListState.scrollToItem(siteEntryIndex)
     }
 
     LaunchedEffect(Unit) {
@@ -242,19 +277,14 @@ fun NfScopeDrawer(
                                             cursorFocus = requester
                                         },
                                         canRight = cursorIsTvBox,
-                                        onRight = {
-                                            // 右列 requester 没挂上时跳不动，交回默认几何搜索；此时来源已经换掉，右列会开始读取进度
-                                            if (src.kind == SourceKind.TVBOX)
-                                                tvMoveFocus(firstSiteFocus, onlySourceFocus)
-                                            else false
-                                        },
+                                        onRight = { enterSites() },
                                         onClick = {
                                             if (src.kind == SourceKind.TVBOX) {
                                                 // OK 先落定这个来源（右列 requester 万一没挂上，按下去也不会整页无响应），
                                                 // 再把焦点送进右列继续挑线路；抽屉保持打开，选线路或按返回才关闭
                                                 cursorId = src.id
                                                 if (src.id != selectedSourceId) onPickSource(src.id)
-                                                tvMoveFocus(firstSiteFocus, onlySourceFocus)
+                                                enterSites()
                                             } else {
                                                 pickSourceOnly(src)
                                             }
@@ -301,8 +331,8 @@ fun NfScopeDrawer(
                                         NfSiteCell(
                                             text = "全部站点",
                                             selected = showSiteSelection && selectedSiteKey.isNullOrEmpty(),
-                                            anchor = firstSiteFocus,
-                                            onLeft = { cursorFocus?.let { tvMoveFocus(it) } ?: false },
+                                            anchor = if (siteEntryIndex == 0) siteEntryFocus else null,
+                                            onLeft = { leaveSites() },
                                             onClick = { cursorSource?.let { pick(it, null, null) } }
                                         )
                                     }
@@ -310,8 +340,12 @@ fun NfScopeDrawer(
                                         NfSiteCell(
                                             text = site.name,
                                             selected = showSiteSelection && selectedSiteKey == site.key,
-                                            anchor = null,
-                                            onLeft = { cursorFocus?.let { tvMoveFocus(it) } ?: false },
+                                            anchor = if (site.key == siteEntryKey) siteEntryFocus else null,
+                                            onLeft = {
+                                                val cell = siteListState.layoutInfo.visibleItemsInfo
+                                                    .firstOrNull { it.key == "site_${site.key}" }
+                                                if (cell?.column == 0) leaveSites() else false
+                                            },
                                             onClick = { cursorSource?.let { pick(it, site.key, site) } }
                                         )
                                     }
@@ -352,6 +386,11 @@ fun NfScopeDrawer(
                                             primary = src.id != selectedSourceId,
                                             modifier = Modifier.padding(top = 18.dp)
                                                 .focusRequester(onlySourceFocus)
+                                                .onPreviewKeyEvent { e ->
+                                                    if (e.type == KeyEventType.KeyDown &&
+                                                        e.key.nativeKeyCode == android.view.KeyEvent.KEYCODE_DPAD_LEFT
+                                                    ) leaveSites() else false
+                                                }
                                         )
                                     }
                                 }
@@ -489,7 +528,7 @@ private fun NfSourceRow(
     }
 }
 
-/** 右列的一格线路。[anchor] 非空时它是右列第一格，左列按 → 就落在这里 */
+/** 右列的一格线路；anchor 只挂在当前选中项，没有选中项时挂全部站点。 */
 @Composable
 private fun NfSiteCell(
     text: String,

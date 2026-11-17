@@ -3,7 +3,7 @@ package com.chen.doudoutv.player
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * 全局下载字节计数器：只累计真正从网卡读进来的字节。
+ * 全局 HTTP 响应读取计数器；本地代理响应不等于外网即时吞吐。
  *
  * 为什么自己数而不用 Media3 自带的 DefaultBandwidthMeter：
  * 这个仓库的数据源链是手工搭的（OkHttpDataSource → VideoCacheDataSource → DefaultMediaSourceFactory），

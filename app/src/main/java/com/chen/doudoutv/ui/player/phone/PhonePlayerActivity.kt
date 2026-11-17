@@ -674,10 +674,8 @@ class PhonePlayerActivity : ComponentActivity() {
                     // 换源重建播放器时，旧实例的回调可能还排在主线程队列里。
                     // 不认实例，旧播放器的 READY / ENDED 会盖到正在加载的新集上。
                     if (player !== p) {
-                        Log.w("PlayTrace", "startPlayback 忽略旧实例 state=$state")
                         return
                     }
-                    traceState("startPlayback", p, state)
                     if (state == Player.STATE_ENDED && endedEpisodeId != (current?.id ?: 0L)) {
                         endedEpisodeId = current?.id ?: 0L
                         playNext()
@@ -707,7 +705,6 @@ class PhonePlayerActivity : ComponentActivity() {
                     Log.e("PhonePlayer", "player error: ${error.errorCodeName} ${error.message}", error)
                     if (isTailSourceError(p)) {
                         // 片尾的坏数据不当故障报：按看完落盘，让连播接手
-                        Log.w("PlayTrace", "片尾容错命中 pos=${p.currentPosition} dur=${p.duration}")
                         if (endedEpisodeId != (current?.id ?: 0L)) {
                             endedEpisodeId = current?.id ?: 0L
                             saveProgress(force = true)
@@ -720,7 +717,6 @@ class PhonePlayerActivity : ComponentActivity() {
                 }
             })
 
-            PlayerFactory.traceUrl = resolved.url
             p.setMediaItem(MediaItem.fromUri(resolved.url))
             p.prepare()
             if (startPosition > 3_000L) p.seekTo(startPosition)
@@ -968,10 +964,8 @@ class PhonePlayerActivity : ComponentActivity() {
                     override fun onPlaybackStateChanged(state: Int) {
                         // 同第一个 listener：只认当前这台播放器，旧实例的迟到回调不能盖到新集上
                         if (player !== np) {
-                            Log.w("PlayTrace", "playEpisode 忽略旧实例 state=$state")
                             return
                         }
-                        traceState("playEpisode(np)", np, state)
                         if (state == Player.STATE_ENDED && endedEpisodeId != (current?.id ?: 0L)) {
                             endedEpisodeId = current?.id ?: 0L
                             playNext()
@@ -999,7 +993,6 @@ class PhonePlayerActivity : ComponentActivity() {
                         Log.e("PhonePlayer", "player error: ${error.errorCodeName} ${error.message}", error)
                         if (isTailSourceError(np)) {
                             // 同第一个 listener：片尾的坏数据按看完处理，交给连播
-                            Log.w("PlayTrace", "片尾容错命中 pos=${np.currentPosition} dur=${np.duration}")
                             if (endedEpisodeId != (current?.id ?: 0L)) {
                                 endedEpisodeId = current?.id ?: 0L
                                 saveProgress(force = true)
@@ -1016,10 +1009,8 @@ class PhonePlayerActivity : ComponentActivity() {
                 player ?: run { setLoading(false); return@launch }
             }
 
-            PlayerFactory.traceUrl = resolved.url
             p.setMediaItem(MediaItem.fromUri(resolved.url))
             p.prepare()
-            Log.w("PlayTrace", "playEpisode 装载 id=${episode.id} rebuild=$needRebuild 续播位置=${episode.positionMs}")
             if (episode.positionMs > 3_000L) p.seekTo(episode.positionMs)
             p.setPlaybackSpeed(speedState)
             p.playWhenReady = true
@@ -1029,7 +1020,6 @@ class PhonePlayerActivity : ComponentActivity() {
     private fun playNext() {
         val index = episodeIndex()
         val next = episodeList.getOrNull(index + 1)
-        Log.w("PlayTrace", "playNext 索引=$index/${episodeList.size} 下一集=${next?.let { "${it.id}/${displayTitle(it)}" } ?: "无"}")
         if (next == null) return
         if (next.id == current?.id) return
         playEpisode(next)
@@ -1082,25 +1072,6 @@ class PhonePlayerActivity : ComponentActivity() {
                 Log.w("PhonePlayer", "下一集预热失败 mediaId=${next.id}：${it.message}")
             }
         }
-    }
-
-    /**
-     * 【临时取证】「播到结尾不连播 + 报网络错误」的定位日志：
-     * 状态机每次都记，配合 PlayerFactory 里的 PlayTrace（HTTP 出口）能还原
-     * 片尾到底走没走 ENDED、连播闸门拦在哪一步。拿到结论后两处一起删。
-     */
-    private fun traceState(where: String, p: Player, state: Int) {
-        Log.w(
-            "PlayTrace",
-            "$where state=" + when (state) {
-                Player.STATE_IDLE -> "IDLE"
-                Player.STATE_BUFFERING -> "BUFFERING"
-                Player.STATE_READY -> "READY"
-                Player.STATE_ENDED -> "ENDED"
-                else -> "?$state"
-            } + " pos=${p.currentPosition} dur=${p.duration} buf=${p.bufferedPosition}" +
-                " endedGate=$endedEpisodeId cur=${current?.id} idx=${episodeIndex()}/${episodeList.size}"
-        )
     }
 
     /**

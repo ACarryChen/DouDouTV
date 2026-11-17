@@ -705,6 +705,7 @@ fun TvDetailScreen(
             hasEpisodes && hasControlAnchor -> controlsFocusRequester
             hasEpisodes -> firstEpFocusRequester
             hasCast -> castFocusRequesters.first()
+            hasMediaInfoPanel -> mediaInfoFocusRequester
             else -> FocusRequester.Cancel
         }
         /**
@@ -715,18 +716,21 @@ fun TvDetailScreen(
             hasEpisodes && hasControlAnchor -> controlsFocusRequester
             hasEpisodes -> firstEpFocusRequester
             hasCast -> castFocusRequesters.first()
+            hasMediaInfoPanel -> mediaInfoFocusRequester
             else -> FocusRequester.Cancel
         }
         /**
          * 头像行的上一站：它现在排在选集网格下面，正上方是网格末行最后一格。
          * 网格还没组合出来时（首帧）退回控制条，不能指向没挂载的节点。
          */
-        val castUpTarget: FocusRequester =
-            if (hasPageRow) pageFocusRequester
-            else lastCellRequester.value?.takeIf { hasEpisodes }
-                ?: if (hasControlAnchor) controlsFocusRequester
-                else if (descTruncated) descFocusRequester
-                else playFocusRequester
+        fun castUpTarget(): FocusRequester = when {
+            hasPageRow -> pageFocusRequester
+            hasEpisodes && isEmbySource -> shelfEntry()
+            hasEpisodes -> lastCellRequester.value ?: firstEpFocusRequester
+            hasControlAnchor -> controlsFocusRequester
+            descTruncated -> descFocusRequester
+            else -> playFocusRequester
+        }
         /** 头像行的下一站：有视频信息面板时它是整页最后一站，没有则主演收尾 */
         val castDownTarget: FocusRequester =
             if (hasMediaInfoPanel) mediaInfoFocusRequester else FocusRequester.Cancel
@@ -745,7 +749,7 @@ fun TvDetailScreen(
         val episodeDownModifier = Modifier.onPreviewKeyEvent { e ->
             if (e.type != KeyEventType.KeyDown || e.key != Key.DirectionDown) {
                 false
-            } else if (hasEpisodes || descTruncated || hasCast) {
+            } else if (hasEpisodes || descTruncated || hasCast || hasMediaInfoPanel) {
                 enterEpisodeSection(belowPlay)
                 true
             } else {
@@ -912,8 +916,8 @@ fun TvDetailScreen(
                                 shelfEntry = { shelfEntry() },
                                 hasControlAnchor = hasControlAnchor,
                                 hasPageRow = hasPageRow,
-                                hasCast = hasCast,
-                                castFocusRequesters = castFocusRequesters,
+                                belowEpisodesFocusRequester = if (hasCast) castFocusRequesters.first()
+                                    else castDownTarget,
                                 onFocusedEp = { id, target ->
                                     focusedEpId = id
                                     epStand.requester = target
@@ -947,7 +951,7 @@ fun TvDetailScreen(
                             TvCastRow(
                                 cast = tvCast,
                                 requesters = castFocusRequesters,
-                                focusUp = castUpTarget,
+                                focusUp = { castUpTarget() },
                                 focusDown = castDownTarget
                             )
                         }
@@ -961,7 +965,7 @@ fun TvDetailScreen(
                                 info = episodeMediaInfo,
                                 episode = infoEpisode,
                                 focusRequester = mediaInfoFocusRequester,
-                                focusUp = if (hasCast) castFocusRequesters.first() else castUpTarget
+                                focusUp = { if (hasCast) castFocusRequesters.first() else castUpTarget() }
                             )
                         }
                     }
@@ -1610,12 +1614,12 @@ private fun TvDetailEpisodesSection(
     shelfEntry: () -> FocusRequester,
     hasControlAnchor: Boolean,
     hasPageRow: Boolean,
-    hasCast: Boolean,
-    castFocusRequesters: List<FocusRequester>,
+    belowEpisodesFocusRequester: FocusRequester,
     onFocusedEp: (Long, FocusRequester) -> Unit,
     onPlayEpisode: (Long) -> Unit
 ) {
     val hasEpisodes = episodes.isNotEmpty()
+    val scope = rememberCoroutineScope()
     TvSectionTitle(
         text = if (tvSeasons.size > 1) {
             "选集（第 $selectedSeason 季 · 共 $seasonCount 集）"
@@ -1646,7 +1650,10 @@ private fun TvDetailEpisodesSection(
                 // 落点要在按键这一刻读「最后聚焦那集」：组合期写死会攥着
                 // 右移后被回收的首格死节点，下键回不到选集（#59 同款）。
                 if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionDown && hasEpisodes) {
-                    tvMoveFocus(shelfEntry(), firstEpFocusRequester)
+                    scope.launch {
+                        withFrameNanos { }
+                        tvMoveFocus(shelfEntry(), firstEpFocusRequester)
+                    }
                     true
                 } else false
             }.then(publishStand(controlsFocusRequester, "controls"))
@@ -1709,9 +1716,7 @@ private fun TvDetailEpisodesSection(
                 val cellFocus = remember(ep.id) { FocusRequester() }
                 val cellTarget =
                     if (idx == 0) firstEpFocusRequester else cellFocus
-                // 横滑货架的卡片会随滚动回收，末格 requester 可能已脱离组合树，
-                // 不能交给主演上键（会指向死节点）。这里刻意不写 lastCellRequester，
-                // 让 castUpTarget 走它原有的稳定回退（控制条 > 展开 > 播放）。
+                // 横滑货架回程使用最后聚焦项，不能把可能已回收的首格或末格写死。
                 if (ep.id == recallEpisodeId) {
                     remember(cellTarget) {
                         stand.requester = cellTarget
@@ -1730,8 +1735,7 @@ private fun TvDetailEpisodesSection(
                         else playFocusRequester,
                     // 每格下键先落翻页行（多页时它在货架与主演之间），再往下是主演头像行
                     focusDown = if (hasPageRow) pageFocusRequester
-                        else if (hasCast) castFocusRequesters.first()
-                        else FocusRequester.Cancel,
+                        else belowEpisodesFocusRequester,
                     onFocused = {
                         if (it) onFocusedEp(ep.id, cellTarget)
                     },
@@ -1783,8 +1787,7 @@ private fun TvDetailEpisodesSection(
                         // 末行再按下：先落翻页行（多页时它在网格与主演之间），再往下是主演
                         focusDown = if (rowIdx == epRows.lastIndex) {
                             if (hasPageRow) pageFocusRequester
-                            else if (hasCast) castFocusRequesters.first()
-                            else FocusRequester.Cancel
+                            else belowEpisodesFocusRequester
                         } else null,
                         onClick = { onPlayEpisode(ep.id) }
                     )
@@ -1808,10 +1811,18 @@ private fun TvDetailEpisodesSection(
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
         ) {
             val pageFocus = Modifier.focusProperties {
-                // ↑ 回网格末行最后一格（首帧网格还没组合时回落首格）
-                up = lastCellRequester.value ?: firstEpFocusRequester
-                down = if (hasCast) castFocusRequesters.first()
-                    else FocusRequester.Cancel
+                up = FocusRequester.Cancel
+                down = belowEpisodesFocusRequester
+            }.onPreviewKeyEvent { e ->
+                if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionUp) {
+                    scope.launch {
+                        withFrameNanos { }
+                        val target = if (isEmbySource) shelfEntry()
+                            else lastCellRequester.value ?: firstEpFocusRequester
+                        tvMoveFocus(target, firstEpFocusRequester)
+                    }
+                    true
+                } else false
             }.then(publishStand(pageFocusRequester, "page"))
             // 锚点挂首颗：上下键进这一行都落在「上一页」
             TvPillButton(
@@ -2101,9 +2112,10 @@ private fun Skel(
 private fun TvCastRow(
     cast: List<TvCast>,
     requesters: List<FocusRequester>,
-    focusUp: FocusRequester,
+    focusUp: () -> FocusRequester,
     focusDown: FocusRequester
 ) {
+    val scope = rememberCoroutineScope()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -2122,8 +2134,17 @@ private fun TvCastRow(
                     .then(
                         requesters.getOrNull(index)?.let { Modifier.focusRequester(it) } ?: Modifier
                     )
+                    .focusProperties { up = FocusRequester.Cancel; down = focusDown }
+                    .onPreviewKeyEvent { e ->
+                        if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionUp) {
+                            scope.launch {
+                                withFrameNanos { }
+                                tvMoveFocus(focusUp())
+                            }
+                            true
+                        } else false
+                    }
                     .focusable(interactionSource = interaction)
-                    .focusProperties { up = focusUp; down = focusDown }
             ) {
                 Box(
                     Modifier
@@ -2220,7 +2241,7 @@ private fun TvEpisodeCard(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    LaunchedEffect(focused) { onFocused?.invoke(focused) }
+    tvKeepFocusedItemAlive(focused)
 
     val label = episode.episodeLabel()
     val watched = episode.positionMs > 5_000L
@@ -2237,6 +2258,7 @@ private fun TvEpisodeCard(
             if (focusDown != null) down = focusDown
         }
         .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+        .onFocusChanged { onFocused?.invoke(it.hasFocus) }
         .clickable(
             interactionSource = interaction,
             indication = null,
@@ -2374,8 +2396,9 @@ private fun TvEpisodeMediaInfoPanel(
     info: EmbyClient.MediaInfo,
     episode: MediaEntity,
     focusRequester: FocusRequester,
-    focusUp: FocusRequester
+    focusUp: () -> FocusRequester
 ) {
+    val scope = rememberCoroutineScope()
     val epTag = if (episode.episode > 0) "第 ${episode.episode} 集" else episode.episodeLabel()
     val headSub = if (episode.title.isNotBlank() && episode.title != epTag) "$epTag · ${episode.title}" else epTag
 
@@ -2395,8 +2418,17 @@ private fun TvEpisodeMediaInfoPanel(
         Modifier
             .fillMaxWidth()
             .focusProperties {
-                up = focusUp
+                up = FocusRequester.Cancel
                 down = FocusRequester.Cancel
+            }
+            .onPreviewKeyEvent { e ->
+                if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionUp) {
+                    scope.launch {
+                        withFrameNanos { }
+                        tvMoveFocus(focusUp())
+                    }
+                    true
+                } else false
             }
             .focusRequester(focusRequester)
             .focusable(interactionSource = interaction)

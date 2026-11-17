@@ -17,22 +17,25 @@
 | 来源类型 | **Emby**（服务器 + 账号）、**TVBox**（配置 JSON + spider 爬虫） |
 | 播放内核 | Media3 / ExoPlayer 1.4.1，支持 MKV、HEVC、AV1、HLS、DASH |
 | Emby 鉴权 | `Users/AuthenticateByName` 换 AccessToken，落库复用，无需反复登录 |
-| Emby 影库 | `Users/{id}/Items` 拉电影 + 剧集，`Shows/{id}/Episodes` 按需拉分集 |
+| Emby 影库 | 逐媒体库同步（电影 / 剧集分库拉取），`Shows/{id}/Episodes` 按需拉分集；分类按媒体库分区 |
 | Emby 播放 | `Videos/{id}/stream?static=true` 原码流直传，局域网不转码 |
+| Emby 进度回传 | 观看进度（60s 心跳 + 离开播放时上报）与收藏回传服务端，PlaySessionId / MediaSourceId 全链路透传 |
 | TVBox 站点 | 读取配置里的 `type=3` spider 站点，DexClassLoader 加载 spider 包后反射调用 |
 | TVBox 加密壳 | `csp_XxxGuard` 这类壳由 [SpiderLoader](app/src/main/java/com/chen/doudoutv/data/tvbox/SpiderLoader.kt) 加载，并起一个本机代理 `127.0.0.1:9978` 供壳的 native 初始化回调（[LocalProxyServer](app/src/main/java/com/chen/doudoutv/data/tvbox/LocalProxyServer.kt)） |
 | TVBox 解析 | spider 标准方法：`homeContent` / `categoryContent` / `searchContent` / `detailContent` / `playerContent` |
+| TVBox 网盘播放 | 壳内 Go 代理地址**原样交给播放器**（多线程下载，不解包成 CDN 直链）；m3u8 播放列表同样保留代理转发 |
+| 来源维护 | 手机端来源页可生成二维码，同一局域网内用手机浏览器扫码添加 / 编辑数据源（[SourcePairServer](app/src/main/java/com/chen/doudoutv/data/pair/SourcePairServer.kt)，只在弹层期间监听） |
 | TVBox 多线路 | 详情页把全部播放源（云盘 / 线路）铺成 chips，选中哪条就只播那条，切线路自动把选中项滚进可见区域 |
 | 元数据刮削 | 可选 TMDB（默认关，需自填 apiKey / read token）；豆瓣热门榜用于搜索联想；刮削结果独立表 `scraped_meta` 复用 |
 | 画质徽章 | 源侧文本先显示，播放期用真实轨道信息校正（分辨率 / HDR / Codec）；分集名一律沿用播放源原名，不自编 `SxxExx` |
 | 手机首页 | Hero 大图轮播 → 继续观看横滑 → 收藏 → 电影 → 剧集 → 动漫 |
-| TV 首页 | **两套布局可切**：经典版（满屏横版 hero + 横向海报行 + 顶部横排入口）/ Netflix 版（整屏轮播 + 一行继续观看，分类挪到「分类」页，常驻导航条） |
+| TV 首页 | Netflix 版一套：整屏轮播 + 一行继续观看，分类挪到「分类」页，常驻导航条；经典版代码保留但入口下线 |
 | 详情页背景 | 封面聚焦色填充，头图向下长距离溶解为整页底色，无硬边接缝 |
 | 断点续播 | Room 记录进度，首页「继续观看」按最近播放排序；返回时恢复离开前的滚动位置与焦点落点（[ReturnSpot](app/src/main/java/com/chen/doudoutv/ui/ReturnSpot.kt)） |
 | 自动连播 | 单集播完自动接 `seriesKey` 内下一集，片尾预热下一集 |
-| 播放缓存 | 磁盘缓存六档（关闭 / 256M / 512M / 1G / 2G / 4G），LRU；能安全按字节切片的内容才登记，HLS 分片与 Emby 直链按登记制放行 |
+| 播放缓存 | 磁盘缓存六档（关闭 / 256M / 512M / 1G / 2G / 4G），LRU；能安全按字节切片的内容才登记，HLS 分片与 Emby 直链按登记制放行；预读走 Media3 官方优先级门控，播放器加载时一律让路 |
 | 可观测 | 全局下载字节计数（只算真正从网卡读进的字节，缓存命中不计，[DownloadMeter](app/src/main/java/com/chen/doudoutv/player/DownloadMeter.kt)）；解析出的直链在日志里脱敏（[LogGate](app/src/main/java/com/chen/doudoutv/core/LogGate.kt)） |
-| 外观 | 主题色板七档（默认「石墨蓝」），缩略图尺寸三档，排版口径双端统一 |
+| 外观 | 主题色板五档（默认「NF红」），缩略图尺寸三档，排版口径双端统一 |
 | 搜索 | 本地库标题模糊 + 拼音首字母前缀联想，并发远程搜索各站点、边出边显示；搜索历史最多 10 条，三端共用一份 |
 | 双端架构 | 手机 / 电视两条完整实现线，播放器也各一个 Activity，不用 `isTv` 在同屏分叉 |
 
@@ -51,7 +54,7 @@ TV 端界面已收敛成 **Netflix 版一套**（`ui/tv/nf/`：常驻导航条 +
 | 缩略图尺寸 | 小 92/132 · 中 118/162 · 大 144/192（dp，手机/TV） | 海报卡与网格列宽跟着走 |
 | 移动效果 | 放大（默认）/ 上抬 | 海报卡聚焦时的动法 |
 | 视频缓存 | 关闭 / 256M / 512M / 1G / 2G / 4G | 整个缓存目录的上限，不是单集上限 |
-| 主题色 | 石墨蓝 / 青瓷 / 鸢尾 / 赤铜 / 胭脂 / 竹青 / 霜青 | 只换品牌色两位，中性色与默认色板一像素不变 |
+| 主题色 | NF红（默认）/ 青瓷 / 赤铜 / 胭脂 / Plex 橙 | 只换品牌色两位，中性色一像素不变；旧 id 残留自动回落默认色板 |
 | TMDB 刮削 | 开关 + apiKey + read token | 默认关；关闭时不发任何外部请求，完全沿用来源自带元数据 |
 
 「移动效果」两档的像素账：行内纵向余量只有 `NfRowVerticalPadding = 14dp`，超出就会被 Lazy 容器裁掉一条边。
@@ -83,13 +86,14 @@ myhub/
         │       ├── core/                  # Prefs / AppCache / VideoCache / LogGate
         │       ├── data/
         │       │   ├── MediaRepository.kt # Emby / TVBox 入库、详情、进度
-        │       │   ├── db/                # AppDatabase(v12) + Source/Media/HotTitle/ScrapedMeta DAO + Pinyin
-        │       │   ├── emby/EmbyClient.kt # ★ Emby REST 客户端
+        │       │   ├── db/                # AppDatabase(v14) + Source/Media/HotTitle/ScrapedMeta DAO + Pinyin
+        │       │   ├── emby/EmbyClient.kt # ★ Emby REST 客户端（含观看/收藏回传）
         │       │   ├── tvbox/             # ★ TvBoxClient + SpiderLoader + LocalProxyServer + 结果解析
+        │       │   ├── pair/              # 扫码维护数据源：SourcePairServer + PairWebPage
         │       │   ├── tmdb/              # TmdbClient / TmdbCache / ScrapeTitle（检索词清洗）
         │       │   └── scrape/ douban/ format/ image/ model/
         │       ├── player/                # PlayerFactory / VideoCacheFiller / StreamSpaceDataSource /
-        │       │                          # PlaybackNormalizer（防和谐）/ DownloadMeter
+        │       │                          # PlaybackNormalizer（防和谐）/ PreloadCallFactory / DownloadMeter
         │       └── ui/
         │           ├── LibraryViewModel.kt / ReturnSpot.kt
         │           ├── theme/             # Theme / ThemePalette / ThemeBackdrop / Material
@@ -137,24 +141,35 @@ spider 的首页列表（`homeContent`）**不含播放地址**，只有 `detail
 伪装前缀的平移放在数据源层（`StreamSpaceDataSource`）而不是拦截器层，于是 Media3 的区间记账
 和播放器的 seek 只剩「流坐标」一套坐标系 —— 两套坐标系叠在一起必抛 `READ_POSITION_OUT_OF_RANGE`。
 走不走缓存只看一条判据：这条 URL 有没有被登记过；未登记的仍然是裸 `OkHttpDataSource`，取数路径一字节不变。
+预读器挂在 Media3 官方 `PriorityTaskManager` 上：播放器在加载（`isLoading` 或非 READY）时预读一律让路，
+让路砍掉的半块在 `close()` 时照样提交，不白拉。代价是播放吃满带宽的片源上预读攒不起粮 ——
+这是「播放优先」的固有取舍，不是故障。
 
-### 7. 播放参数以当前代码为准
+### 7. TVBox 网盘直链为什么原样播代理地址
+壳里的 Go 代理会开 16 条连接并行拉流。夸克部分 CDN 边缘按**单条连接**限速
+（实测 105–128KB/s，同边缘 16 连接约 4.6–5.9MB/s），把代理地址解包成 CDN 直链等于绕开并发自废武功。
+所以 `TvBoxClient.unwrapLocalProxyUrl` 现在三个分支都原样返回代理地址；m3u8 播放列表更是必须走代理
+（分片地址已被代理改写成带签名/Cookie 的转发形态）。`targetSdk = 28` 是这条路的开关：
+调高会让壳退回单线程 .so 形态，代理多线程失效，**改 targetSdk 前先想清楚这一条**。
+
+### 8. 播放参数以当前代码为准
 `player/PlayerFactory.kt` 里现值：起播缓冲 2.0s、rebuffer 后 3.0s、常态 min 缓冲手机 50s / 电视 60s、
 target 240s / 300s、回退缓冲 60s、`setPrioritizeTimeOverSizeThresholds(true)`、
 缓冲池 target 字节 256MB / 384MB、磁盘缓存分块 32MiB。
 这些数值是按实测限速窗口调出来的（大分块完成间隔会 12.5s→21s→32s 一路劣化，最坏一次 66 秒几乎无字节），
 改之前先读代码里那段注释，别照文档回退。
 
-### 8. 手机端转场的方向感
+### 9. 手机端转场的方向感
 - 进详情 = 下钻 → 新页面从右侧小幅推入并淡入
 - 回列表 = 上浮 → 详情向左退，列表从左侧轻滑回来
 - 切底部标签 = 平级 → 只做交叉淡化，不引入方向，避免「左右乱跳」
 
-### 9. 主题色只走该走的地方
-色板只替换品牌色两位：按钮、聚焦描边、开关跟随；详情页背景继续走封面聚焦色，
-默认色板「石墨蓝」下的既有画面一像素都不变。
+### 10. 主题色只走该走的地方
+色板只替换品牌色两位：按钮、聚焦描边、开关跟随；详情页背景继续走封面聚焦色。
+色板收敛为五套（默认 NF红），存储 id 不改名 —— 改 id 会让已选设备被判成旧版本残留、
+回落默认色板，用户看到的就是「我选的色自己没了」。
 
-### 10. 分集命名
+### 11. 分集命名
 一律用播放源给的分集名（如 `[5.4GB]E01.mkv`），不自编 `SxxExx`；只有 Emby 这类没有源分集名的才编号兜底。
 
 ---
@@ -189,7 +204,7 @@ CI 用 **JDK 17（temurin）** + 仓库自带 Wrapper（Gradle 8.7），直接�
 
 前置条件（缺一不可）：
 
-- **JDK 17 及以上**（`jvmTarget = 17`，AGP 8.5.2 要求 17+；本地用 jbr-21 同样可过）
+- **JDK 17 及以上**（`jvmTarget = 17`，AGP 8.6.1 要求 17+；本地用 jbr-21 同样可过）
 - **Android SDK**，含 `platforms/android-34` 与 `build-tools/34.0.0`
 - 网络能访问 `dl.google.com` 与 `repo.maven.apache.org`
 
@@ -224,23 +239,22 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 
 | 组件 | 本工程版本 | 说明 |
 |---|---|---|
-| Gradle | **8.7**（wrapper） | AGP 8.5.2 要求 ≥ 8.7 |
-| Android Gradle Plugin | **8.5.2** | 需 JDK 17+ |
-| Kotlin | **1.9.24** | 与 Compose Compiler 严格配对 |
-| Compose Compiler | **1.5.14** | 必须匹配 Kotlin 1.9.24 |
-| KSP | **1.9.24-1.0.20** | 版本号必须与 Kotlin 严格一致 |
-| Compose BOM | **2024.06.00** | 对应 Compose UI 1.6.8 / material3 1.2.1 |
-| compileSdk / targetSdk | 34 | minSdk 21 |
+| Gradle | **8.7**（wrapper） | AGP 8.6.1 要求 ≥ 8.7 |
+| Android Gradle Plugin | **8.6.1** | 需 JDK 17+ |
+| Kotlin | **2.0.21** | Compose 编译器改由 `org.jetbrains.kotlin.plugin.compose` 插件提供 |
+| KSP | **2.0.21-1.0.28** | 版本号必须与 Kotlin 严格一致 |
+| Compose BOM | **2025.08.00** | 对应 Compose UI 1.9.0 / material3 1.3.2 |
+| compileSdk / targetSdk | 34 / **28** | minSdk 21；targetSdk 28 是 TVBox 壳多线程代理的硬要求（见「关键设计取舍 7」） |
 | Media3 | 1.4.1 | exoplayer / ui / hls / dash / datasource(-okhttp) / database |
 | Room | 2.6.1 | KSP 注解处理，`exportSchema = true` |
 | Coil / OkHttp / Palette | 2.6.0 / 4.12.0 / 1.0.0 | 海报 / 网络 / 聚焦色提取 |
 | jsoup / fastjson / Gson / jpinyin | 1.17.2 / 1.2.83 / 2.10.1 / 1.1.8 | spider 运行时与拼音首字母 |
 
-> ⚠️ Kotlin 与 Compose Compiler 是强绑定关系，单独升级其中一个必定编译失败；
-> KSP 版本号也必须和 Kotlin 主版本精确对齐（`1.9.24-X.Y.Z` 对应 Kotlin 1.9.24）。
-> 若要升到 Kotlin 2.x，需同时启用 `org.jetbrains.kotlin.plugin.compose` 插件并移除
-> `composeOptions { kotlinCompilerExtensionVersion }`。
-> 曾试过升级 Compose，新版要求 minSdk 23 且焦点行为变化，真机验证后**已回滚**，仍留在 UI 1.6.8。
+> ⚠️ KSP 版本号必须和 Kotlin 主版本精确对齐（`2.0.21-X.Y.Z` 对应 Kotlin 2.0.21）。
+> Compose 编译器自 Kotlin 2.0 起由 `org.jetbrains.kotlin.plugin.compose` 插件发布，
+> 不再使用 `composeOptions { kotlinCompilerExtensionVersion }`。
+> Compose 曾停留在 UI 1.6.8（新版要求 minSdk 23 且焦点行为变化，当时回滚）；
+> 现已升到 **1.9.0**：焦点项被 Lazy 回收会 `clearFocus` 跳回第一列，靠 `LocalPinnableContainer.pin()` 治。
 
 ### 签名与升级安装
 
@@ -281,24 +295,24 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 
 ## 七、已知限制
 
-1. **Emby 播放进度不回写服务器**：进度只存本地 Room，多端之间不同步
-2. **Emby 外挂字幕未接进播放器**：`EmbyClient.subtitleUrl()` 已能拼出地址，播放页尚未加载它
-3. **数据库迁移需手写**：`AppDatabase`（当前 v12）刻意不调 `fallbackToDestructiveMigration()`，
+1. **Emby 外挂字幕未接进播放器**：`EmbyClient.subtitleUrl()` 已能拼出地址，播放页尚未加载它
+2. **数据库迁移需手写**：`AppDatabase`（当前 v14）刻意不调 `fallbackToDestructiveMigration()`，
    漏写 `Migration` 时升级会直接失败，而不是静默清库；历史表结构落在 `app/schemas/`
-4. **没有 JVM 单元测试**：`src/test` 不存在，只有 `androidTest` 下的 `E2eTvBoxTest`，必须连真机才能跑
-5. **spider 兼容面取决于配置本身**：加密壳、云盘线路、站点限速都由使用者提供的 spider 决定，本项目不内置任何片源
+3. **没有 JVM 单元测试**：`src/test` 不存在，只有 `androidTest` 下的 `E2eTvBoxTest`，必须连真机才能跑
+4. **spider 兼容面取决于配置本身**：加密壳、云盘线路、站点限速都由使用者提供的 spider 决定，本项目不内置任何片源
+5. **网盘 CDN 间歇断供无解**：夸克部分边缘会活着连接但 20–30 秒零字节，客户端只能靠缓冲扛，
+   不做自动降档 / 转码兜底（见「关键设计取舍 3」）
 6. **README 与代码仍需人工同步**：文档更新滞后于代码是这类个人项目的常见问题
 
 ---
 
 ## 八、可继续扩展
 
-1. **Emby 进度回写**：加 `Sessions/Playing/Progress` 上报，实现多端同步
-2. **外挂字幕加载**：把 `subtitleUrl` 接进 Media3 的 `SubtitleConfiguration`
-3. **演员 / 相似推荐**：Emby `Items/{id}/Similar` 与 `People` 字段
-4. **海报墙性能**：条目过千时给 Room 加分页（Paging 3）
-5. **凭据加密**：来源账号密码与 token 从明文改为 `EncryptedSharedPreferences`
-6. **自动迁移**：`app/schemas/` 已导出，加索引一类的小改动可以用 Room 自动迁移补
+1. **外挂字幕加载**：把 `subtitleUrl` 接进 Media3 的 `SubtitleConfiguration`
+2. **演员 / 相似推荐**：Emby `Items/{id}/Similar` 与 `People` 字段
+3. **海报墙性能**：条目过千时给 Room 加分页（Paging 3）
+4. **凭据加密**：来源账号密码与 token 从明文改为 `EncryptedSharedPreferences`
+5. **自动迁移**：`app/schemas/` 已导出，加索引一类的小改动可以用 Room 自动迁移补
 
 ---
 
