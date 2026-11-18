@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
@@ -82,7 +83,6 @@ import com.chen.doudoutv.ui.components.ButtonMaterial
 import com.chen.doudoutv.ui.components.PosterArt
 import com.chen.doudoutv.ui.components.PosterFallback
 import com.chen.doudoutv.ui.components.ScrapedBadge
-import com.chen.doudoutv.ui.components.TmdbIconOnly
 import com.chen.doudoutv.ui.components.batchScrapeConfirmText
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.Edge
@@ -709,14 +709,14 @@ private fun TvPosterBody(
                 subtitleFontSize = MaterialTheme.typography.bodySmall.fontSize
             )
         }
-        // 已刮削标记：左上角 TMDB 官方图标 + 评分，背景全透明（不衬黑块）
+        // 已刮削标记：左上角深磨砂微章（蓝字 TMDB + 白色评分）
         if (scrapedRating != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(6.dp)
+                    .padding(3.dp)
             ) {
-                ScrapedBadge(rating = scrapedRating, iconHeight = 15.dp)
+                ScrapedBadge(rating = scrapedRating, compact = false)
             }
         }
         if (progress > 0f) {
@@ -1170,9 +1170,9 @@ fun TvFilterChip(
  * 电视端分类栏右端的刮削按钮。
  *
  * 高度必须和分类 chip 一致：横向排布时两者上下边不齐会很明显。
- * 这里直接沿用 [TvFilterChip] 的 padding（horizontal 20 / vertical 9）与 labelMedium 字号，
- * 内容换成「TMDB 官方图标 + 文字」，图标高度压到比文字行高小，行高因此仍由文字决定，
- * 整颗按钮与旁边 chip 等高。
+ * 这里直接沿用 [TvFilterChip] 的 padding（horizontal 20 / vertical 9）与 labelMedium 字号。
+ * 空闲态用主按钮材质（品牌渐变实底 + 上缘高光 + 黑字），三米外一眼认出这是动作键
+ * 而不是又一个分类；焦点态仍是白底黑字，焦点体系不动。跑批时同一颗变进度 + 取消。
  */
 @Composable
 fun TvScrapeChip(
@@ -1183,15 +1183,18 @@ fun TvScrapeChip(
     onClick: () -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
+    val brand = AppColors.Brand
+    val brandSoft = AppColors.BrandSoft
     Box(
         modifier
             .clip(Radius.Md)
             .background(
-                when {
-                    focused -> Color.White
-                    running -> AppColors.Brand
-                    else -> AppColors.SurfaceHi
-                }
+                if (focused) SolidColor(Color.White)
+                else Brush.verticalGradient(ButtonMaterial.primaryStops(brand, brandSoft))
+            )
+            .then(
+                if (focused) Modifier
+                else Modifier.border(1.dp, ButtonMaterial.highlightEdge, Radius.Md)
             )
             .tvFocusRing(focused)
             .onFocusChanged { focused = it.isFocused }
@@ -1206,15 +1209,18 @@ fun TvScrapeChip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            TmdbIconOnly(height = 14.dp)
+            if (running) {
+                CircularProgressIndicator(
+                    strokeWidth = 2.dp,
+                    color = Color.Black,
+                    modifier = Modifier.size(13.dp)
+                )
+            }
             Text(
                 text = if (running) "$done/$total 取消" else "刮削",
-                color = when {
-                    focused -> Color.Black
-                    running -> TvText.Title
-                    else -> TvText.Body
-                },
+                color = Color.Black,
                 style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 1
             )
         }

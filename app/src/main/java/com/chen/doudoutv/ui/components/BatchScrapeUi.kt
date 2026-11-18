@@ -6,7 +6,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
@@ -24,14 +23,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.chen.doudoutv.data.model.MediaEntity
 import com.chen.doudoutv.ui.LibraryViewModel
 import com.chen.doudoutv.ui.theme.AppColors
@@ -141,39 +141,50 @@ fun batchScrapeConfirmText(total: Int, skipped: Int): AnnotatedString = buildAnn
 }
 
 /**
- * 网格海报左上角的「已刮削」角标：TMDB 官方图标 + 评分。
+ * 网格海报左上角的「已刮削」角标：一颗贴角微章，深磨砂底 + 上缘亮边，
+ * 里面排「TMDB（品牌蓝粗体文字） ＋ 白色评分」。
  *
- * 背景全透明（海报明暗不定，衬色块会在画面上挖洞）；
- * 评分文字带一层轻投影，压在浅色海报上也能读。
- * 手机端与 TV 端共用这一颗，只有图标高度按卡片尺寸分档。
+ * 不用 TMDB 完整字标矢量：那张图含 THE MOVIE DATABASE 全部小字，
+ * 缩到角标尺寸字母糊成一团蓝点，身份反而读不出来。文字直接渲染永远清晰，
+ * 品牌蓝本身就是「刮过了」的识别信号。深底只包内容宽，不是大色块挖洞。
+ * 手机端与 TV 端共用这一颗，[compact] 按卡片尺寸分档。
  */
 @Composable
-fun ScrapedBadge(rating: Double?, iconHeight: Dp) {
+fun ScrapedBadge(rating: Double?, compact: Boolean) {
     if (rating == null) return
+    val tmdbSize = if (compact) 9.sp else 12.sp
+    val scoreSize = if (compact) 11.sp else 12.sp
     Row(
+        modifier = Modifier
+            .clip(Radius.Sm)
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color.Black.copy(alpha = 0.66f), Color.Black.copy(alpha = 0.52f))
+                )
+            )
+            .padding(
+                horizontal = if (compact) 5.dp else 6.dp,
+                vertical = if (compact) 2.5.dp else 3.dp
+            ),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp)
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 4.dp)
     ) {
-        TmdbIconOnly(height = iconHeight)
+        Text(
+            text = "TMDB",
+            fontSize = tmdbSize,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = 0.3.sp,
+            color = BadgeColors.Tmdb,
+            maxLines = 1
+        )
         if (rating > 0.0) {
-            val score = String.format(Locale.US, "%.1f", rating)
-            // 不用背景衬色块，也不依赖 TextStyle.shadow：黑字错开 1dp 垫在琥珀字底下，
-            // 等于给文字描了一道软边，压在浅色海报上也能读
-            Box {
-                Text(
-                    text = score,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.Black.copy(alpha = 0.85f),
-                    modifier = Modifier.offset(1.dp, 1.dp)
-                )
-                Text(
-                    text = score,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = AppColors.Rating
-                )
-            }
+            Text(
+                text = String.format(Locale.US, "%.1f", rating),
+                fontSize = scoreSize,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                maxLines = 1
+            )
         }
     }
 }
@@ -181,11 +192,12 @@ fun ScrapedBadge(rating: Double?, iconHeight: Dp) {
 /**
  * 手机端顶栏上的刮削按钮。
  *
- * 胶囊形 + 品牌色薄底 + 一道半透明品牌描边：原来那块 SurfaceHi 深灰底
- * 在近黑顶栏上就是一块黑疙瘩，和整页的材质层级（L2 卡片底）串了味。
- * 现在它读起来是「一颗可点的品牌动作」，和详情页「播放」那颗主按钮同一语言。
+ * 与详情页「播放」主按钮同一套材质（[ButtonMaterial.primaryStops] 品牌渐变实底
+ * + 上缘内高光 + 黑字），圆角矩形。原来是胶囊 + 品牌薄底 + 蓝 TMDB 图标：
+ * 胶囊违反 NF 形状口径，红底蓝字打架，薄底描边读起来像禁用态。
+ * 按钮语义是「刮削」这个动作，署名交给海报角标和详情页，这里不再嵌图标。
  *
- * 空闲态是「TMDB 官方图标 + 刮削」；批次在跑时同一颗按钮变成「进度 + 取消」，
+ * 空闲态是「刮削」；批次在跑时同一颗按钮变成「进度 + 取消」，
  * 位置不动 —— 用户随时能找到取消的地方。
  */
 @Composable
@@ -196,13 +208,16 @@ fun PhoneScrapeButton(
     onClick: () -> Unit
 ) {
     val brand = AppColors.Brand
+    val brandSoft = AppColors.BrandSoft
     Box(
         Modifier
-            .clip(Radius.Pill)
-            .background(brand.copy(alpha = 0.14f))
-            .border(1.dp, brand.copy(alpha = 0.5f), Radius.Pill)
+            .clip(Radius.Md)
+            .background(
+                Brush.verticalGradient(ButtonMaterial.primaryStops(brand, brandSoft))
+            )
+            .border(1.dp, ButtonMaterial.highlightEdge, Radius.Md)
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .padding(horizontal = 14.dp, vertical = 7.dp)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -211,17 +226,15 @@ fun PhoneScrapeButton(
             if (running) {
                 CircularProgressIndicator(
                     strokeWidth = 2.dp,
-                    color = brand,
+                    color = Color.Black,
                     modifier = Modifier.size(13.dp)
                 )
-            } else {
-                TmdbIconOnly(height = 14.dp)
             }
             Text(
                 text = if (running) "$done/$total 取消" else "刮削",
                 style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Medium,
-                color = brand,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.Black,
                 maxLines = 1
             )
         }

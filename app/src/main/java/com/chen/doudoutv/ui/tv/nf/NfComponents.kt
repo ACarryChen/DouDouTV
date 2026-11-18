@@ -866,14 +866,14 @@ private fun NfPosterBody(
                 titleFontSize = 30.sp
             )
         }
-        // 已刮削标记：左上角 TMDB 图标 + 评分，背景全透明（海报明暗不定，衬色块会挖洞）
+        // 已刮削标记：左上角深磨砂微章（蓝字 TMDB + 白色评分）
         if (scrapedRating != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(6.dp)
+                    .padding(3.dp)
             ) {
-                ScrapedBadge(rating = scrapedRating, iconHeight = 15.dp)
+                ScrapedBadge(rating = scrapedRating, compact = false)
             }
         }
     }
