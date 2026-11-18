@@ -11,6 +11,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -96,6 +97,7 @@ import com.chen.doudoutv.ui.detail.loadPosterBitmap
 import com.chen.doudoutv.ui.detail.pageTonesOf
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.Edge
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -204,8 +206,8 @@ fun TvDetailScreen(
     val selectedPlaySourceState = remember { mutableStateOf<String>("") }
     var selectedPlaySource by selectedPlaySourceState
 
-    /** 「跳过片头」预设弹窗（遥控器焦点）显隐 */
-    var showSkipDialog by remember { mutableStateOf(false) }
+    /** 「跳过片头」预设弹窗（遥控器焦点）显隐：只被下方 UI 树读写，状态交 Body 挂名使用 */
+    val showSkipDialogState = remember { mutableStateOf(false) }
 
     // 详情页期间把 MainActivity 的 finish() 拦下来：爬虫壳拉详情（网盘线路）时会顺手结束宿主，
     // 不拦就会「点详情直接闪退」。
@@ -516,8 +518,9 @@ fun TvDetailScreen(
             Log.i(FOCUS_TAG, "货架滚到 recall 格 target=$target")
         }
     }
-    /** 焦点停在货架哪一集：下方视频信息面板跟着它走；离开货架保留最后一集 */
-    var focusedEpId by remember(mediaId) { mutableStateOf(0L) }
+    /** 焦点停在货架哪一集：下方视频信息面板跟着它走；离开货架保留最后一集（UI 树里写，这里读） */
+    val focusedEpIdState = remember(mediaId) { mutableStateOf(0L) }
+    var focusedEpId by focusedEpIdState
     // 面板跟焦：优先焦点所在集，其次接址那一集，最后本页首集；
     // Emby 电影没有分集，壳行本身就是可播实体，影片信息挂在它上面
     val infoEpisode = pagedEpisodes.firstOrNull { it.id == focusedEpId }
@@ -565,33 +568,7 @@ fun TvDetailScreen(
     // 原来的 restoreGridFocus 会在每次切换后把焦点抢到第一集，
     // 表现就是「切完云盘，焦点自己跑到剧集上了」（规范 R4：离开哪一层就留在哪一层）。
 
-    /**
-     * 换播放源（网盘 / 线路）之后，把这一页接回用户原来那集。
-     *
-     * 新线路的分集是另一批行、另一批 id：旧行要是继续留在 resumeEpisode 里，
-     * 主按钮「继续观看」就会播回上一条网盘 —— 换源后进度看着还在，按下去却来自另一个源。
-     * 找不到同一集时宁可清掉续播锚点、回到第一页，也不能拿着旧源的行往下走。
-     */
-    fun rebindSource(next: List<MediaEntity>, anchor: MediaEntity?) {
-        val same = matchEpisodeInSource(anchor, next)
-        episodes = next
-        // 续播锚点只在「这页本来就是靠它开的」时跟着换源重绑；
-        // 新线路没有同一集就清掉，不能让主按钮拿着旧网盘的行去播。
-        if (resumeEpisode != null) resumeEpisode = same
-        val seasons = next.map { it.season }.distinct()
-        if (seasons.size > 1) {
-            selectedSeason = when {
-                same != null -> same.season
-                selectedSeason in seasons -> selectedSeason
-                else -> seasons.first()
-            }
-        }
-        val inSeason =
-            if (seasons.size <= 1) next else next.filter { it.season == selectedSeason }
-        val pos = same?.let { s -> inSeason.indexOfFirst { it.id == s.id } } ?: -1
-        epPage = if (pos >= 0) pos / TV_EPS_PAGE else 0
-        recallEpisodeId = same?.id ?: 0L
-    }
+    // rebindSource（换源重绑）只被下方 UI 树调用，已随 Box 树一并搬进 [TvDetailScreenBody]。
 
     val tones = remember(dominant) {
         if (dominant == Color.Unspecified) {
@@ -634,6 +611,214 @@ fun TvDetailScreen(
         ?: scraped?.directors?.map { it.name }
         ?: splitCastNames(item?.directors.orEmpty()).take(3))
         ?.joinToString(" / ").orEmpty()
+
+    TvDetailScreenBody(
+        vm = vm,
+        sink = TvDetailBodySink(
+            mediaState, episodesState, resumeEpisodeState,
+            selectedSeasonState, epPageState, recallEpisodeIdState,
+            selectedPlaySourceState, showSkipDialogState, focusedEpIdState
+        ),
+        focus = TvDetailBodyFocus(
+            favoriteFocusRequester, playFocusRequester, controlsFocusRequester,
+            firstEpFocusRequester, pageFocusRequester, mediaInfoFocusRequester,
+            epStand, stand
+        ),
+        ui = TvDetailBodyUi(
+            loading = loading,
+            skeletonArmed = skeletonArmed,
+            reveal = reveal,
+            bgBrush = bgBrush,
+            backdrop = backdrop,
+            headerScrim = headerScrim,
+            logo = logo,
+            directors = directors,
+            scraped = scraped,
+            tmdb = tmdb,
+            playSources = playSources,
+            badgeInfo = badgeInfo,
+            tvCast = tvCast,
+            isEmbySource = isEmbySource,
+            tvSeasons = tvSeasons,
+            seasonEpisodes = seasonEpisodes,
+            pagedEpisodes = pagedEpisodes,
+            epRows = epRows,
+            pageIndex = pageIndex,
+            totalPages = totalPages,
+            embyRowState = embyRowState,
+            skipPillVisible = skipPillVisible,
+            hasEpisodes = hasEpisodes,
+            hasControlAnchor = hasControlAnchor,
+            hasCast = hasCast,
+            hasMediaInfoPanel = hasMediaInfoPanel,
+            hasPageRow = hasPageRow,
+            episodeMediaInfo = episodeMediaInfo,
+            infoEpisode = infoEpisode
+        ),
+        scrollState = scrollState,
+        scope = scope,
+        publishStand = { target, name -> publishStand(target, name) },
+        onPlay = onPlay
+    )
+}
+
+/**
+ * [TvDetailScreenBody] 要读写的可变状态收口容器（同 [TvDetailLoadSink] 的路子）：
+ * 主函数保留各状态的 remember，Body 拆包成同名委托变量，下方 Box 树因此逐行未动。
+ */
+private class TvDetailBodySink(
+    val media: MutableState<MediaEntity?>,
+    val episodes: MutableState<List<MediaEntity>>,
+    val resumeEpisode: MutableState<MediaEntity?>,
+    val selectedSeason: MutableState<Int>,
+    val epPage: MutableState<Int>,
+    val recallEpisodeId: MutableState<Long>,
+    val selectedPlaySource: MutableState<String>,
+    val showSkipDialog: MutableState<Boolean>,
+    val focusedEpId: MutableState<Long>
+)
+
+/** 页面焦点锚点与落点：纯对象引用，Body 只把它们转交给各区块接线用 */
+private class TvDetailBodyFocus(
+    val favorite: FocusRequester,
+    val play: FocusRequester,
+    val controls: FocusRequester,
+    val firstEp: FocusRequester,
+    val page: FocusRequester,
+    val mediaInfo: FocusRequester,
+    val epStand: StandTarget,
+    val stand: StandTarget
+)
+
+/** Body 用到的只读派生值：全部在主函数组合期算好传入，Body 不再重算 */
+private class TvDetailBodyUi(
+    val loading: Boolean,
+    val skeletonArmed: Boolean,
+    val reveal: Animatable<Float, AnimationVector1D>,
+    val bgBrush: Brush,
+    val backdrop: String,
+    val headerScrim: Brush,
+    val logo: String,
+    val directors: String,
+    val scraped: EmbyClient.ItemDetail?,
+    val tmdb: com.chen.doudoutv.data.tmdb.TmdbClient.ScrapeResult?,
+    val playSources: List<String>,
+    val badgeInfo: FormatProbe.Info,
+    val tvCast: List<TvCast>,
+    val isEmbySource: Boolean,
+    val tvSeasons: List<Int>,
+    val seasonEpisodes: List<MediaEntity>,
+    val pagedEpisodes: List<MediaEntity>,
+    val epRows: List<List<MediaEntity>>,
+    val pageIndex: Int,
+    val totalPages: Int,
+    val embyRowState: LazyListState,
+    val skipPillVisible: Boolean,
+    val hasEpisodes: Boolean,
+    val hasControlAnchor: Boolean,
+    val hasCast: Boolean,
+    val hasMediaInfoPanel: Boolean,
+    val hasPageRow: Boolean,
+    val episodeMediaInfo: EmbyClient.MediaInfo?,
+    val infoEpisode: MediaEntity?
+)
+
+/**
+ * 详情页整棵 UI 树（原来内联在 [TvDetailScreen] 里的那个 Box）。
+ *
+ * 为方法体积外移（见文件下方 #41 背景）：主函数只留状态声明、加载链与派生计算，
+ * 寄存器数回到 ART 校验器雷区之下；本函数允许大 —— 它不 remember 任何状态、
+ * 没有内联的 LaunchedEffect，捕获的局部引用都改成了参数，寄存器数远低于原宿主方法。
+ * 纯搬移：Box 树逐行未动，逻辑与焦点接线一概不变。
+ */
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
+@Composable
+private fun TvDetailScreenBody(
+    vm: LibraryViewModel,
+    sink: TvDetailBodySink,
+    focus: TvDetailBodyFocus,
+    ui: TvDetailBodyUi,
+    scrollState: ScrollState,
+    scope: CoroutineScope,
+    publishStand: (FocusRequester, String) -> Modifier,
+    onPlay: (Long) -> Unit
+) {
+    // 容器拆包回原主函数的局部同名变量，下面整段 Box 树因此一个字都不用改
+    var media by sink.media
+    var episodes by sink.episodes
+    var resumeEpisode by sink.resumeEpisode
+    var selectedSeason by sink.selectedSeason
+    var epPage by sink.epPage
+    var recallEpisodeId by sink.recallEpisodeId
+    var selectedPlaySource by sink.selectedPlaySource
+    var showSkipDialog by sink.showSkipDialog
+    var focusedEpId by sink.focusedEpId
+    val item = media
+    val loading = ui.loading
+    val skeletonArmed = ui.skeletonArmed
+    val reveal = ui.reveal
+    val bgBrush = ui.bgBrush
+    val backdrop = ui.backdrop
+    val headerScrim = ui.headerScrim
+    val logo = ui.logo
+    val directors = ui.directors
+    val scraped = ui.scraped
+    val tmdb = ui.tmdb
+    val playSources = ui.playSources
+    val badgeInfo = ui.badgeInfo
+    val tvCast = ui.tvCast
+    val isEmbySource = ui.isEmbySource
+    val tvSeasons = ui.tvSeasons
+    val seasonEpisodes = ui.seasonEpisodes
+    val pagedEpisodes = ui.pagedEpisodes
+    val epRows = ui.epRows
+    val pageIndex = ui.pageIndex
+    val totalPages = ui.totalPages
+    val embyRowState = ui.embyRowState
+    val skipPillVisible = ui.skipPillVisible
+    val hasEpisodes = ui.hasEpisodes
+    val hasControlAnchor = ui.hasControlAnchor
+    val hasCast = ui.hasCast
+    val hasMediaInfoPanel = ui.hasMediaInfoPanel
+    val hasPageRow = ui.hasPageRow
+    val episodeMediaInfo = ui.episodeMediaInfo
+    val infoEpisode = ui.infoEpisode
+    val favoriteFocusRequester = focus.favorite
+    val playFocusRequester = focus.play
+    val controlsFocusRequester = focus.controls
+    val firstEpFocusRequester = focus.firstEp
+    val pageFocusRequester = focus.page
+    val mediaInfoFocusRequester = focus.mediaInfo
+    val epStand = focus.epStand
+    val stand = focus.stand
+
+    /**
+     * 换播放源（网盘 / 线路）之后，把这一页接回用户原来那集。
+     *
+     * 新线路的分集是另一批行、另一批 id：旧行要是继续留在 resumeEpisode 里，
+     * 主按钮「继续观看」就会播回上一条网盘 —— 换源后进度看着还在，按下去却来自另一个源。
+     * 找不到同一集时宁可清掉续播锚点、回到第一页，也不能拿着旧源的行往下走。
+     */
+    fun rebindSource(next: List<MediaEntity>, anchor: MediaEntity?) {
+        val same = matchEpisodeInSource(anchor, next)
+        episodes = next
+        // 续播锚点只在「这页本来就是靠它开的」时跟着换源重绑；
+        // 新线路没有同一集就清掉，不能让主按钮拿着旧网盘的行去播。
+        if (resumeEpisode != null) resumeEpisode = same
+        val seasons = next.map { it.season }.distinct()
+        if (seasons.size > 1) {
+            selectedSeason = when {
+                same != null -> same.season
+                selectedSeason in seasons -> selectedSeason
+                else -> seasons.first()
+            }
+        }
+        val inSeason =
+            if (seasons.size <= 1) next else next.filter { it.season == selectedSeason }
+        val pos = same?.let { s -> inSeason.indexOfFirst { it.id == s.id } } ?: -1
+        epPage = if (pos >= 0) pos / TV_EPS_PAGE else 0
+        recallEpisodeId = same?.id ?: 0L
+    }
 
     Box(
         Modifier

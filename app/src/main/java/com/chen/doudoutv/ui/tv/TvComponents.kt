@@ -8,6 +8,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,6 +45,7 @@ import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -63,6 +65,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -77,6 +81,9 @@ import com.chen.doudoutv.data.model.MediaEntity
 import com.chen.doudoutv.ui.components.ButtonMaterial
 import com.chen.doudoutv.ui.components.PosterArt
 import com.chen.doudoutv.ui.components.PosterFallback
+import com.chen.doudoutv.ui.components.ScrapedBadge
+import com.chen.doudoutv.ui.components.TmdbIconOnly
+import com.chen.doudoutv.ui.components.batchScrapeConfirmText
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.Edge
 import com.chen.doudoutv.ui.theme.TvText
@@ -593,7 +600,9 @@ fun TvPosterCard(
      * 默认绕中心放大，首卡会往左吃掉 5% 卡宽的左边距，于是它比下面各行、
      * 各列的首卡都更靠左 —— 焦点一走到行首就「越界、对不齐」。
      */
-    anchorStart: Boolean = false
+    anchorStart: Boolean = false,
+    /** 已经刮过：左上角挂 TMDB 官方图标 + 评分（透明底，不衬黑块）；null = 没刮过 */
+    scrapedRating: Double? = null
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -662,7 +671,8 @@ fun TvPosterCard(
             metaLine = posterMetaLine(item),
             progress = progress,
             fillCell = fillCell,
-            width = width
+            width = width,
+            scrapedRating = scrapedRating
         )
     }
 }
@@ -681,6 +691,7 @@ private fun TvPosterBody(
     progress: Float,
     fillCell: Boolean,
     width: Dp,
+    scrapedRating: Double? = null,
 ) {
     Box(
         Modifier
@@ -697,6 +708,16 @@ private fun TvPosterBody(
                 titleFontSize = MaterialTheme.typography.titleMedium.fontSize,
                 subtitleFontSize = MaterialTheme.typography.bodySmall.fontSize
             )
+        }
+        // 已刮削标记：左上角 TMDB 官方图标 + 评分，背景全透明（不衬黑块）
+        if (scrapedRating != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+            ) {
+                ScrapedBadge(rating = scrapedRating, iconHeight = 15.dp)
+            }
         }
         if (progress > 0f) {
             Box(
@@ -1103,7 +1124,9 @@ internal val TvRowVerticalPadding = 14.dp
 fun TvFilterChip(
     text: String,
     selected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    /** 拿到焦点时回调一次：横向 chip 排被裁掉时，靠它把焦点项滚进可视区 */
+    onFocused: (() -> Unit)? = null
 ) {
     var focused by remember { mutableStateOf(false) }
     Box(
@@ -1118,7 +1141,10 @@ fun TvFilterChip(
                 }
             )
             .tvFocusRing(focused)
-            .onFocusChanged { focused = it.isFocused }
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) onFocused?.invoke()
+            }
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -1137,5 +1163,129 @@ fun TvFilterChip(
             style = MaterialTheme.typography.labelMedium,
             maxLines = 1
         )
+    }
+}
+
+/**
+ * 电视端分类栏右端的刮削按钮。
+ *
+ * 高度必须和分类 chip 一致：横向排布时两者上下边不齐会很明显。
+ * 这里直接沿用 [TvFilterChip] 的 padding（horizontal 20 / vertical 9）与 labelMedium 字号，
+ * 内容换成「TMDB 官方图标 + 文字」，图标高度压到比文字行高小，行高因此仍由文字决定，
+ * 整颗按钮与旁边 chip 等高。
+ */
+@Composable
+fun TvScrapeChip(
+    running: Boolean,
+    done: Int,
+    total: Int,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        modifier
+            .clip(Radius.Md)
+            .background(
+                when {
+                    focused -> Color.White
+                    running -> AppColors.Brand
+                    else -> AppColors.SurfaceHi
+                }
+            )
+            .tvFocusRing(focused)
+            .onFocusChanged { focused = it.isFocused }
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = 20.dp, vertical = 9.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            TmdbIconOnly(height = 14.dp)
+            Text(
+                text = if (running) "$done/$total 取消" else "刮削",
+                color = when {
+                    focused -> Color.Black
+                    running -> TvText.Title
+                    else -> TvText.Body
+                },
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * 电视端批量刮削的确认弹窗。
+ *
+ * 形态跟首页「继续观看」长按菜单一致（Compose Dialog + tvMoveFocus 抢焦，规范 R1/R5）：
+ * 独立窗口天然把焦点关在弹窗里，Back 由窗口自己处理。
+ * 行样式复用 [TvMenuRow]，与其它电视端菜单同一套视觉。
+ */
+@Composable
+fun TvBatchScrapeDialog(
+    total: Int,
+    skipped: Int,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val firstFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        // 等一帧：Dialog 内容要先组合完成，requester 才挂得上
+        withFrameNanos { }
+        tvMoveFocus(firstFocus)
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        // 关掉平台默认窄宽度，宽度由弹窗自己按屏幕尺寸决定
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        BoxWithConstraints(
+            Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 32.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            val dialogWidth = (maxWidth * 0.34f).coerceIn(380.dp, 640.dp)
+            Column(
+                Modifier
+                    .width(dialogWidth)
+                    .background(AppColors.SurfaceHi, Radius.Lg)
+                    .padding(vertical = 26.dp)
+            ) {
+                Text(
+                    text = "批量刮削",
+                    color = TvText.Title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 26.dp)
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = batchScrapeConfirmText(total, skipped),
+                    color = TvText.Meta,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 26.dp)
+                )
+                Spacer(Modifier.height(18.dp))
+                Column(
+                    Modifier.padding(horizontal = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    TvMenuRow(
+                        text = "开始刮削",
+                        hint = "共 $total 部",
+                        modifier = Modifier.focusRequester(firstFocus),
+                        onClick = onConfirm
+                    )
+                    TvMenuRow(text = "取消", onClick = onDismiss)
+                }
+            }
+        }
     }
 }

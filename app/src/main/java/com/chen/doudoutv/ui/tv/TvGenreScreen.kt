@@ -17,6 +17,8 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -26,6 +28,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -36,17 +39,20 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.chen.doudoutv.data.model.MediaEntity
 import com.chen.doudoutv.data.model.MediaKind
+import com.chen.doudoutv.data.scrape.ScrapeEngine
 import com.chen.doudoutv.ui.LibraryViewModel
 import com.chen.doudoutv.ui.ReturnSpot
 import com.chen.doudoutv.ui.StandTarget
 import com.chen.doudoutv.ui.PrecomposeWindow
 import com.chen.doudoutv.ui.cardStand
 import com.chen.doudoutv.ui.components.ShimmerCard
+import com.chen.doudoutv.ui.components.rememberBatchScrapeUiState
 import com.chen.doudoutv.ui.gridState
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.themeBackdrop
 import com.chen.doudoutv.ui.theme.TvText
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 private const val TV_PAGE_SIZE = 60
 
@@ -90,6 +96,14 @@ fun TvGenreScreen(
     val firstId = items.firstOrNull()?.id
     /** 落点是否已解析完（该补的页补到位）；补页期间不抢焦点，免得焦点先落到首卡再跳。 */
     var spotReady by remember(filterKey) { mutableStateOf(false) }
+
+    // 批量刮削：已刮标记（网格角标）、确认弹窗、批次进度
+    val scrapeUi = rememberBatchScrapeUiState(vm)
+    // 批次跑完 ViewModel 会自增 scrapeEpoch，这一轮把「已刮」重新查一遍
+    LaunchedEffect(items, vm.scrapeEpoch) { scrapeUi.refresh(items) }
+    // 分类横条自己滚：焦点移到被裁掉的分类上时，把它滚进可视区
+    val chipListState = rememberLazyListState()
+    val chipScope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         tags = runCatching { vm.genreTags() }.getOrDefault(emptyList())
@@ -199,6 +213,9 @@ fun TvGenreScreen(
         }
 
         // 题材横条：单行可滚动，遥控器左右移动即可（底部渐变分隔线）
+        //
+        // 分两块区域：分类栏占掉除按钮以外的全部宽度（weight(1f)），
+        // 刮削按钮固定在最右一颗 —— 分类再多也不会把按钮挤出屏幕。
         Row(
             Modifier
                 .fillMaxWidth()
@@ -210,13 +227,14 @@ fun TvGenreScreen(
                 )
         ) {
             LazyRow(
+                state = chipListState,
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .weight(1f)
                     .padding(top = 18.dp, bottom = 8.dp),
                 contentPadding = PaddingValues(horizontal = TvPagePadding),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(chips, key = { "chip_${it.first}" }) { (label, k, g) ->
+                itemsIndexed(chips, key = { _, it -> "chip_${it.first}" }) { index, (label, k, g) ->
                     TvFilterChip(
                         text = label,
                         selected = k == kind && g == genre,
@@ -225,9 +243,27 @@ fun TvGenreScreen(
                         onClick = {
                             kind = k
                             genre = g
+                        },
+                        // 焦点落到被裁掉的分类上时把它滚出来，否则用户看不到自己停在哪
+                        onFocused = {
+                            chipScope.launch { chipListState.animateScrollToItem(index) }
                         }
                     )
                 }
+            }
+            if (vm.scrapeEngine == ScrapeEngine.TMDB) {
+                // 与分类 chip 同一套内边距 → 两块区域上下对齐、整颗按钮与 chip 等高
+                Spacer(Modifier.width(12.dp))
+                TvScrapeChip(
+                    running = scrapeUi.running,
+                    done = scrapeUi.done,
+                    total = scrapeUi.total,
+                    onClick = {
+                        if (scrapeUi.running) scrapeUi.cancel() else scrapeUi.request(items)
+                    },
+                    modifier = Modifier.padding(top = 18.dp, bottom = 8.dp)
+                )
+                Spacer(Modifier.width(TvPagePadding))
             }
         }
 
@@ -258,7 +294,9 @@ fun TvGenreScreen(
                             target = stand,
                             requester = if (item.id == firstId) firstCardFocus else ownFocus
                         ),
-                        fillCell = true
+                        fillCell = true,
+                        // 已经刮过的挂 TMDB 官方图标（透明底）
+                        scrapedRating = scrapeUi.scrapedRatings[item.id]
                     )
                 }
                 if (loadingMore) {
@@ -282,6 +320,16 @@ fun TvGenreScreen(
                 }
             }
         }
+    }
+
+    // 批量刮削确认框：独立窗口，焦点天然关在框里，Back 由窗口自己处理
+    if (scrapeUi.confirmVisible) {
+        TvBatchScrapeDialog(
+            total = scrapeUi.pendingTotal,
+            skipped = scrapeUi.pendingSkipped,
+            onConfirm = { scrapeUi.confirm() },
+            onDismiss = { scrapeUi.dismiss() }
+        )
     }
 }
 
@@ -335,6 +383,14 @@ fun TvCategoryScreen(
     val columns = tvPosterColumns()
     val stand = remember { StandTarget() }
     val firstId = items.firstOrNull()?.id
+
+    // 批量刮削：已刮标记（网格角标）、确认弹窗、批次进度
+    val scrapeUi = rememberBatchScrapeUiState(vm)
+    // 批次跑完 ViewModel 会自增 scrapeEpoch，这一轮把「已刮」重新查一遍
+    LaunchedEffect(items, vm.scrapeEpoch) { scrapeUi.refresh(items) }
+    // 分类横条自己滚：焦点移到被裁掉的分类上时，把它滚进可视区
+    val chipListState = rememberLazyListState()
+    val chipScope = rememberCoroutineScope()
 
     LaunchedEffect(currentTypeId, vm.homeRefreshEpoch) {
         vm.ensureBrowsePage(currentTypeId)
@@ -398,24 +454,48 @@ fun TvCategoryScreen(
             }
         }
 
-        // 分类切换横条：和题材页同一套 chip，遥控器左右移动即可换分类
-        if (categories.size > 1) {
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp, bottom = 6.dp),
-                contentPadding = PaddingValues(horizontal = TvPagePadding),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(categories, key = { "tv_cat_chip_${it.typeId}" }) { cat ->
-                    TvFilterChip(
-                        text = cat.typeName,
-                        selected = cat.typeId == currentTypeId,
-                        onClick = {
-                            if (cat.typeId != currentTypeId) currentTypeId = cat.typeId
-                        }
-                    )
+        // 分类切换横条 + 刮削按钮：和题材页同一套 chip，遥控器左右移动即可换分类。
+        // 分两块区域：分类栏占掉除按钮以外的全部宽度（weight(1f)），
+        // 刮削按钮固定在最右一颗 —— 分类再多也不会把按钮挤出屏幕。
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp, bottom = 6.dp)
+        ) {
+            if (categories.isNotEmpty()) {
+                LazyRow(
+                    state = chipListState,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = TvPagePadding),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    itemsIndexed(categories, key = { _, it -> "tv_cat_chip_${it.typeId}" }) { index, cat ->
+                        TvFilterChip(
+                            text = cat.typeName,
+                            selected = cat.typeId == currentTypeId,
+                            onClick = {
+                                if (cat.typeId != currentTypeId) currentTypeId = cat.typeId
+                            },
+                            // 焦点落到被裁掉的分类上时把它滚出来，否则用户看不到自己停在哪
+                            onFocused = {
+                                chipScope.launch { chipListState.animateScrollToItem(index) }
+                            }
+                        )
+                    }
                 }
+            }
+            if (vm.scrapeEngine == ScrapeEngine.TMDB) {
+                // 与分类 chip 同一套内边距 → 两块区域上下对齐、整颗按钮与 chip 等高
+                Spacer(Modifier.width(12.dp))
+                TvScrapeChip(
+                    running = scrapeUi.running,
+                    done = scrapeUi.done,
+                    total = scrapeUi.total,
+                    onClick = {
+                        if (scrapeUi.running) scrapeUi.cancel() else scrapeUi.request(items)
+                    }
+                )
+                Spacer(Modifier.width(TvPagePadding))
             }
         }
 
@@ -461,7 +541,9 @@ fun TvCategoryScreen(
                             mediaId = item.id,
                             target = stand,
                             requester = if (item.id == firstId) firstFocus else ownFocus
-                        )
+                        ),
+                        // 已经刮过的挂 TMDB 官方图标（透明底）
+                        scrapedRating = scrapeUi.scrapedRatings[item.id]
                     )
                 }
                 item(span = { GridItemSpan(maxLineSpan) }) {
@@ -497,5 +579,15 @@ fun TvCategoryScreen(
                 }
             }
         }
+    }
+
+    // 批量刮削确认框：独立窗口，焦点天然关在框里，Back 由窗口自己处理
+    if (scrapeUi.confirmVisible) {
+        TvBatchScrapeDialog(
+            total = scrapeUi.pendingTotal,
+            skipped = scrapeUi.pendingSkipped,
+            onConfirm = { scrapeUi.confirm() },
+            onDismiss = { scrapeUi.dismiss() }
+        )
     }
 }

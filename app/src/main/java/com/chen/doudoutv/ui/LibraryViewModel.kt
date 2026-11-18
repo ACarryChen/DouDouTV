@@ -27,6 +27,8 @@ import com.chen.doudoutv.data.tvbox.CatVodResultParser
 import com.chen.doudoutv.data.tvbox.TvBoxClient
 import com.chen.doudoutv.data.tvbox.TvBoxClient.TvBoxSite
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -35,11 +37,29 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * 批量刮削进度（分类页一次只刮当前分类已加载出来的那批）。
+ *
+ * [skipped] 是「已经刮过、按口径要跳过」的条数，不计入 [total]，
+ * 所以进度分母是真正要发请求的条数。
+ */
+data class BatchScrapeState(
+    val running: Boolean = false,
+    val total: Int = 0,
+    val done: Int = 0,
+    val hit: Int = 0,
+    val miss: Int = 0,
+    val skipped: Int = 0
+)
+
 class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         /** 首页分类行首批展示条数（够铺满电视一行），滚到尾部再追加 */
         const val CATEGORY_PREVIEW_BATCH = 10
+
+        /** 批量刮削每部之间的间隔：TMDB 侧限流不算严，但连着打几十上百部容易被判滥用 */
+        const val BATCH_GAP_MS = 300L
 
         /**
          * 进程级唯一实例，不再随 Activity 一起换。
@@ -1015,6 +1035,87 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 清空刮削缓存，返回被清掉的缓存条目数 */
     suspend fun clearScrapeCache(): Int = repo.clearScrapeCache()
+
+    // ---------- 批量刮削（分类页） ----------
+
+    /** 当前批次进度；页面的进度条、按钮文案都读它 */
+    var batchState by mutableStateOf(BatchScrapeState())
+        private set
+
+    /**
+     * 刮削批次轮次：每批做完自增。
+     * 页面据此重新查一遍「哪些已刮过」，把网格上的 TMDB 标补上。
+     */
+    var scrapeEpoch by mutableStateOf(0)
+        private set
+
+    private var batchJob: Job? = null
+
+    /**
+     * 这批条目里哪些已经刮过、评分多少（只读 scraped_meta 表，不联网）。
+     * 页面拿它给网格打「已刮削 + TMDB 评分」角标，弹窗拿它算「已刮过将跳过」的条数。
+     */
+    suspend fun scrapedIdsOf(items: List<MediaEntity>): Map<Long, Double> = repo.scrapedIdsOf(items)
+
+    /**
+     * 开始批量刮削：只刮传进来的这一批（= 当前分类已加载出来的那批）。
+     *
+     * 串行执行，每部之间留 [BATCH_GAP_MS] 的间隔 —— 一次几十上百部，
+     * 并发打过去等于自己把 TMDB 的限流撞出来。
+     * 已经刮过的直接跳过，不发请求。
+     */
+    fun startBatchScrape(items: List<MediaEntity>) {
+        if (batchState.running) return
+        if (items.isEmpty()) {
+            message = "当前分类还没有内容"
+            return
+        }
+        batchJob?.cancel()
+        batchJob = viewModelScope.launch {
+            val already = repo.scrapedIdsOf(items)
+            batchState = BatchScrapeState(
+                running = true,
+                // 总数 = 这一批的全部条目（与确认框里的数字一致），
+                // 已经刮过的那几部不联网，但计入进度，读起来是「60/60」而不是「48/48」
+                total = items.size,
+                skipped = already.size
+            )
+            var hit = 0
+            var miss = 0
+            var done = already.size
+            try {
+                for (item in items) {
+                    // 已经刮过的直接跳过，不发请求
+                    if (item.id in already) continue
+                    // 刮削这条片子用的 kind：TVBox 的壳写死 SERIES，
+                    // 「电影」分类下要按 MOVIE 去搜，否则搜到的全是同名剧
+                    val kind = repo.scrapeKindOf(item)
+                    // mediaId 传 0：这一批只往 scraped_meta 表里存，不回填 media 行，
+                    // 网格缩略图保持原样（回填由详情页自己那次刮削负责）
+                    val result = repo.tmdbScrape(
+                        item.title, item.year, kind, 0L, item.genres,
+                        // 批量这一轮必须能重试：上一轮失败的片子会被记进负缓存，
+                        // 不绕开的话用户重跑批量，这些片子一次都不会再发请求
+                        bypassNegativeCache = true
+                    )
+                    if (result != null) hit++ else miss++
+                    done++
+                    batchState = batchState.copy(done = done, hit = hit, miss = miss)
+                    delay(BATCH_GAP_MS)
+                }
+            } finally {
+                batchState = batchState.copy(running = false)
+                scrapeEpoch++
+            }
+        }
+    }
+
+    /** 取消当前批次：正在跑的那部做完就停 */
+    fun cancelBatchScrape() {
+        batchJob?.cancel()
+        batchJob = null
+        batchState = batchState.copy(running = false)
+    }
 
     /** 当前刮削缓存条目数（数 scraped_meta 表，跨重启也还在的那些） */
     suspend fun scrapeCacheSize(): Int = repo.scrapeCacheSize()

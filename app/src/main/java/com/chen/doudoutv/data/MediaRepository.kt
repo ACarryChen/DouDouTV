@@ -698,12 +698,21 @@ class MediaRepository(private val context: Context) {
      * 每一步都按动画/剧类别过滤：同名动画与剧版在 year=0 时键完全相同，
      * 不过滤就会让剧版复用动画版先刮的那行。
      */
-    private suspend fun storedMeta(exactKey: String, titleKey: String, want: Int): ScrapedMetaEntity? =
+    private suspend fun storedMeta(exactKey: String, titleKeys: List<String>, want: Int): ScrapedMetaEntity? =
         runCatching {
-            val hit = listOf(metaDao.byKey("$exactKey#c$want"), metaDao.byKey(exactKey))
+            val exact = listOf(metaDao.byKey("$exactKey#c$want"), metaDao.byKey(exactKey))
                 .firstOrNull { it != null && ScrapeCategory.compatible(want, ScrapeCategory.ofStored(it.genres)) }
-            hit ?: metaDao.byTitleKeyAll(titleKey)
-                .firstOrNull { ScrapeCategory.compatible(want, ScrapeCategory.ofStored(it.genres)) }
+            if (exact != null) return@runCatching exact
+            // 同名回落：逐个键查，每个键取最新一条；类别对不上就换下一个键。
+            // 这里用普通循环而不是 Sequence.mapNotNull —— 后者的 lambda 会被序列存下来，
+            // 挂起调用在那种 lambda 里编译不过。
+            for (key in titleKeys) {
+                val row = metaDao.byTitleKeyAll(key).firstOrNull() ?: continue
+                if (ScrapeCategory.compatible(want, ScrapeCategory.ofStored(row.genres))) {
+                    return@runCatching row
+                }
+            }
+            null
         }.getOrNull()
 
     /**
@@ -719,17 +728,8 @@ class MediaRepository(private val context: Context) {
             val want = ScrapeCategory.ofSource(genres)
             val meta = storedMeta(
                 TmdbCache.keyOf(query, year, kind),
-                TmdbCache.titleKeyOf(query, kind),
+                listOf(TmdbCache.titleKeyOf(query, kind)),
                 want
-            )
-            // 取证：和下面 tmdbScrape 那行成对看 —— 这行是抢跑，「刮削」那行是链末端，
-            // 两行的时间差就是老海报在屏上多停的那段。没命中也要打，否则分不清「跑了没图」和「根本没跑」。
-            Log.i(
-                "ScrapeDiag",
-                "表读 \"$title\" → \"$query\" year=$year kind=$kind 分类=$want " +
-                    (if (meta == null) "未命中"
-                else "命中 背景=${if (meta.backdropUrl.isBlank()) "空" else "有"} " +
-                    "海报=${if (meta.posterUrl.isBlank()) "空" else "有"}")
             )
             meta?.toScrapeResult()
         }
@@ -752,16 +752,25 @@ class MediaRepository(private val context: Context) {
     suspend fun tmdbScrape(
         title: String,
         year: Int,
-        kind: String,
+        rawKind: String,
         mediaId: Long = 0L,
-        genres: String = ""
+        genres: String = "",
+        bypassNegativeCache: Boolean = false
     ): TmdbClient.ScrapeResult? = withContext(Dispatchers.IO) {
         // 清洗放在这里，而不是 TmdbClient 里面：缓存键、表键和检索词必须用同一个串，
         // 否则「（臻彩）」和「[4K]」两种后缀会算成两条，换条线路重进就白刮一次。
         // 库里的 title、详情页展示、FormatProbe 读的文件名都不动，只有发 TMDB 的这个词被洗过。
         val query = ScrapeTitle.forSearch(title)
+        // 类型就地纠正：调用方给的 kind 不可信（TVBox 一律写死 SERIES，电影也标成剧集），
+        // 纠正之后「缓存键 / 查表键 / 实际检索」三处必须用同一个值 ——
+        // 用两个不同的 kind 算键，缓存和表就永远对不上，等于每次都白刮。
+        val kind = scrapeKindOf(rawKind, title, genres)
         val exactKey = TmdbCache.keyOf(query, year, kind)
         val titleKey = TmdbCache.titleKeyOf(query, kind)
+        // 另一个 kind 的同名键：TVBox 的壳写死 SERIES、Emby 电影是 MOVIE，
+        // 同一部片在两个来源下算出两条 titleKey。查表时两种都试，
+        // 否则一部片在 TVBox 刮过、到 Emby 又被当新的刮一遍。
+        val titleKeys = listOf(titleKey, TmdbCache.titleKeyOf(query, altKind(kind)))
         // 分类消歧：同名动画与真人剧（凡人修仙传）年份又常为 0，只靠片名+年份必然撞键。
         // 写入键带上分类后缀，动画与真人各占一行，谁也不能覆盖谁；读取侧按兼容性过滤。
         val want = ScrapeCategory.ofSource(genres)
@@ -769,29 +778,17 @@ class MediaRepository(private val context: Context) {
 
         // 第一步永远先查表。命中就不联网，也让「跨重启、跨来源、跨线路」三部同名片子只刮一次，
         // 顺带让演职员、标语这些 media 行装不下的字段有了落点。
-        val stored = storedMeta(exactKey, titleKey, want)
+        val stored = storedMeta(exactKey, titleKeys, want)
         val result = stored?.toScrapeResult() ?: run {
             // 表里没有才轮到开关和凭据。用 resolve() 现算而不是读 ScrapeStrategy.engine 那份快照：
             // 用户在设置页刚填完密钥、没重启退回来也该立刻能刮。
             if (ScrapeStrategy.resolve() != ScrapeEngine.TMDB) return@withContext null
             runCatching {
-                TmdbCache.getOrFetch(fetchKey) {
+                TmdbCache.getOrFetch(fetchKey, ignoreNegative = bypassNegativeCache) {
                     TmdbClient(Prefs.tmdbApiKey, Prefs.tmdbReadToken).scrape(query, year, kind, want)
                 }
             }.getOrNull() ?: return@withContext null
         }
-
-        // 取证：每次调用打一行，回答三个「到底停在哪」——
-        // 键算成什么了（表没命中时先看这里，多半是清洗后的片名或 kind 不一样）、
-        // 数据是表里拿的还是刚联网刮的、刮到的这份到底有没有海报
-        Log.i(
-            "ScrapeDiag",
-            "刮削 \"$title\" → \"$query\" year=$year kind=$kind 分类=$want " +
-                "来源=${if (stored != null) "表" else "联网"} " +
-                "海报=${if (result.posterUrl.isBlank()) "空" else "有"} " +
-                "简介=${if (result.overview.isBlank()) "空" else "有"} " +
-                "主演=${result.actors.size}"
-        )
 
         // 网络刮回来的这份写进表；表里本来就有就不再重复落盘。
         // 刮不到（result 来自负缓存或空结果）时不占表位，下次仍然有机会重刮。
@@ -836,6 +833,83 @@ class MediaRepository(private val context: Context) {
         }
         result
     }
+
+    /**
+     * 一批条目的去重键：清洗后的片名 + **不带年份**的 titleKey。
+     *
+     * kind 变体必须同时算 MOVIE 与 SERIES：Emby 的电影是 MOVIE，
+     * TVBox 的壳一律是 SERIES（见 [browseEntity] / [vodToEntity]），
+     * 同一部片在两边算出两条 titleKey，只查一种会让另一边的「已刮过」判不出来。
+     */
+    private fun titleKeyVariants(item: MediaEntity): List<String> {
+        val query = ScrapeTitle.forSearch(item.title)
+        return listOf(
+            TmdbCache.titleKeyOf(query, MediaKind.MOVIE),
+            TmdbCache.titleKeyOf(query, MediaKind.SERIES)
+        )
+    }
+
+    /** 另一个 kind：MOVIE ↔ SERIES。同名片在两个来源下算出两条 titleKey，查表时两种都要试。 */
+    private fun altKind(kind: String): String =
+        if (kind == MediaKind.SERIES) MediaKind.MOVIE else MediaKind.SERIES
+
+    /**
+     * 这批条目里哪些已经刮过（scraped_meta 表命中），以及各自的 TMDB 评分。
+     *
+     * 判定口径与 [tmdbScrape] 的表读取一致：清洗后的片名 + 不带年份的 titleKey，
+     * 所以「同名不同年」也算刮过（表里那次结果本来就会被复用），
+     * 跨线路 / 跨来源的同一部片也只算一次。
+     *
+     * 返回 id → rating：分类页网格既要拿它打「已刮削」标，也要把评分摆到角标上。
+     * 只读表，不联网、不碰内存缓存。
+     */
+    suspend fun scrapedIdsOf(items: List<MediaEntity>): Map<Long, Double> = withContext(Dispatchers.IO) {
+        if (items.isEmpty()) return@withContext emptyMap()
+        val variants = items.associate { it.id to titleKeyVariants(it) }
+        val ratingByKey = HashMap<String, Double>()
+        // IN 的占位符个数有上限，一批几百个键一次查完，超了分批
+        variants.values.flatten().distinct().chunked(400).forEach { chunk ->
+            runCatching { metaDao.byTitleKeys(chunk) }.getOrDefault(emptyList())
+                .forEach { ratingByKey.putIfAbsent(it.titleKey, it.rating) }
+        }
+        buildMap {
+            variants.forEach { (id, keys) ->
+                // 两个 kind 变体谁先命中用谁的评分：同一部片两条 titleKey 存的是同一次刮削结果
+                keys.firstOrNull { it in ratingByKey }?.let { put(id, ratingByKey.getValue(it)) }
+            }
+        }
+    }
+
+    /**
+     * 刮削这条片子时用的 kind。
+     *
+     * TVBox 的壳一律写死 SERIES，但「电影」分类下的条目在 TMDB 那边是 movie ——
+     * 用 SERIES 去搜 /search/tv 只会搜到同名剧，命中率直接归零。
+     *
+     * 判定顺序：源的分类名 → 片名特征。都认不出来就还按原 kind 走，
+     * TmdbClient 里还有一层兜底（换 movie 再搜一遍）。
+     */
+    fun scrapeKindOf(item: MediaEntity): String = scrapeKindOf(item.kind, item.title, item.genres)
+
+    /** 按「分类名 → 片名特征」纠正类型，认不出来就还按原 kind 走 */
+    fun scrapeKindOf(rawKind: String, title: String, genres: String): String {
+        if (rawKind != MediaKind.SERIES) return rawKind
+        // 分类名（TVBox 的 vod_class / Emby 的 Genres）：带「电影/大片/院线」是电影
+        if (MOVIE_CATEGORY.containsMatchIn(genres)) return MediaKind.MOVIE
+        // 片名特征：「大电影」「剧场版」「第 N 部」是电影；「第 N 季」「Season N」是剧集
+        if (MOVIE_TITLE.containsMatchIn(title)) return MediaKind.MOVIE
+        if (SERIES_TITLE.containsMatchIn(title)) return MediaKind.SERIES
+        return rawKind
+    }
+
+    /** 分类名里出现这些词就是电影类目 */
+    private val MOVIE_CATEGORY = Regex("电影|大片|院线|電影|Movie")
+
+    /** 片名里的电影特征 */
+    private val MOVIE_TITLE = Regex("大电影|電影|电影版|剧场版|電影版|第\\s*[0-9一二三四五六七八九十]+\\s*部")
+
+    /** 片名里的剧集特征 */
+    private val SERIES_TITLE = Regex("第\\s*[0-9一二三四五六七八九十]+\\s*季|[Ss]eason\\s*\\d+|连续剧|连载")
 
     /**
      * 清空刮削数据（设置页入口）：内存缓存、`scraped_meta` 表、media 行的 scrapedAt 标记一起抹掉，

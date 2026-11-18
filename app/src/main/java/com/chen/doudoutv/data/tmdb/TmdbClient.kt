@@ -1,6 +1,7 @@
 package com.chen.doudoutv.data.tmdb
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -46,7 +47,14 @@ class TmdbClient(
     private val hasCredential: Boolean
         get() = readToken.isNotBlank() || apiKey.isNotBlank()
 
-    private fun get(path: String, params: Map<String, String> = emptyMap()): JSONObject? {
+    /**
+     * 发一次 GET，返回解析好的 JSON。
+     *
+     * 限流(429)会退避后重试：TMDB 的配额按 IP 计，共享出口（移动网络、公司 NAT）
+     * 很容易撞上同一出口里别人的请求被限流。撞上了就退避一下再试，
+     * 而不是把这一部直接判成「刮不到」—— 那会让整批刮削莫名其妙少一截。
+     */
+    private suspend fun get(path: String, params: Map<String, String> = emptyMap()): JSONObject? {
         if (!hasCredential) return null
 
         // v4 令牌走 Bearer 头；否则把 v3 Key 拼进查询串
@@ -62,16 +70,33 @@ class TmdbClient(
             .header("Accept", "application/json")
         if (useToken) builder.header("Authorization", "Bearer $readToken")
         val req = builder.build()
-        return runCatching {
-            http.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@use null
-                resp.body?.string()?.let { JSONObject(it) }
-            }
-        }.getOrNull()
+
+        var attempt = 0
+        while (attempt < GET_MAX_ATTEMPTS) {
+            attempt++
+            var retryAfterMs = 0L
+            val obj = runCatching {
+                http.newCall(req).execute().use { resp ->
+                    if (resp.code == 429) {
+                        retryAfterMs = 1500L * attempt
+                        return@use null
+                    }
+                    if (!resp.isSuccessful) return@use null
+                    resp.body?.string()?.let { text ->
+                        runCatching { JSONObject(text) }.getOrNull()
+                    }
+                }
+            }.getOrNull()
+            // 429 才退避重试；其它失败（401/404/网络异常）重试没有意义
+            if (retryAfterMs <= 0L) return obj
+            delay(retryAfterMs)
+        }
+        return null
     }
 
     /**
      * 刮削单个条目。
+     *
      * @param title 检索用片名（已由 [com.chen.doudoutv.data.MediaRepository.tmdbScrape] 过 [ScrapeTitle]，
      *              画质/集数这类运营后缀已经去掉；这里不再洗第二次）
      * @param year  年份，0 表示未知
@@ -87,67 +112,104 @@ class TmdbClient(
         withContext(Dispatchers.IO) {
             if (!hasCredential || title.isBlank()) return@withContext null
 
-            val id = searchId(title, year, kind, category) ?: return@withContext null
-            val isMovie = kind != "SERIES"
-            val detailPath = if (isMovie) "/movie/$id" else "/tv/$id"
-            // include_image_language 必须显式声明：TMDB 的 images 子对象默认只返回
-            // 与 language 匹配的语种 + null，大多数影片只有英文 logo，
-            // 不带这个参数 logos 数组会是空的 → 详情页永远只显示文字标题。
-            val detail = get(
-                detailPath, mapOf(
-                    "append_to_response" to "images,credits",
-                    "include_image_language" to "en,zh,null"
-                )
-            ) ?: return@withContext null
+            // 先按传进来的 kind 刮
+            scrapeAs(title, year, kind, category)?.let { return@withContext it }
 
-            val images = detail.optJSONObject("images")
-            val logoPath = pickLogo(images?.optJSONArray("logos"))
-            val posterPath = detail.optString("poster_path", "")
-            val backdropPath = detail.optString("backdrop_path", "")
-
-            val credits = detail.optJSONObject("credits")
-            val directors = credits?.optJSONArray("crew")
-                ?.filterObjects { it.optString("job") == "Director" }
-                ?.take(3)
-                ?.map {
-                    Person(
-                        name = it.optString("name", ""),
-                        role = it.optString("job", ""),
-                        imageUrl = imageUrl(it.optString("profile_path", ""), "w185")
-                    )
-                }.orEmpty()
-
-            val actors = credits?.optJSONArray("cast")
-                ?.filterObjects { it.optInt("order") in 0..19 }
-                ?.take(12)
-                ?.map {
-                    Person(
-                        name = it.optString("name", ""),
-                        role = it.optString("character", ""),
-                        imageUrl = imageUrl(it.optString("profile_path", ""), "w185")
-                    )
-                }.orEmpty()
-
-            val genres = detail.optJSONArray("genres")
-                ?.mapObjects { it.optString("name", "") }
-                ?.joinToString(" / ")
-                .orEmpty()
-
-            ScrapeResult(
-                overview = detail.optString("overview", ""),
-                rating = detail.optDouble("vote_average", 0.0),
-                genres = genres,
-                posterUrl = imageUrl(posterPath, "w500"),
-                backdropUrl = imageUrl(backdropPath, "original"),
-                logoUrl = imageUrl(logoPath, "original"),
-                tagline = detail.optString("tagline", ""),
-                directors = directors,
-                actors = actors
-            )
+            // 兜底：换一种类型再搜一遍。
+            // TVBox 的 vod 不区分电影和剧集，kind 一律写死 SERIES，于是所有电影
+            // 都去 /search/tv 找 —— 那里当然没有，整批一起刮空（实测 40 部里 16 部
+            // 全军覆没，全是这类）。反过来 Emby 的电影被误判成剧集也一样。
+            // 详情路径是跟着 kind 走的（/tv/{id} 与 /movie/{id} 是两套），所以整套重来。
+            val alt = if (kind == "SERIES") "MOVIE" else "SERIES"
+            scrapeAs(title, year, alt, category)
         }
 
-    /** 搜索并返回最匹配的 TMDB id；已知类别时在前几条里优先挑类别相符的 */
-    private fun searchId(title: String, year: Int, kind: String, category: Int): Int? {
+    /** 按指定的类型刮一遍（搜索 + 详情） */
+    private suspend fun scrapeAs(
+        title: String,
+        year: Int,
+        kind: String,
+        category: Int
+    ): ScrapeResult? {
+        val id = searchId(title, year, kind, category) ?: return null
+        val isMovie = kind != "SERIES"
+        val detailPath = if (isMovie) "/movie/$id" else "/tv/$id"
+        // include_image_language 必须显式声明：TMDB 的 images 子对象默认只返回
+        // 与 language 匹配的语种 + null，大多数影片只有英文 logo，
+        // 不带这个参数 logos 数组会是空的 → 详情页永远只显示文字标题。
+        val detail = get(
+            detailPath, mapOf(
+                "append_to_response" to "images,credits",
+                "include_image_language" to "en,zh,null"
+            )
+        )
+        if (detail == null) return null
+
+        val images = detail.optJSONObject("images")
+        val logoPath = pickLogo(images?.optJSONArray("logos"))
+        val posterPath = detail.optString("poster_path", "")
+        val backdropPath = detail.optString("backdrop_path", "")
+
+        val credits = detail.optJSONObject("credits")
+        val directors = credits?.optJSONArray("crew")
+            ?.filterObjects { it.optString("job") == "Director" }
+            ?.take(3)
+            ?.map {
+                Person(
+                    name = it.optString("name", ""),
+                    role = it.optString("job", ""),
+                    imageUrl = imageUrl(it.optString("profile_path", ""), "w185")
+                )
+            }.orEmpty()
+
+        val actors = credits?.optJSONArray("cast")
+            ?.filterObjects { it.optInt("order") in 0..19 }
+            ?.take(12)
+            ?.map {
+                Person(
+                    name = it.optString("name", ""),
+                    role = it.optString("character", ""),
+                    imageUrl = imageUrl(it.optString("profile_path", ""), "w185")
+                )
+            }.orEmpty()
+
+        val genres = detail.optJSONArray("genres")
+            ?.mapObjects { it.optString("name", "") }
+            ?.joinToString(" / ")
+            .orEmpty()
+
+        return ScrapeResult(
+            overview = detail.optString("overview", ""),
+            rating = detail.optDouble("vote_average", 0.0),
+            genres = genres,
+            posterUrl = imageUrl(posterPath, "w500"),
+            backdropUrl = imageUrl(backdropPath, "original"),
+            logoUrl = imageUrl(logoPath, "original"),
+            tagline = detail.optString("tagline", ""),
+            directors = directors,
+            actors = actors
+        )
+    }
+
+    /**
+     * 搜索并返回最匹配的 TMDB id；已知类别时在前几条里优先挑类别相符的。
+     *
+     * 年份只当「加分项」不当「门槛」：源站给的年份常常差一年（首播年 vs 发行年、
+     * 源站填 0 而 TMDB 填首播年），把年份当硬过滤会让本来能搜到的片子直接搜不到。
+     * 所以先用带年份的精确搜，搜不到再退回不带年份搜一次。
+     */
+    private suspend fun searchId(title: String, year: Int, kind: String, category: Int): Int? {
+        val exact = searchOnce(title, year, kind, category)
+        if (exact != null) return exact
+        if (year > 0) {
+            // 年份对不上时的退路：去掉年份再搜一遍，结果照样按类别消歧
+            return searchOnce(title, 0, kind, category)
+        }
+        return null
+    }
+
+    /** 真正发一次搜索请求并挑 id */
+    private suspend fun searchOnce(title: String, year: Int, kind: String, category: Int): Int? {
         val isMovie = kind != "SERIES"
         val path = if (isMovie) "/search/movie" else "/search/tv"
         val params = buildMap {
@@ -243,5 +305,8 @@ class TmdbClient(
 
         private const val BASE = "https://api.themoviedb.org/3"
         private const val IMAGE_BASE = "https://image.tmdb.org/t/p"
+
+        /** 单个请求最多尝试几次（429 退避重试用） */
+        private const val GET_MAX_ATTEMPTS = 3
     }
 }

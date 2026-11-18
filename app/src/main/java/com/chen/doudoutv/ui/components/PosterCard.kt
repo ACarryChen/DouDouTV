@@ -63,7 +63,9 @@ fun PosterCard(
     item: MediaEntity,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    showProgress: Boolean = true
+    showProgress: Boolean = true,
+    /** 已经刮过：左上角挂 TMDB 官方图标 + 评分（透明底，不衬黑块）；null = 没刮过 */
+    scrapedRating: Double? = null
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -115,6 +117,18 @@ fun PosterCard(
         // 这张卡底部渐变上已经有片名了，所以占位只排首字水印，避免同屏两处重复。
         PosterArt(model = item.posterUrl, contentDescription = item.title) {
             PosterFallback(title = item.title, showTitle = false, titleFontSize = 30.sp)
+        }
+
+        // 已刮削标记：左上角 TMDB 官方图标 + 评分，背景全透明。
+        // 海报本身明暗不定，衬一层黑块会在画面上挖一个洞，所以只留图标和带投影的文字。
+        if (scrapedRating != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+            ) {
+                ScrapedBadge(rating = scrapedRating, iconHeight = 13.dp)
+            }
         }
 
         Box(

@@ -109,6 +109,7 @@ import com.chen.doudoutv.ui.components.PosterArt
 import com.chen.doudoutv.ui.components.PosterFallback
 import com.chen.doudoutv.ui.components.continueTitle
 import com.chen.doudoutv.ui.components.episodeLabel
+import com.chen.doudoutv.ui.components.ScrapedBadge
 import com.chen.doudoutv.ui.gridState
 import com.chen.doudoutv.ui.tv.TvPagePadding
 import com.chen.doudoutv.ui.tv.tvPosterColumns
@@ -768,7 +769,9 @@ fun NfPosterCard(
     modifier: Modifier = Modifier,
     width: Dp = Prefs.posterSize.tvDp.dp,
     fillCell: Boolean = false,
-    anchorStart: Boolean = false
+    anchorStart: Boolean = false,
+    /** 已经刮过：左上角挂 TMDB 图标 + 评分（透明底）；null = 没刮过，与经典版海报卡同一画法 */
+    scrapedRating: Double? = null
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -817,7 +820,8 @@ fun NfPosterCard(
                 model = item.posterUrl.ifBlank { item.backdropUrl },
                 title = item.title,
                 fillCell = fillCell,
-                width = width
+                width = width,
+                scrapedRating = scrapedRating
             )
         }
         Text(
@@ -847,6 +851,7 @@ private fun NfPosterBody(
     title: String,
     fillCell: Boolean,
     width: Dp,
+    scrapedRating: Double? = null,
 ) {
     Box(
         Modifier
@@ -860,6 +865,16 @@ private fun NfPosterBody(
                 showTitle = false,
                 titleFontSize = 30.sp
             )
+        }
+        // 已刮削标记：左上角 TMDB 图标 + 评分，背景全透明（海报明暗不定，衬色块会挖洞）
+        if (scrapedRating != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+            ) {
+                ScrapedBadge(rating = scrapedRating, iconHeight = 15.dp)
+            }
         }
     }
 }
@@ -997,7 +1012,12 @@ fun NfSubNav(
      * 逐颗 chip 的锚点，由调用方持有：返回键那一层要落回「当前选中的那颗」分类，
      * 光有第一颗的锚点不够。不传就用内建那一份（只能落到第一颗）。
      */
-    chipFocuses: List<FocusRequester>? = null
+    chipFocuses: List<FocusRequester>? = null,
+    /**
+     * 尾部固定按钮（批量刮削）的锚点：最右一颗 chip 按 → 落到它。
+     * 不传保持原样（最右 chip 的 → 到头，焦点不出条）。
+     */
+    trailingFocusRequester: FocusRequester? = null
 ) {
     val state = rememberLazyListState()
     // 每颗 chip 一个锚点：左右移动逐颗交棒，不靠几何搜索。
@@ -1054,7 +1074,9 @@ fun NfSubNav(
                             up = upFocusRequester,
                             down = downFocusRequester,
                             left = if (index == 0) FocusRequester.Cancel else anchors[index - 1],
-                            right = if (index == labels.lastIndex) FocusRequester.Cancel else anchors[index + 1]
+                            right = if (index == labels.lastIndex)
+                                trailingFocusRequester ?: FocusRequester.Cancel
+                            else anchors[index + 1]
                         )
                         .nfBarFrameCoords(chipBar, index)
                         .focusRequester(anchors[index])
@@ -1144,7 +1166,9 @@ fun NfPosterGrid(
      * 不传就按 [pageKey] 内部建（我的页 / 搜索结果不需要外部控制）。
      */
     state: LazyGridState? = null,
-    footer: (@Composable () -> Unit)? = null
+    footer: (@Composable () -> Unit)? = null,
+    /** 已刮削条目的评分表（id → 评分），分类页批量刮削用；不传卡片不挂角标 */
+    scrapedRatings: Map<Long, Double>? = null
 ) {
     val columns = tvPosterColumns()
     // 记录要在建 gridState 之前读出来：数据还没补齐时 LazyGrid 会把位置 clamp 到末尾，
@@ -1202,7 +1226,9 @@ fun NfPosterGrid(
                             target = stand,
                             requester = if (item.id == firstId) firstFocus else ownFocus
                         )
-                    )
+                    ),
+                // 已经刮过的挂 TMDB 官方图标 + 评分（左上角）
+                scrapedRating = scrapedRatings?.get(item.id)
             )
         }
         if (footer != null) {

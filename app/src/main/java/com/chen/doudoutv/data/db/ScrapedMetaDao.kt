@@ -107,6 +107,14 @@ interface ScrapedMetaDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(item: ScrapedMetaEntity)
 
+    /**
+     * 批量查「这些 titleKey 里哪些已经刮过」：分类页一次给几十上百个片名，
+     * 逐条 byTitleKeyAll 会打出同样多条 SQL，一次 IN 查询就够了。
+     * 返回的是行本身，调用方按 titleKey 归并成集合。
+     */
+    @Query("SELECT * FROM scraped_meta WHERE titleKey IN (:keys)")
+    suspend fun byTitleKeys(keys: List<String>): List<ScrapedMetaEntity>
+
     @Query("DELETE FROM scraped_meta")
     suspend fun clear()
 

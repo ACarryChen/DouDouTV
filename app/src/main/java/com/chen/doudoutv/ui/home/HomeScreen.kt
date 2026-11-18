@@ -81,6 +81,7 @@ import com.chen.doudoutv.data.model.MediaKind
 import com.chen.doudoutv.data.model.SourceEntity
 import com.chen.doudoutv.data.model.SourceKind
 import com.chen.doudoutv.data.tvbox.TvBoxClient.TvBoxSite
+import com.chen.doudoutv.data.scrape.ScrapeEngine
 import com.chen.doudoutv.ui.LibraryViewModel
 import com.chen.doudoutv.ui.ReturnSpot
 import com.chen.doudoutv.ui.PrecomposeWindow
@@ -89,11 +90,14 @@ import com.chen.doudoutv.ui.components.AppButtonVariant
 import com.chen.doudoutv.ui.components.ContinueCard
 import com.chen.doudoutv.ui.components.GlassBarClearance
 import com.chen.doudoutv.ui.components.HeroBanner
+import com.chen.doudoutv.ui.components.PhoneBatchScrapeDialog
+import com.chen.doudoutv.ui.components.PhoneScrapeButton
 import com.chen.doudoutv.ui.components.PosterCard
 import com.chen.doudoutv.ui.components.SectionTitle
 import com.chen.doudoutv.ui.components.ShimmerCard
 import com.chen.doudoutv.ui.components.continueTitle
 import com.chen.doudoutv.ui.components.episodeLabel
+import com.chen.doudoutv.ui.components.rememberBatchScrapeUiState
 import com.chen.doudoutv.ui.listState
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.themeBackdrop
@@ -966,6 +970,7 @@ fun GenreScreen(
     val scope = rememberCoroutineScope()
     // 纵向位置按「页 + 当前筛选」分键，进详情返回时从这一筛选上次的位置起滚
     val gridState = ReturnSpot.listState("phone_genre/${kind ?: "all"}/${genre ?: "all"}/${library ?: "all"}", precompose = PrecomposeWindow.Phone)
+    val scrapeUi = rememberBatchScrapeUiState(vm)
 
     // Emby 来源的题材清单问服务端 /Genres：本地聚合只按频次取前 16 个，
     // 冷门题材永远挤不进，换库后也是那几个高频词 —— 用户看到的就是「分类还是旧的」。
@@ -1000,6 +1005,11 @@ fun GenreScreen(
         items = runCatching { vm.browseGenre(kind, genre, GENRE_PAGE_SIZE, 0, library) }
             .getOrDefault(emptyList())
         loading = false
+    }
+
+    // 已刮标记：条目集合或批次轮次变化时重查一次（批次跑完 scrapeEpoch 自增）
+    LaunchedEffect(items, vm.scrapeEpoch) {
+        scrapeUi.refresh(items)
     }
 
     // 标签列表：Emby 有媒体库时按库分区（全部 + 各库）；否则预设类型 + 题材（Emby 走服务端清单，其余本地聚合）
@@ -1048,6 +1058,18 @@ fun GenreScreen(
                 color = AppColors.TextPrimary,
                 fontWeight = FontWeight.Bold
             )
+            Spacer(Modifier.weight(1f))
+            // 刮削按钮：TMDB 没开启就整个不渲染（不留灰态）
+            if (vm.scrapeEngine == ScrapeEngine.TMDB) {
+                PhoneScrapeButton(
+                    running = scrapeUi.running,
+                    done = scrapeUi.done,
+                    total = scrapeUi.total,
+                    onClick = {
+                        if (scrapeUi.running) scrapeUi.cancel() else scrapeUi.request(items)
+                    }
+                )
+            }
         }
 
         // ---------- 标签（渐变分隔线 + 紧凑 filter chip） ----------
@@ -1130,7 +1152,11 @@ fun GenreScreen(
                     ) {
                         row.forEach { item ->
                             Box(Modifier.weight(1f)) {
-                                PosterCard(item = item, onClick = { onOpenDetail(item.id) })
+                                PosterCard(
+                                    item = item,
+                                    onClick = { onOpenDetail(item.id) },
+                                    scrapedRating = scrapeUi.scrapedRatings[item.id]
+                                )
                             }
                         }
                         repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
@@ -1168,6 +1194,16 @@ fun GenreScreen(
                 }
             }
         }
+    }
+
+    // 批量刮削确认框
+    if (scrapeUi.confirmVisible) {
+        PhoneBatchScrapeDialog(
+            total = scrapeUi.pendingTotal,
+            skipped = scrapeUi.pendingSkipped,
+            onConfirm = { scrapeUi.confirm() },
+            onDismiss = { scrapeUi.dismiss() }
+        )
     }
 }
 
@@ -1578,9 +1614,15 @@ fun TvBoxCategoryScreen(
 
     // 每个分类各记一份滚动位置
     val gridState = ReturnSpot.listState("phone_cat_$currentTypeId", precompose = PrecomposeWindow.Phone)
+    val scrapeUi = rememberBatchScrapeUiState(vm)
 
     LaunchedEffect(currentTypeId, vm.homeRefreshEpoch) {
         vm.ensureBrowsePage(currentTypeId)
+    }
+
+    // 已刮标记：条目集合或批次轮次变化时重查一次（批次跑完 scrapeEpoch 自增）
+    LaunchedEffect(vods, vm.scrapeEpoch) {
+        scrapeUi.refresh(vods)
     }
 
     val loadMore: () -> Unit = { vm.loadMoreBrowsePage(currentTypeId) }
@@ -1611,6 +1653,18 @@ fun TvBoxCategoryScreen(
                 color = AppColors.TextPrimary,
                 fontWeight = FontWeight.Bold
             )
+            Spacer(Modifier.weight(1f))
+            // 刮削按钮：TMDB 没开启就整个不渲染（不留灰态）
+            if (vm.scrapeEngine == ScrapeEngine.TMDB) {
+                PhoneScrapeButton(
+                    running = scrapeUi.running,
+                    done = scrapeUi.done,
+                    total = scrapeUi.total,
+                    onClick = {
+                        if (scrapeUi.running) scrapeUi.cancel() else scrapeUi.request(vods)
+                    }
+                )
+            }
         }
 
         // ---------- 分类切换（当前线路 homeContent 的 class 数组） ----------
@@ -1704,7 +1758,11 @@ fun TvBoxCategoryScreen(
                     ) {
                         row.forEach { item ->
                             Box(Modifier.weight(1f)) {
-                                PosterCard(item = item, onClick = { onOpenDetail(item.id) })
+                                PosterCard(
+                                    item = item,
+                                    onClick = { onOpenDetail(item.id) },
+                                    scrapedRating = scrapeUi.scrapedRatings[item.id]
+                                )
                             }
                         }
                         repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
@@ -1745,5 +1803,15 @@ fun TvBoxCategoryScreen(
                 }
             }
         }
+    }
+
+    // 批量刮削确认框
+    if (scrapeUi.confirmVisible) {
+        PhoneBatchScrapeDialog(
+            total = scrapeUi.pendingTotal,
+            skipped = scrapeUi.pendingSkipped,
+            onConfirm = { scrapeUi.confirm() },
+            onDismiss = { scrapeUi.dismiss() }
+        )
     }
 }

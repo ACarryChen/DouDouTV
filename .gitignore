@@ -15,3 +15,10 @@ captures/
 
 # 例外：固定 debug 签名随仓库分发，保证本地与 CI 构建的安装包可互相覆盖升级
 !app/debug.keystore
+
+# 调试时抓在仓库根目录的临时产物（数据库副本、logcat 转储、截图）
+/_*.db
+/_*.db-shm
+/_*.db-wal
+/_*.log
+/_*.png

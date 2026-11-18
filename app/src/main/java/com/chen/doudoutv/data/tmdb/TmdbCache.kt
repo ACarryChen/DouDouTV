@@ -104,9 +104,6 @@ object TmdbCache {
     /** 只读查看（不触发请求），用于判断是否值得发起网络请求 */
     fun peek(key: String): TmdbClient.ScrapeResult? = readEntry(key)?.result
 
-    /** 是否有有效缓存（命中与负缓存都算） */
-    fun isCached(key: String): Boolean = readEntry(key) != null
-
     /** 手动写入一条成功结果（外部已有数据时用） */
     fun putHit(key: String, result: TmdbClient.ScrapeResult) = writeEntry(key, result)
 
@@ -117,14 +114,18 @@ object TmdbCache {
      * 带并发去重的取值入口。
      *
      * @param fetch 真正的网络请求，只在缓存未命中且无人正在请求时才执行
+     * @param ignoreNegative 忽略「确认刮不到」的负缓存，强制重新发请求。
+     *   批量刮削要用它：那一轮里因为网络抖动/限流失败的片子会进负缓存，
+     *   不忽略的话用户重跑批量，这些片子一天内一次都不会再试，永远补不上。
      * @return 缓存结果或 fetch 的结果；null 表示确认刮不到
      */
     suspend fun getOrFetch(
         key: String,
+        ignoreNegative: Boolean = false,
         fetch: suspend () -> TmdbClient.ScrapeResult?
     ): TmdbClient.ScrapeResult? {
         // 快路径：命中缓存直接返回，完全不进锁（绝大多数调用走这里）
-        readEntry(key)?.let { return it.result }
+        readEntry(key)?.let { if (!ignoreNegative || it.result != null) return it.result }
 
         // 决定「我是发起者」还是「我等待别人」
         var mine: CompletableDeferred<TmdbClient.ScrapeResult?>? = null
@@ -132,7 +133,7 @@ object TmdbCache {
 
         lock.withLock {
             // 双重检查：可能在上一个持锁者退出前已有结果
-            readEntry(key)?.let { return it.result }
+            readEntry(key)?.let { if (!ignoreNegative || it.result != null) return it.result }
 
             val existing = inFlight[key]
             if (existing != null) {
@@ -152,7 +153,9 @@ object TmdbCache {
         val deferred = mine!!
         try {
             val result = fetch()
-            writeEntry(key, result)
+            // 忽略负缓存的模式下，失败不写缓存：批量重跑要能一次次重试，
+            // 否则这一部片子会被「确认刮不到」钉住一天
+            if (!(ignoreNegative && result == null)) writeEntry(key, result)
             deferred.complete(result)
             return result
         } catch (t: Throwable) {

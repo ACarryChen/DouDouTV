@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -28,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -35,13 +37,17 @@ import com.chen.doudoutv.data.model.MediaEntity
 import com.chen.doudoutv.data.model.LibraryDisplayOrder
 import com.chen.doudoutv.data.model.MediaKind
 import com.chen.doudoutv.data.model.SourceKind
+import com.chen.doudoutv.data.scrape.ScrapeEngine
 import com.chen.doudoutv.ui.LibraryViewModel
 import com.chen.doudoutv.ui.PrecomposeWindow
 import com.chen.doudoutv.ui.ReturnSpot
 import com.chen.doudoutv.ui.StandTarget
 import com.chen.doudoutv.ui.components.ShimmerCard
+import com.chen.doudoutv.ui.components.rememberBatchScrapeUiState
 import com.chen.doudoutv.ui.gridState
+import com.chen.doudoutv.ui.tv.TvBatchScrapeDialog
 import com.chen.doudoutv.ui.tv.TvPagePadding
+import com.chen.doudoutv.ui.tv.TvScrapeChip
 import com.chen.doudoutv.ui.tv.tvClaimFocusOnEnter
 import com.chen.doudoutv.ui.tv.tvPosterColumns
 import com.chen.doudoutv.ui.theme.AppColors
@@ -103,8 +109,17 @@ fun NfBrowseScreen(
     val firstChipFocus = chipFocuses.firstOrNull() ?: FocusRequester()
     /** 分类栏这一层当前的落点：选中的那颗 chip（选中项本来就会被滚进视野，锚点必然挂得上） */
     val currentChipFocus = chipFocuses.getOrElse(selIndex) { firstChipFocus }
-    // 网格首行按 ↑ 的落点：有分类条交回「当前选中」那颗 chip，只有一个分类时交回本页那颗「分类」tab（规范 R1）
-    val gridUpFocus = if (showSubNav) currentChipFocus else chrome.tabOf(NfTab.Browse)
+    // 刮削按钮固定挂在分类条右端（TMDB 开启才有）：自己一个锚点，
+    // 最右 chip 按 → 走到它、它按 ← 回到 chip 条；不掺进 chipFocuses 的返回键落点链
+    val scrapeVisible = vm.scrapeEngine == ScrapeEngine.TMDB
+    val scrapeChipFocus = remember { FocusRequester() }
+    // 网格首行按 ↑ 的落点：有分类条交回「当前选中」那颗 chip，只有一个分类时交回本页那颗「分类」tab（规范 R1）；
+    // 分类条只剩刮削按钮时（单分类 + TMDB 开启）先交给按钮、由它再 ↑ 交回 tab —— 否则按钮不在任何链路上，遥控器够不着
+    val gridUpFocus = when {
+        showSubNav -> currentChipFocus
+        scrapeVisible -> scrapeChipFocus
+        else -> chrome.tabOf(NfTab.Browse)
+    }
 
     // 记忆的是「修正后」的下标：分类集合变短时被 clamp 过，下次进来不该再跳一格
     LaunchedEffect(scopeKey, selIndex) {
@@ -117,6 +132,12 @@ fun NfBrowseScreen(
     val onlineItems = if (isTvBox && sitePicked) vm.browseItems(currentTypeId.orEmpty()) else emptyList()
     val localShown = if (!isTvBox) localCats.getOrNull(safeLocalIdx)?.let { cat -> localItems.filter(cat.matches) }
         ?: emptyList() else emptyList()
+    // 批量刮削：已刮标记（网格角标）、确认弹窗、批次进度（与经典版分类页同一套组件）
+    val scrapeUi = rememberBatchScrapeUiState(vm)
+    /** 当前分类已加载的条目：刮削按钮和角标都只认这一份 */
+    val scrapeTargetItems = if (isTvBox) onlineItems else localShown
+    // 批次跑完 ViewModel 会自增 scrapeEpoch，这一轮把「已刮」重新查一遍
+    LaunchedEffect(scrapeTargetItems, vm.scrapeEpoch) { scrapeUi.refresh(scrapeTargetItems) }
     val contentReady = if (isTvBox) sitePicked && onlineItems.isNotEmpty() else localShown.isNotEmpty()
     // 分类名要等这条线路的 homeContent 回来才有：换线路那次拉取不带 scanning，光看 scanning 会把「还在读」误报成「没有分类」
     val catsLoading = vm.scanning || vm.homeSiteLoading
@@ -147,7 +168,8 @@ fun NfBrowseScreen(
         anchorsProvider = {
             when {
                 entryFocusOnNav -> listOf(chrome.tabOf(NfTab.Browse))
-                subNavFocused -> listOf(currentChipFocus)
+                // 分类条只剩刮削按钮时 currentChipFocus 没挂节点，交回按钮自己的锚点
+                subNavFocused -> listOf(if (showSubNav) currentChipFocus else scrapeChipFocus)
                 else -> listOfNotNull(stand.requester, contentAnchor)
             }
         }
@@ -172,7 +194,11 @@ fun NfBrowseScreen(
         chrome = chrome,
         // 每一向都显式给落点（规范 R1）：有分类条 → 当前选中的那颗 chip，没有 → 这一屏的接焦元件
         navInFlow = true,
-        belowFocusRequester = if (showSubNav) currentChipFocus else contentAnchor,
+        belowFocusRequester = when {
+            showSubNav -> currentChipFocus
+            scrapeVisible -> scrapeChipFocus
+            else -> contentAnchor
+        },
         onTab = onTab,
         onSettings = onSettings,
         onManageSources = onSources
@@ -204,17 +230,51 @@ fun NfBrowseScreen(
                     }
                 }
         ) {
-            if (showSubNav) {
-                NfSubNav(
-                    labels = labels,
-                    selectedIndex = selIndex,
-                    onSelect = { i -> if (isTvBox) onlineIdx = i else localIdx = i },
-                    downFocusRequester = contentAnchor,
-                    upFocusRequester = chrome.tabOf(NfTab.Browse),
-                    firstChipFocus = firstChipFocus,
-                    chipFocuses = chipFocuses,
-                    modifier = Modifier.onFocusEvent { subNavFocused = it.hasFocus }
-                )
+            // 分类 chip 条拆两区：chip 栏占掉除按钮以外的全部宽度（weight(1f)），
+            // 刮削按钮固定在最右一颗 —— 分类再多也不会把按钮挤出屏幕（与经典版题材页同一做法）
+            if (showSubNav || scrapeVisible) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        // subNavFocused 上移到整行：按钮与 chip 同属「分类条这一层」，
+                        // 返回键从按钮直接退回 tab 栏，与 chip 同一口径
+                        .onFocusEvent { subNavFocused = it.hasFocus },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (showSubNav) {
+                        NfSubNav(
+                            labels = labels,
+                            selectedIndex = selIndex,
+                            onSelect = { i -> if (isTvBox) onlineIdx = i else localIdx = i },
+                            downFocusRequester = contentAnchor,
+                            upFocusRequester = chrome.tabOf(NfTab.Browse),
+                            firstChipFocus = firstChipFocus,
+                            chipFocuses = chipFocuses,
+                            trailingFocusRequester = if (scrapeVisible) scrapeChipFocus else null,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    if (scrapeVisible) {
+                        TvScrapeChip(
+                            running = scrapeUi.running,
+                            done = scrapeUi.done,
+                            total = scrapeUi.total,
+                            onClick = {
+                                if (scrapeUi.running) scrapeUi.cancel() else scrapeUi.request(scrapeTargetItems)
+                            },
+                            modifier = Modifier
+                                .padding(start = if (showSubNav) 0.dp else TvPagePadding, end = TvPagePadding)
+                                .nfFocusRoute(
+                                    up = chrome.tabOf(NfTab.Browse),
+                                    down = contentAnchor,
+                                    // ← 回到最右那颗 chip（进入按钮的唯一来路）；没有 chip 条时到头
+                                    left = if (showSubNav) chipFocuses.lastOrNull() else FocusRequester.Cancel,
+                                    right = FocusRequester.Cancel
+                                )
+                                .focusRequester(scrapeChipFocus)
+                        )
+                    }
+                }
             }
 
             Box(Modifier.fillMaxWidth().weight(1f)) {
@@ -236,7 +296,8 @@ fun NfBrowseScreen(
                         upFocusRequester = gridUpFocus,
                         onDetail = onDetail,
                         modifier = Modifier.fillMaxSize(),
-                        state = gridState
+                        state = gridState,
+                        scrapedRatings = scrapeUi.scrapedRatings
                     )
 
                     !sitePicked -> NfInlineEmpty(
@@ -279,6 +340,7 @@ fun NfBrowseScreen(
                         onDetail = onDetail,
                         modifier = Modifier.fillMaxSize(),
                         state = gridState,
+                        scrapedRatings = scrapeUi.scrapedRatings,
                         onNearEnd = { currentTypeId?.let { vm.loadMoreBrowsePage(it) } },
                         footer = {
                             NfGridFooter(
@@ -291,6 +353,16 @@ fun NfBrowseScreen(
                 }
             }
         }
+    }
+
+    // 批量刮削确认框：独立窗口，焦点天然关在框里，Back 由窗口自己处理
+    if (scrapeUi.confirmVisible) {
+        TvBatchScrapeDialog(
+            total = scrapeUi.pendingTotal,
+            skipped = scrapeUi.pendingSkipped,
+            onConfirm = { scrapeUi.confirm() },
+            onDismiss = { scrapeUi.dismiss() }
+        )
     }
 }
 
