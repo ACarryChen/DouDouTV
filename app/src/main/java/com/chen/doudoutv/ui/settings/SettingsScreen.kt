@@ -108,8 +108,10 @@ fun SettingsScreen(vm: LibraryViewModel) {
     // 只在记忆化里做纯计算（读凭据推导），不写全局状态
     val activeEngine = remember(engineTick) { ScrapeStrategy.resolve() }
 
-    // 写操作放到副作用里：凭据一变就同步给全局，供其他页面读取
-    LaunchedEffect(engineTick) { ScrapeStrategy.refresh() }
+    // 写操作放到副作用里：凭据一变就同步给全局，供其他页面读取。
+    // 必须走 vm.refreshScrapeEngine()：分类页刮削按钮的显隐读的是 VM 快照，
+    // 只刷全局 ScrapeStrategy.engine 的话按钮要等重启才出现。
+    LaunchedEffect(engineTick) { vm.refreshScrapeEngine() }
 
     // 界面与缓存的可选项收进弹窗：页面上只留「分组 + 当前值」，点哪一行才展开那一组的档位
     var choice by remember { mutableStateOf<SettingChoice?>(null) }

@@ -160,7 +160,8 @@ fun TvSettingsScreen(
     var engineTick by remember { mutableStateOf(0) }
     // 只在记忆化里做纯计算（读凭据推导），写全局状态放到副作用里
     val activeEngine = remember(engineTick) { ScrapeStrategy.resolve() }
-    LaunchedEffect(engineTick) { ScrapeStrategy.refresh() }
+    // 走 vm.refreshScrapeEngine()：分类页刮削按钮读的是 VM 快照，只刷全局引擎要重启才见效
+    LaunchedEffect(engineTick) { vm.refreshScrapeEngine() }
 
     // 条数查的是 scraped_meta 表，不能在组合期同步读库；下面的 resumeTick effects 里填
     var cacheCount by remember { mutableStateOf(0) }
