@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -17,6 +19,18 @@ android {
     // Compose 1.9 的 foundation 要求 compileSdk 35（aar-metadata 里 minCompileSdk=35）
     compileSdk = 35
 
+    // 发布签名凭据放在仓库根的 keystore.properties，与 keystore 文件本身都不进版本库。
+    // 为什么不写死：debug.keystore 的密码是公开的 android，拿到同包名同签名的包
+    // 就能静默覆盖安装用户手里的应用；换成只有自己有的私钥，这条路才堵死。
+    // 文件缺失时回退到 debug 签名，保证别人 clone 下来没私钥也能构建出能装的包。
+    val keystorePropsFile = rootProject.file("keystore.properties")
+    val keystoreProps = Properties().apply {
+        if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+    }
+    val releaseKeystore = keystoreProps.getProperty("storeFile")
+        ?.let { rootProject.file(it) }
+        ?.takeIf { it.exists() }
+
     // 固定 debug 签名：确保升级安装不丢数据
     signingConfigs {
         create("debugSigning") {
@@ -24,6 +38,14 @@ android {
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
+        }
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
         }
     }
 
@@ -40,10 +62,13 @@ android {
 
     buildTypes {
         release {
-            // 复用 debug 那颗 keystore：正式签名和 debug 签名不一致会导致覆盖安装直接失败，
-            // 只能卸载重装，媒体库、观看进度、收藏全丢。
-            // 对外发布要换正式 keystore 时注意：换完就断升级链，老包必须卸干净。
-            signingConfig = signingConfigs.getByName("debugSigning")
+            // 有私有 keystore 就用私钥签；没有（别人 clone 下来）退回 debug 签名，
+            // 保证任何环境都能构建出可安装的包。
+            signingConfig = if (releaseKeystore != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debugSigning")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

@@ -16,9 +16,20 @@ captures/
 # 例外：固定 debug 签名随仓库分发，保证本地与 CI 构建的安装包可互相覆盖升级
 !app/debug.keystore
 
+# 发布私钥与凭据：只留在本机，不进版本库
+keystore.properties
+/app/doudoutv-release.keystore
+
 # 调试时抓在仓库根目录的临时产物（数据库副本、logcat 转储、截图）
 /_*.db
 /_*.db-shm
 /_*.db-wal
 /_*.log
 /_*.png
+
+# 应用数据库副本：含 Emby 账号、站点接口 key、观看进度等真实凭据，绝不能进版本库
+/temp_db.db
+/temp_db.db-shm
+/temp_db.db-wal
+*.db-wal
+*.db-shm
