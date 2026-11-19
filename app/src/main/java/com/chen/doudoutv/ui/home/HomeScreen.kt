@@ -24,10 +24,14 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AltRoute
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Refresh
@@ -1237,6 +1241,20 @@ class SearchUiState {
      */
     var pendingFocus by mutableStateOf(false)
 
+    /** 被折叠起来的来源（默认展开，点来源标题切换） */
+    var collapsedSources by mutableStateOf<Set<String>>(emptySet())
+
+    /** 被展开的线路面板（默认折叠，点线路标题展开；单线路来源直接展示不走这里） */
+    var expandedLines by mutableStateOf<Set<String>>(emptySet())
+
+    fun toggleSource(name: String) {
+        collapsedSources = if (name in collapsedSources) collapsedSources - name else collapsedSources + name
+    }
+
+    fun toggleLine(key: String) {
+        expandedLines = if (key in expandedLines) expandedLines - key else expandedLines + key
+    }
+
     fun clear() {
         query = ""
         results = emptyList()
@@ -1246,6 +1264,8 @@ class SearchUiState {
         submittedKeyword = ""
         searchedKeyword = ""
         pendingFocus = false
+        collapsedSources = emptySet()
+        expandedLines = emptySet()
     }
 }
 
@@ -1516,37 +1536,126 @@ fun SearchScreen(
             state.submittedKeyword.isNotEmpty() && state.results.isEmpty() ->
                 HintText("没有找到「${state.submittedKeyword}」相关内容")
 
-            // 有结果：按来源分组展示
-            else -> LazyColumn(
-                state = resultsListState,
-                contentPadding = PaddingValues(bottom = 28.dp + GlassBarClearance)
-            ) {
-                item { SectionTitle("搜索结果 ${state.results.size} 条 · ${state.grouped.size} 个来源") }
-                state.grouped.forEach { (srcName, itemsOfSource) ->
-                    item {
-                        SectionTitle(
-                            srcName,
-                            trailing = { CountBadge(itemsOfSource.size) }
-                        )
+            // 有结果：来源 → 线路两级分组，来源可整体折叠，线路为可展开面板
+            else -> {
+                // 来源内再按线路（playSource）分组；Emby 条目无线路字段，归为单组直接展示
+                val lineGroups = remember(state.grouped) {
+                    state.grouped.mapValues { (_, items) ->
+                        items.groupBy { it.playSource.ifBlank { "默认线路" } }
                     }
-                    item {
-                        LazyRow(
-                            state = ReturnSpot.listState("phone_search/row_$srcName", precompose = PrecomposeWindow.Phone),
-                            contentPadding = PaddingValues(horizontal = 18.dp),
-                            horizontalArrangement = Arrangement.spacedBy(hSpacing)
-                        ) {
-                            items(itemsOfSource, key = { "srch_${it.id}" }) { item ->
-                                val cardW = cardWidthOf(isTv)
-                                Box(Modifier.width(cardW)) {
-                                    PosterCard(
-                                        item = item,
-                                        onClick = { onOpenDetail(item.id) }
-                                    )
+                }
+                LazyColumn(
+                    state = resultsListState,
+                    contentPadding = PaddingValues(bottom = 28.dp + GlassBarClearance)
+                ) {
+                    item { SectionTitle("搜索结果 ${state.results.size} 条 · ${state.grouped.size} 个来源") }
+                    state.grouped.forEach { (srcName, itemsOfSource) ->
+                        val srcCollapsed = srcName in state.collapsedSources
+                        val lines = lineGroups.getValue(srcName)
+                        item(key = "srch_src_$srcName") {
+                            SectionTitle(
+                                srcName,
+                                modifier = Modifier.clickable { state.toggleSource(srcName) },
+                                trailing = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        CountBadge(itemsOfSource.size)
+                                        Spacer(Modifier.width(4.dp))
+                                        Icon(
+                                            Icons.Filled.ExpandMore,
+                                            contentDescription = null,
+                                            tint = AppColors.TextTertiary,
+                                            modifier = Modifier
+                                                .size(20.dp)
+                                                .graphicsLayer { rotationZ = if (srcCollapsed) -90f else 0f }
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                        if (srcCollapsed) return@forEach
+                        if (lines.size == 1) {
+                            // 单线路来源直接上海报，不让用户为一次展开多点一下
+                            val entry = lines.entries.first()
+                            item(key = "srch_row_${srcName}_${entry.key}") {
+                                SearchPosterRow(srcName, entry.key, entry.value, isTv, hSpacing, onOpenDetail)
+                            }
+                        } else {
+                            lines.entries.forEach { (lineName, items) ->
+                                val key = "$srcName||$lineName"
+                                val expanded = key in state.expandedLines
+                                item(key = "srch_line_$key") {
+                                    SearchLineHeader(lineName, items.size, expanded) { state.toggleLine(key) }
+                                }
+                                item(key = "srch_body_$key") {
+                                    AnimatedVisibility(
+                                        visible = expanded,
+                                        enter = expandVertically(),
+                                        exit = shrinkVertically()
+                                    ) {
+                                        SearchPosterRow(srcName, lineName, items, isTv, hSpacing, onOpenDetail)
+                                    }
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/** 搜索结果线路折叠面板的标题行：线路名 + 条数 + 箭头 */
+@Composable
+private fun SearchLineHeader(name: String, count: Int, expanded: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 30.dp, end = 18.dp, top = 7.dp, bottom = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = name,
+            style = MaterialTheme.typography.titleMedium,
+            color = AppColors.TextSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        CountBadge(count)
+        Spacer(Modifier.width(4.dp))
+        Icon(
+            Icons.Filled.ExpandMore,
+            contentDescription = null,
+            tint = AppColors.TextTertiary,
+            modifier = Modifier
+                .size(18.dp)
+                .graphicsLayer { rotationZ = if (expanded) 0f else -90f }
+        )
+    }
+}
+
+/** 搜索结果一组影片：横向海报画廊 */
+@Composable
+private fun SearchPosterRow(
+    srcName: String,
+    lineName: String,
+    items: List<MediaEntity>,
+    isTv: Boolean,
+    hSpacing: androidx.compose.ui.unit.Dp,
+    onOpenDetail: (Long) -> Unit
+) {
+    LazyRow(
+        state = ReturnSpot.listState("phone_search/row_${srcName}_$lineName", precompose = PrecomposeWindow.Phone),
+        contentPadding = PaddingValues(horizontal = 18.dp),
+        horizontalArrangement = Arrangement.spacedBy(hSpacing)
+    ) {
+        items(items, key = { "srch_${it.id}" }) { item ->
+            Box(Modifier.width(cardWidthOf(isTv))) {
+                PosterCard(
+                    item = item,
+                    onClick = { onOpenDetail(item.id) }
+                )
             }
         }
     }
