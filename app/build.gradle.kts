@@ -19,44 +19,23 @@ android {
     // Compose 1.9 的 foundation 要求 compileSdk 35（aar-metadata 里 minCompileSdk=35）
     compileSdk = 35
 
-    // 发布签名凭据放在仓库根的 keystore.properties，与 keystore 文件本身都不进版本库。
+    // 固定签名（照 FongMi/影视仓的做法）：keystore 随仓库分发。
     //
-    // CI（.github/workflows/build-apk.yml）通过 GitHub Secrets 注入同一份凭据，
-    // 所以 CI 产出的包与本地产出的包签名一致 → 能互相覆盖升级。
-    // 之前 CI 走的是仓库里的 debug.keystore（密码公开的 android），签名与线上那个
-    // 装在用户手机上的私有签名不同，系统判定为两个应用直接拒绝覆盖。
+    // 为什么公开这把钥匙：私有密钥 + 公开仓库是个死结 —— CI 拿不到私钥，
+    // 产出的包签名就与线上那个装在用户手机上的不同，系统判定为两个应用直接拒绝覆盖
+    // （INSTALL_FAILED_UPDATE_INCOMPATIBLE）。要么把钥匙公开（所有环境签名一致，
+    // 任何地方构建的包都能互相覆盖），要么把私钥塞进 CI Secrets（多一步配置，
+    // 且换机器/换人构建时照样要配）。本应用是自用 + 网盘侧载分发，取前者：
+    // 签名一致 > 签名保密。
     //
-    // CI 里缺凭据要直接失败、不能回退 debug 签名：回退出来的包装不上，
-    // 还会被误当成「发版失败」，白排查一轮。
-    val keystorePropsFile = rootProject.file("keystore.properties")
-    val keystoreProps = Properties().apply {
-        if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
-    }
-    val releaseKeystore = keystoreProps.getProperty("storeFile")
-        ?.let { rootProject.file(it) }
-        ?.takeIf { it.exists() }
-    if (releaseKeystore == null && System.getenv("GITHUB_ACTIONS") != null) {
-        throw GradleException(
-            "CI 环境缺少发布签名凭据：请在仓库 Settings → Secrets and variables → Actions 里配置 " +
-                "KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD，" +
-                "否则产出的包与线上签名不一致，用户装不上。"
-        )
-    }
-
+    // 代价：任何人 clone 下来都能构建出能覆盖你手机的包。
+    // 若将来要上架应用商店，必须换回私有密钥，并接受一次卸载重装（数据会丢）。
     signingConfigs {
-        create("debugSigning") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
-        }
-        if (releaseKeystore != null) {
-            create("release") {
-                storeFile = releaseKeystore
-                storePassword = keystoreProps.getProperty("storePassword")
-                keyAlias = keystoreProps.getProperty("keyAlias")
-                keyPassword = keystoreProps.getProperty("keyPassword")
-            }
+        create("fixed") {
+            storeFile = file("keystore.jks")
+            storePassword = "ccIz21K39gsWXtuD0RmKlXZj"
+            keyAlias = "doudoutv"
+            keyPassword = "ccIz21K39gsWXtuD0RmKlXZj"
         }
     }
 
@@ -73,13 +52,7 @@ android {
 
     buildTypes {
         release {
-            // 有私有 keystore 就用私钥签；没有（别人 clone 下来）退回 debug 签名，
-            // 保证任何环境都能构建出可安装的包。CI 环境缺凭据会直接在上面报错。
-            signingConfig = if (releaseKeystore != null) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debugSigning")
-            }
+            signingConfig = signingConfigs.getByName("fixed")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -87,8 +60,8 @@ android {
             )
         }
         debug {
-            // debug 包与 release 同包名，方便覆盖安装测试
-            signingConfig = signingConfigs.getByName("debugSigning")
+            // debug 包与 release 同包名同签名，方便覆盖安装测试
+            signingConfig = signingConfigs.getByName("fixed")
         }
     }
 

@@ -44,36 +44,10 @@ jobs:
           echo "--- build-tools ---"
           ls "$SDK_ROOT/build-tools"
 
-      # 从 GitHub Secrets 注入发布签名。
-      #
-      # 为什么必须这么做：仓库里不放私钥（Secrets 不进版本库，仓库公开也不泄密），
-      # 但 CI 产出的包必须和用户手机上那个包的签名一致，否则系统判定为两个应用，
-      # 直接拒绝覆盖（INSTALL_FAILED_UPDATE_INCOMPATIBLE）。
-      # 早先 CI 走的是仓库里的 debug.keystore（密码公开的 android），
-      # 签名与线上私有签名不一致 —— 这就是「GitHub 上的包装不上」的原因。
-      - name: Inject release signing credentials
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          set -e
-          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
-            echo "::error::缺少签名 Secrets。请在仓库 Settings → Secrets and variables → Actions 里配置 KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD（缺任一项都会导致产出的包装不上用户手机里的旧包）。"
-            exit 1
-          fi
-          echo "$KEYSTORE_BASE64" | base64 -d > app/doudoutv-release.keystore
-          cat > keystore.properties <<EOF
-          storeFile=app/doudoutv-release.keystore
-          storePassword=$KEYSTORE_PASSWORD
-          keyAlias=$KEY_ALIAS
-          keyPassword=$KEY_PASSWORD
-          EOF
-          # 只报字节数，不报内容
-          echo "签名凭据已注入（keystore $(wc -c < app/doudoutv-release.keystore) 字节）"
-
-      # 出正式包（release）：用注入的私钥签，和本机构建的包签名一致，可覆盖安装
+      # 出正式包（release）：用仓库里随包的 app/keystore.jks 签（固定签名），
+      # 和本机构建的包签名完全一致 → 用户手机上那个包能被直接覆盖升级。
+      # 早先这里走的是 debug.keystore（密码公开的 android），签名与线上不一致，
+      # 系统判定为两个应用直接拒绝覆盖 —— 这就是「GitHub 上的包装不上」的原因。
       - name: Build release APK
         run: |
           chmod +x ./gradlew
