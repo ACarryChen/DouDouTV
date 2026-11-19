@@ -18,7 +18,9 @@ class PicHeaderInterceptor : Interceptor {
     override suspend fun intercept(chain: Interceptor.Chain): ImageResult {
         val request = chain.request
         val raw = request.data as? String ?: return chain.proceed(request)
-        if (!raw.contains(REFERER_MARKER, true) && !raw.contains(UA_MARKER, true)) {
+        if (!raw.contains(REFERER_MARKER, true) && !raw.contains(UA_MARKER, true) &&
+            !raw.contains(HEADERS_MARKER, true)
+        ) {
             return chain.proceed(request)
         }
 
@@ -31,6 +33,7 @@ class PicHeaderInterceptor : Interceptor {
     private companion object {
         const val REFERER_MARKER = "@Referer="
         const val UA_MARKER = "@User-Agent="
+        const val HEADERS_MARKER = "@Headers="
     }
 }
 
@@ -44,6 +47,28 @@ object PicUrl {
     data class Parsed(val url: String, val headers: Map<String, String>)
 
     fun parse(raw: String): Parsed {
+        // 另一种 TVBox 写法：整张请求头表以 JSON 挂在末尾 ——
+        //   xxx.jpg@Headers={"User-Agent":"Mozilla\/5.0 ...","Referer":"https:\/\/www.douban.com"}
+        // 花卷真彩这类豆瓣系站点用的就是它；不拆的话整串被当路径，图床回 418、封面全灭。
+        val jsonMarker = raw.indexOf("@Headers=", ignoreCase = true)
+        if (jsonMarker >= 0) {
+            val url = raw.substring(0, jsonMarker)
+            val headers = LinkedHashMap<String, String>()
+            runCatching {
+                val obj = org.json.JSONObject(raw.substring(jsonMarker + 9))
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    headers[k] = obj.optString(k)
+                }
+            }
+            if (headers["Referer"].isNullOrBlank() && url.contains("doubanio.com", true)) {
+                headers["Referer"] = "https://movie.douban.com/"
+            }
+            if (headers["User-Agent"].isNullOrBlank()) headers["User-Agent"] = DEFAULT_UA
+            return Parsed(url, headers)
+        }
+
         val first = MARKER.find(raw) ?: return Parsed(raw, emptyMap())
         val url = raw.substring(0, first.range.first)
         val tail = raw.substring(first.range.first)

@@ -726,8 +726,29 @@ class TvBoxClient(
     /** 记录配置里的 spider 地址（同时写进程级表，供其他 TvBoxClient 实例快速判断 spider 是否已加载） */
     private fun rememberSpiderUrl(raw: String) {
         if (raw.isBlank()) return
-        configSpiderUrl = raw
-        spiderUrlByBase[base] = raw
+        val resolved = resolveSpiderUrl(raw)
+        configSpiderUrl = resolved
+        spiderUrlByBase[base] = resolved
+    }
+
+    /**
+     * 配置里的 spider 允许写相对路径（如 lmw 源的 "./lmw.jar;md5;xxx"），
+     * 按 TVBox 语义相对配置文件所在目录解析。不解析的话，无协议的地址
+     * 会让 OkHttp 直接抛错，整个来源都加载不出来。
+     */
+    private fun resolveSpiderUrl(raw: String): String {
+        val parts = raw.trim().split(';')
+        val first = parts.firstOrNull()?.trim().orEmpty()
+        if (first.isBlank() || first.startsWith("http://", true) || first.startsWith("https://", true)) return raw
+        if (!base.startsWith("http", true)) return raw
+        val noQuery = base.substringBefore('?')
+        val schemeEnd = noQuery.indexOf("://")
+        val pathStart = if (schemeEnd < 0) -1 else noQuery.indexOf('/', schemeEnd + 3)
+        if (pathStart < 0) return raw
+        val origin = noQuery.take(pathStart)
+        val url = if (first.startsWith("/")) origin + first
+        else "$origin${noQuery.substring(pathStart).substringBeforeLast("/", "")}/${first.removePrefix("./")}"
+        return (listOf(url) + parts.drop(1)).joinToString(";")
     }
 
     /** 当前配置的 spider 地址：本实例没读过配置时回落到进程级缓存，可能为空 */

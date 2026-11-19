@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -219,9 +220,17 @@ fun TvSearchScreen(
     }
     LaunchedEffect(state.submittedKeyword, state.results.isNotEmpty()) {
         if (state.submittedKeyword.isEmpty()) return@LaunchedEffect
-        if (state.results.isNotEmpty()) {
-            // 离开时站在哪张结果卡就还给那张，没有记录才落第一张
-            tvMoveFocus(*listOfNotNull(stand.requester, firstResultFocus).toTypedArray())
+        if (state.results.isEmpty()) return@LaunchedEffect
+        // 离开时站在哪张结果卡就还给那张，没有记录才落第一张。
+        // 必须等一帧再读落点：网格的懒加载项在布局阶段才组合，卡片是在那时
+        // 才把 requester 交进 stand 的 —— 组合一结束就读永远读到 null，
+        // 结果就是从详情回来总落第一张卡（回到最上面）。
+        withFrameNanos { }
+        val anchors = { listOfNotNull(stand.requester, firstResultFocus).toTypedArray() }
+        if (!tvMoveFocus(*anchors())) {
+            // 这一帧卡片还没挂上：隔 120ms 再试一次（和 tvClaimFocusOnEnter 同款兜底）
+            kotlinx.coroutines.delay(120)
+            tvMoveFocus(*anchors())
         }
     }
 

@@ -217,13 +217,15 @@ class MediaRepository(private val context: Context) {
         val jobs = tvboxSources.flatMap { source ->
             runCatching {
                 val client = TvBoxClient(source.location, context)
-                // searchable/quickSearch 是配置给站点的开关：不参与搜索、或明确不支持
-                // 快速搜索（本次搜索用的就是 quick=true）的站点直接跳过，省掉一轮无用请求。
+                // searchable 是配置给站点的「不参与搜索」开关，跳过省一轮请求。
+                // quickSearch 不能当过滤条件：quickSearch:0 只是不支持快速搜索，
+                // 慢速搜索（quick=false）照样能搜 —— 以前把它也跳掉，
+                // 很多源一半的线路在搜索结果里永远不出现。
                 client.availableSites()
-                    .filter { it.searchable && it.quickSearch }
+                    .filter { it.searchable }
                     .map { site ->
                         launch {
-                            val hits = runCatching { client.search(site, kw, quick = true) }
+                            val hits = runCatching { client.search(site, kw, quick = site.quickSearch) }
                                 .getOrDefault(emptyList())
                                 .take(REMOTE_RESULT_LIMIT)
                                 .map { it to source }
@@ -1901,10 +1903,12 @@ class MediaRepository(private val context: Context) {
         /** 拼音算法版本：TinyPinyin 为 1，改动算法时 +1 触发一次性重建 */
         const val PINYIN_VERSION = 1
 
-        /** 远程搜索总条数上限：搜索结果只看前 20 条，拉全部既慢又刷屏 */
-        const val REMOTE_RESULT_LIMIT = 20
+        /** 远程搜索条数上限（单站与总量共用）：以前总量只有 20，一两个站点的结果
+         *  就能把名额占满，其余线路整个消失；60 条按来源分组展示仍然流畅 */
+        const val REMOTE_RESULT_LIMIT = 60
 
-        /** 远程搜索整批截止时间（毫秒）：所有站点并发搜索，最多总共等这么久 */
-        const val SEARCH_DEADLINE_MS = 5000L
+        /** 远程搜索整批截止时间（毫秒）：所有站点并发搜索，最多总共等这么久。
+         *  5 秒时慢站点（海外接口、多页搜索的慢速模式）整批还没回就被掐掉，提到 10 秒 */
+        const val SEARCH_DEADLINE_MS = 10000L
     }
 }
