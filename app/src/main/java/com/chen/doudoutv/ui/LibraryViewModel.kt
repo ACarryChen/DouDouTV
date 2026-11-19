@@ -388,7 +388,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         activeCategoryId = null
         clearCategoryState()
         activeSite = site
-        val sourceId = homeSourceId ?: return
+        // homeSourceId 为空时不能直接中止：UI 层（HomeScreen 第 140 行）会把「第一个来源」
+        // 当作选中项展示并加载线路，VM 这边却拦掉请求，两边状态不一致 → 切线路毫无反应。
+        // 这里采用同样的生效来源并补记，让线路切换和 UI 显示对齐。
+        val sourceId = homeSourceId ?: effectiveHomeSourceId()?.also {
+            homeSourceId = it
+            Prefs.homeSourceId = it
+        } ?: return
         val s = site ?: return
         homeSiteLoading = true
         viewModelScope.launch {
