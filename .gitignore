@@ -13,12 +13,13 @@ captures/
 *.keystore
 *.jks
 
-# 例外：固定 debug 签名随仓库分发，保证本地与 CI 构建的安装包可互相覆盖升级
+# 例外：debug 签名随仓库分发，别人 clone 下来也能构建出可安装的包
 !app/debug.keystore
 
-# 发布私钥与凭据：只留在本机，不进版本库
+# 发布私钥与凭据：只留在本机 / CI Secrets，不进版本库
 keystore.properties
 /app/doudoutv-release.keystore
+/app/keystore.jks
 
 # 调试时抓在仓库根目录的临时产物（数据库副本、logcat 转储、截图）
 /_*.db

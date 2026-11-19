@@ -242,7 +242,7 @@ object SpiderLoader {
         //    挂回 jar 自己那个 loader 的 pathList，所以 jar 组的 loader 才加载得到 Guard 类。
         val shellLoader = tryGetShellLoader(initClazz)
         shellLoader?.let { shellLoaders[key] = it }
-        val decrypted = scanDecryptedDex(initStarted)
+        val decrypted = scanDecryptedDex(jarFile.lastModified())
         Log.w(
             TAG,
             "扫描解密 dex ${decrypted.size} 个：${decrypted.joinToString { File(it).name }} " +
@@ -545,7 +545,7 @@ object SpiderLoader {
     private fun tryRecoverLoader(key: String): DexClassLoader? {
         val jarPath = jars[key] ?: return null
         // 同 loadGuardClass：按这个包跑 Init 的时刻算新鲜度，没有记录才退回 10 分钟窗口
-        val decrypted = scanDecryptedDex(initStartedAt[key] ?: (System.currentTimeMillis() - 10 * 60_000))
+        val decrypted = scanDecryptedDex(jarSince(key))
         if (decrypted.isEmpty()) return null
         decrypted.forEach { runCatching { File(it).takeIf { f -> f.canWrite() }?.setReadOnly() } }
         val classpath = (listOf(jarPath) + decrypted).joinToString(File.pathSeparator)
@@ -585,21 +585,45 @@ object SpiderLoader {
         return null
     }
 
-    /** 递归扫描 cacheDir 里以 dex 魔数开头的文件（Init 解密产物） */
+    /**
+     * 递归扫描壳解密的产物（以 dex 魔数开头的文件）。
+     *
+     * 扫的范围比原来宽：原来只看 cacheDir、且时间窗卡在「Init 开始之后」，
+     * 但这套壳的解密产物不一定落在 cacheDir，也不一定在 Init 之后才落盘
+     * （有的壳在 Init 之前就解好了，进程重启后文件还留在盘上）。
+     * 窗口卡太窄的结果就是「壳初始化完成但一个 dex 都没扫到」→
+     * 找不到爬虫类 → 站点内容永远是空的，只能退出重开碰运气。
+     *
+     * @param after 起始时间，一般传 spider jar 的落盘时间（比 Init 时间更早，窗口更宽）
+     */
     private fun scanDecryptedDex(after: Long): List<String> {
         val out = ArrayList<String>()
         fun walk(dir: File, depth: Int) {
-            if (depth > 4) return
+            if (depth > 5) return
             dir.listFiles()?.forEach { f ->
                 if (f.isDirectory) walk(f, depth + 1)
-                else if (f.length() > 4096 && f.lastModified() >= after - 2000 && hasDexMagic(f)) {
+                else if (f.length() > 4096 && f.lastModified() >= after && hasDexMagic(f) &&
+                    !f.name.endsWith(".odex") && !f.name.endsWith(".vdex")
+                ) {
                     out += f.absolutePath
                 }
             }
         }
-        walk(ctx().cacheDir, 0)
+        val ctx = ctx()
+        listOf(ctx.cacheDir, ctx.filesDir, ctx.codeCacheDir, ctx.noBackupFilesDir)
+            .forEach { walk(it, 0) }
         return out
     }
+
+    /**
+     * 解密 dex 的扫描起点：spider jar 的落盘时间。
+     *
+     * 比「Init 开始时间」更早 —— 壳可能在 Init 之前就解好了，也可能上次进程留下的还在盘上，
+     * 用 Init 时间当起点会把这些产物全漏掉（表现：扫到 0 个 dex → 找不到爬虫类）。
+     */
+    private fun jarSince(key: String): Long =
+        jars[key]?.let { runCatching { File(it).lastModified() }.getOrDefault(0L) }
+            ?: (System.currentTimeMillis() - 10 * 60_000)
 
     private fun hasDexMagic(f: File): Boolean = runCatching {
         f.inputStream().use { ins ->
@@ -664,7 +688,7 @@ object SpiderLoader {
         val jarPath = jars[loaderKey] ?: return null
         // 新鲜度按「这个包什么时候跑的 Init」算，不能写死 60 秒：
         // 启动预热跑完 Init 后可能几分钟才播放，固定窗口那时必然扫空。
-        val decrypted = scanDecryptedDex(initStartedAt[loaderKey] ?: (System.currentTimeMillis() - 60_000))
+        val decrypted = scanDecryptedDex(jarSince(loaderKey))
         if (decrypted.isEmpty()) return null
         decrypted.forEach { runCatching { File(it).takeIf { f -> f.canWrite() }?.setReadOnly() } }
 

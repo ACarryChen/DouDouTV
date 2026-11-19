@@ -452,6 +452,16 @@ class TvBoxClient(
         for (site in sites.take(4)) {
             val proxy = loader.getSpider(loaderKey, site.api, site.ext) ?: run {
                 reasons += "${site.name}: ${loader.lastError}"
+                // 爬虫类加载不出来 = 这个 spider 包的解密产物没找到，
+                // 后面几个站点用的是同一个 jar、同一份 classpath，必然同样加载不出来。
+                // 继续试只是白白重复扫盘 + 建 classloader（每个都要几百毫秒到几秒），
+                // 用户看到的就是「加完源一直转圈」。这里直接收手，把真因报上去。
+                if (loader.lastError.contains("找不到爬虫类")) {
+                    throw IllegalStateException(
+                        "该配置的加密壳未能解密，找不到爬虫类（${site.name}）：" +
+                            "spider 包解密后没有落盘，站点内容无法加载"
+                    )
+                }
                 null
             } ?: continue
             proxies += site to proxy

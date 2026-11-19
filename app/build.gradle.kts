@@ -20,9 +20,14 @@ android {
     compileSdk = 35
 
     // 发布签名凭据放在仓库根的 keystore.properties，与 keystore 文件本身都不进版本库。
-    // 为什么不写死：debug.keystore 的密码是公开的 android，拿到同包名同签名的包
-    // 就能静默覆盖安装用户手里的应用；换成只有自己有的私钥，这条路才堵死。
-    // 文件缺失时回退到 debug 签名，保证别人 clone 下来没私钥也能构建出能装的包。
+    //
+    // CI（.github/workflows/build-apk.yml）通过 GitHub Secrets 注入同一份凭据，
+    // 所以 CI 产出的包与本地产出的包签名一致 → 能互相覆盖升级。
+    // 之前 CI 走的是仓库里的 debug.keystore（密码公开的 android），签名与线上那个
+    // 装在用户手机上的私有签名不同，系统判定为两个应用直接拒绝覆盖。
+    //
+    // CI 里缺凭据要直接失败、不能回退 debug 签名：回退出来的包装不上，
+    // 还会被误当成「发版失败」，白排查一轮。
     val keystorePropsFile = rootProject.file("keystore.properties")
     val keystoreProps = Properties().apply {
         if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
@@ -30,8 +35,14 @@ android {
     val releaseKeystore = keystoreProps.getProperty("storeFile")
         ?.let { rootProject.file(it) }
         ?.takeIf { it.exists() }
+    if (releaseKeystore == null && System.getenv("GITHUB_ACTIONS") != null) {
+        throw GradleException(
+            "CI 环境缺少发布签名凭据：请在仓库 Settings → Secrets and variables → Actions 里配置 " +
+                "KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD，" +
+                "否则产出的包与线上签名不一致，用户装不上。"
+        )
+    }
 
-    // 固定 debug 签名：确保升级安装不丢数据
     signingConfigs {
         create("debugSigning") {
             storeFile = file("debug.keystore")
@@ -63,7 +74,7 @@ android {
     buildTypes {
         release {
             // 有私有 keystore 就用私钥签；没有（别人 clone 下来）退回 debug 签名，
-            // 保证任何环境都能构建出可安装的包。
+            // 保证任何环境都能构建出可安装的包。CI 环境缺凭据会直接在上面报错。
             signingConfig = if (releaseKeystore != null) {
                 signingConfigs.getByName("release")
             } else {
