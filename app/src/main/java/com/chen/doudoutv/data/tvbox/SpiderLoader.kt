@@ -636,6 +636,16 @@ object SpiderLoader {
         val cacheKey = "$loaderKey:$api"
         instances[cacheKey]?.let { return it }
 
+        // Python(.py)/QuickJS(.js)/Node(.md5、node:) 爬虫需要独立运行时，本版本只实现了 Java csp_ 一条路。
+        // 必须在这里快速失败：否则 resolveClassName 会把 .py/.js 的地址盲拼成类名，
+        // 触发扫盘 + 重建 classloader + 逐站 30s 超时，详情表现为长时间转圈后空白，
+        // 首页还会误报「加密壳未能解密」。给出准确原因，交由上层跳过该站。
+        if (isUnsupportedApi(api)) {
+            lastError = "该线路使用 Python/JS 爬虫（$api），当前版本仅支持 Java 爬虫，暂不支持"
+            Log.w(TAG, lastError)
+            return null
+        }
+
         val className = resolveClassName(api)
         val clazz = loadGuardClass(loaderKey, className, api) ?: run {
             lastError = "找不到爬虫类 $className（spider 包解密失败或站点名不匹配）"
@@ -712,6 +722,48 @@ object SpiderLoader {
         if (name.startsWith("csp_")) name = name.removePrefix("csp_")
         if (name.startsWith("com.github.catvod.spider.")) return api
         return "com.github.catvod.spider.$name"
+    }
+
+    /**
+     * 非 Java 爬虫入口判定：.py（Python）/.js（QuickJS）/.md5（Node bundle）/node: 前缀。
+     * 去掉 query/fragment 再判后缀，兼容带令牌的地址（如 .../hgtv.py?token=x）；
+     * Java 入口只会是 csp_Xxx 或全限定类名，不会命中这些后缀，判定安全。
+     *
+     * ── 故障档案：直播详情「转圈半天后空白」的真因（已止血，真支持 py 见下） ──
+     * 症状：选直播线路点详情，长时间加载后无内容。
+     * 两层真因：
+     *  1) 本 App 只实现了 Java csp_ 一条路，没有 Python/JS 引擎。py 站的 api（如 hgtv.py）
+     *     被 resolveClassName 盲拼成 com.github.catvod.spider.<url> → ClassNotFoundException
+     *     → getSpider 返回 null（旧逻辑还会先扫盘 + 重建 classloader，白白耗时）。
+     *  2) detail() 旧逻辑「精确匹配 + 其余所有站点兜底」：py 站落空后，仍对每个无关 Java 站
+     *     调 detailContent，各吃满 SpiderProxy 30s 超时 → 串行卡死。
+     *     日志实测：3×「爬虫方法调用超时（30s）」（17:06:11 / 17:06:41 / 17:07:22）。
+     * 已做（方案①·止血，仍不支持 py）：
+     *  - getSpider 对非 Java api 快速失败 + 准确 lastError（不再盲拼/扫盘）；
+     *  - detail() 带 siteKey 只查本站，砍掉全库串行兜底（空 siteKey 老路径保留）；
+     *  - 顺带修首页误报：py 排首位的混合配置以前被误判「加密壳未能解密」直接抛错。
+     *
+     * ── 真支持 py 的路径（方案②·未做，后续修改照此即可，不必重新调研） ──
+     * FongMi/影视TV 三语言由站点 api 路由：Java(csp_·DexClassLoader) / Python(./x.py) /
+     * JS(./x.js·QuickJS-NG)；新版把 Python/JS 引擎做成单独安装的模块 APK（旧版内嵌 Chaquopy）。
+     * py 契约：class Spider(base.spider.Spider)，方法名与 Java 完全一致
+     * （init/homeContent/categoryContent/detailContent/searchContent/playerContent/liveContent/proxy/destroy），
+     * 返回 dict/list 由宿主序列化成与 Java 同一套 Result JSON（class/list/filters/pagecount/url/parse/header…）。
+     * 接入点（关键）：SpiderProxy 全是反射调 Java 方法、返回值一律 String(JSON)。
+     *  → 只需写一个暴露相同方法签名的「py 桥接类」（内部跑 Python、dict→JSON），
+     *    getSpider 把 .py 路由到它即可；SpiderProxy / CatVodResultParser / UI 全不用动。
+     * 引擎：Chaquopy（自 12.0.1 起免费且开源、发在 Maven Central，许可障碍已除；
+     *  网上「商业授权」是 ≤12.0.0 旧版说法）。需配 abiFilters(arm64-v8a + armeabi-v7a)，
+     *  否则 universal 包四 ABI 体积翻倍；估 +15–25MB（CPython 运行时 + stdlib，可裁）。
+     * 长尾（数周·逐源调试）：自研 base.spider 兼容层（self.net.req/json/get/post/session/
+     *  batch/download/openStream/stream/ws/cached… + self.local/page/proxyUrl/dialog），
+     *  以及 requests/lxml/pycryptodome 等 pip 依赖（C 扩展要 Chaquopy 预编译 wheel，有摩擦）。
+     * 红线：只参考 FongMi 行为/协议，禁止复制 GPL-3.0 源码；base 与桥接净室自写。
+     * 壳 jar 帮不上忙：TVBox 系加密壳基本不含 py runner，不能复用，须自带引擎。
+     */
+    private fun isUnsupportedApi(api: String): Boolean {
+        val a = api.trim().substringBefore('?').substringBefore('#').lowercase()
+        return a.endsWith(".py") || a.endsWith(".js") || a.endsWith(".md5") || a.startsWith("node:")
     }
 
     private fun fail(msg: String): Nothing {

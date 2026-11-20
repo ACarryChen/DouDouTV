@@ -197,6 +197,10 @@ interface MediaDao {
     @Query("UPDATE media SET favorite = :favorite WHERE id = :id")
     suspend fun setFavorite(id: Long, favorite: Boolean)
 
+    /** 来源改名后刷新其全部已入库条目的冗余来源名，否则搜索结果仍按旧名分组 */
+    @Query("UPDATE media SET sourceName = :name WHERE sourceId = :sourceId")
+    suspend fun updateSourceName(sourceId: Long, name: String)
+
     /**
      * 写入/清除手动配置的片头时长（毫秒，0=清除）。
      * 只更新剧集壳行：全剧共用一个配置，切集时按 seriesKey 回读壳行即可。

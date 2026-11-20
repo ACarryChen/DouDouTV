@@ -47,7 +47,10 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RemoveCircle
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -268,6 +271,7 @@ fun TvHomeScreen(
     // 选择器弹窗开关
     var showSourceDialog by remember { mutableStateOf(false) }
     var showSiteDialog by remember { mutableStateOf(false) }
+    var showLineManager by remember { mutableStateOf(false) }
     // 「继续观看」卡片的操作菜单：长按 OK / 按 Menu 唤出。
     // 连同卡片自己的 FocusRequester 一起存，菜单关掉后要把焦点还回那张卡。
     var continueMenu by remember { mutableStateOf<Pair<MediaEntity, FocusRequester>?>(null) }
@@ -531,7 +535,15 @@ fun TvHomeScreen(
                     vm.selectHomeSite(key, site)
                     showSiteDialog = false
                 },
+                onManage = { showSiteDialog = false; showLineManager = true },
                 onDismiss = { showSiteDialog = false }
+            )
+        }
+        if (showLineManager) {
+            TvLineManagerDialog(
+                sourceId = selectedSource?.id ?: -1L,
+                vm = vm,
+                onDismiss = { showLineManager = false }
             )
         }
 
@@ -1624,7 +1636,8 @@ private fun TvDialogOption(
     text: String,
     selected: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    icon: (@Composable () -> Unit)? = null
 ) {
     var focused by remember { mutableStateOf(false) }
     Box(
@@ -1647,18 +1660,25 @@ private fun TvDialogOption(
             )
             .padding(horizontal = 18.dp, vertical = 14.dp)
     ) {
-        Text(
-            text,
-            color = when {
-                focused -> Color.Black
-                selected -> TvText.Title
-                else -> TvText.Section
-            },
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = if (focused || selected) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            icon?.invoke()
+            Text(
+                text,
+                color = when {
+                    focused -> Color.Black
+                    selected -> TvText.Title
+                    else -> TvText.Section
+                },
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (focused || selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+        }
     }
 }
 
@@ -1714,17 +1734,17 @@ private fun HomeSourceDialog(
 }
 
 /** 电视端「选择线路（站点）」弹窗 —— 横网格铺开，线路一屏可见，遥控器上下左右都能走。
- *  宽度/列数按当前设备屏幕自适应（不写死），1080p 电视上默认铺满约 92% 屏幕宽度。 */
+ *  宽度/列数按当前设备屏幕自适应（不写死），1080p 电视上默认铺满约 92% 屏幕宽度。
+ *  第一位固定为「线路管理」入口，点击弹出管理弹窗可屏蔽/恢复线路。 */
 @Composable
 private fun HomeSiteDialog(
     sites: List<TvBoxSite>,
     selectedKey: String?,
     onPick: (String?, TvBoxSite?) -> Unit,
+    onManage: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val firstFocus = remember { FocusRequester() }
-    // 规范 R5：默认焦点落在当前选中的线路上，不是「全部站点」。
-    // 选中的线路已经不在列表里（换过来源）时，effectiveKey 为 null，回退到第一格。
     val effectiveKey = selectedKey?.takeIf { key -> sites.any { it.key == key } }
     LaunchedEffect(Unit) {
         withFrameNanos { }
@@ -1732,7 +1752,6 @@ private fun HomeSiteDialog(
     }
     Dialog(
         onDismissRequest = onDismiss,
-        // 关掉平台默认窄宽度，让内容自己按屏幕尺寸决定弹窗宽度
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         BoxWithConstraints(
@@ -1741,11 +1760,8 @@ private fun HomeSiteDialog(
                 .padding(horizontal = 48.dp, vertical = 32.dp),
             contentAlignment = Alignment.Center
         ) {
-            // 宽度：屏幕宽度的 80%，夹在 560dp ~ 1280dp 之间（手机/电视都不至于过窄或过宽）
             val dialogWidth = (maxWidth * 0.80f).coerceIn(560.dp, 1280.dp)
-            // 列数：按每个选项至少 240dp 估算，2 ~ 6 列
             val columns = ((dialogWidth - 40.dp) / 120.dp).toInt().coerceIn(4, 6)
-            // 列表高度上限：屏幕高度的 60%（先取值，避免在 LazyGridScope 里被同名接收者遮蔽）
             val gridMaxHeight = maxHeight * 0.6f
             Column(
                 Modifier
@@ -1767,18 +1783,29 @@ private fun HomeSiteDialog(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    item {
-                        Box(
-                            Modifier.then(
-                                if (effectiveKey == null) Modifier.focusRequester(firstFocus) else Modifier
-                            )
-                        ) {
-                            TvDialogOption(
-                                "全部站点",
-                                selected = selectedKey.isNullOrEmpty(),
-                                onClick = { onPick(null, null) }
-                            )
-                        }
+                    // 第一位固定：线路管理入口
+                    item(key = "__manage__") {
+                        TvDialogOption(
+                            "线路管理",
+                            selected = false,
+                            icon = {
+                                Icon(
+                                    Icons.Filled.Settings,
+                                    contentDescription = null,
+                                    tint = TvText.Body,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            onClick = onManage,
+                            modifier = Modifier.focusRequester(firstFocus)
+                        )
+                    }
+                    item(key = "__all__") {
+                        TvDialogOption(
+                            "全部站点",
+                            selected = selectedKey.isNullOrEmpty(),
+                            onClick = { onPick(null, null) }
+                        )
                     }
                     gridItems(sites, key = { "site_${it.key}" }) { site ->
                         TvDialogOption(
@@ -1792,6 +1819,142 @@ private fun HomeSiteDialog(
                     }
                 }
             }
+        }
+    }
+}
+
+/** 电视端「线路管理」弹窗：列出全部线路，点击切换屏蔽/恢复状态。
+ *  屏蔽的线路右上角显示红减号图标。6 列固定，上下滚动。
+ *  经典版首页线路弹窗与 NF「切换来源/线路」抽屉共用。 */
+@Composable
+internal fun TvLineManagerDialog(
+    sourceId: Long,
+    vm: LibraryViewModel,
+    onDismiss: () -> Unit,
+    matchDrawerWidth: Boolean = false
+) {
+    var allSites by remember { mutableStateOf<List<TvBoxSite>>(emptyList()) }
+    var hidden by remember(sourceId) {
+        mutableStateOf(Prefs.allHiddenLines().filter { it.startsWith("$sourceId:") }.map { it.substringAfter(":") }.toSet())
+    }
+    LaunchedEffect(sourceId) {
+        allSites = vm.allSitesForSource(sourceId)
+        hidden = Prefs.allHiddenLines().filter { it.startsWith("$sourceId:") }.map { it.substringAfter(":") }.toSet()
+    }
+    val firstFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        tvMoveFocus(firstFocus)
+    }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        BoxWithConstraints(
+            Modifier.fillMaxSize().then(
+                if (matchDrawerWidth) Modifier.padding(vertical = 32.dp)
+                else Modifier.padding(horizontal = 48.dp, vertical = 32.dp)
+            ),
+            contentAlignment = Alignment.Center
+        ) {
+            val dialogWidth =
+                if (matchDrawerWidth) (maxWidth * 0.8f).coerceAtMost(1600.dp)
+                else (maxWidth * 0.80f).coerceIn(560.dp, 1280.dp)
+            val gridMaxHeight = maxHeight * 0.70f
+            Column(
+                Modifier.width(dialogWidth).background(AppColors.SurfaceHi, Radius.Lg).padding(vertical = 26.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 26.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "线路管理",
+                        color = TvText.Title,
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "共 ${allSites.size} 条，${hidden.size} 条已屏蔽",
+                        color = TvText.Body,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(6),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = gridMaxHeight),
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    gridItems(allSites, key = { "mgr_${it.key}" }) { site ->
+                        val isHidden = hidden.contains(site.key)
+                        TvManageLineChip(
+                            name = site.name,
+                            hidden = isHidden,
+                            onClick = {
+                                val newHidden = !isHidden
+                                Prefs.setLineHidden(sourceId, site.key, newHidden)
+                                hidden = if (newHidden) hidden + site.key else hidden - site.key
+                                vm.reloadHomeSites(sourceId)
+                            },
+                            modifier = if (site == allSites.first()) Modifier.focusRequester(firstFocus) else Modifier
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 线路管理里的单个线路 chip：右上角红减号（屏蔽中）/ 无角标（可见） */
+@Composable
+private fun TvManageLineChip(
+    name: String,
+    hidden: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        modifier
+            .fillMaxWidth()
+            .clip(Radius.Md)
+            .background(
+                when {
+                    focused -> Color.White
+                    hidden -> AppColors.Surface.copy(alpha = 0.55f)
+                    else -> AppColors.Surface
+                }
+            )
+            .then(if (focused) Modifier.border(2.dp, Color.White, Radius.Md) else Modifier)
+            .onFocusChanged { focused = it.isFocused }
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        Text(
+            name,
+            color = when {
+                focused -> Color.Black
+                hidden -> TvText.Section.copy(alpha = 0.55f)
+                else -> TvText.Section
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (hidden) {
+            Icon(
+                Icons.Filled.RemoveCircle,
+                contentDescription = "已屏蔽",
+                tint = Color(0xFFE5484D),
+                modifier = Modifier.size(16.dp).align(Alignment.TopEnd)
+            )
         }
     }
 }

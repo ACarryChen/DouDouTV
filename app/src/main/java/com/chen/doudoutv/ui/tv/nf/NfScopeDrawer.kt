@@ -108,6 +108,7 @@ fun NfScopeDrawer(
     onPickSource: (Long) -> Unit,
     onPickSite: (String?, TvBoxClient.TvBoxSite?) -> Unit,
     onManage: () -> Unit,
+    onManageLines: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
     // 光标所在来源：决定右列显示谁家的线路。开抽屉时先站在当前生效的来源上
@@ -127,8 +128,9 @@ fun NfScopeDrawer(
     val sitesVisible = cursorIsTvBox && sites.isNotEmpty()
     // 右列的高亮只描述「当前生效的那一条」，光标停在别的来源时不能拿上一个个来源的线路 key 来比
     val showSiteSelection = cursorId != null && cursorId == selectedSourceId
-    val siteEntryIndex = if (showSiteSelection) 1 + sites.indexOfFirst { it.key == selectedSiteKey } else 0
-    val siteEntryKey = sites.getOrNull(siteEntryIndex - 1)?.key
+    // 网格下标：0=线路管理，1=全部站点，2..=各线路。焦点仍落在当前生效那条（未选中则落全部站点）
+    val siteEntryIndex = if (showSiteSelection) 2 + sites.indexOfFirst { it.key == selectedSiteKey } else 1
+    val siteEntryKey = sites.getOrNull(siteEntryIndex - 2)?.key
     val siteEntryFocus = remember(cursorId, siteEntryKey) { FocusRequester() }
 
     val focusSites by rememberUpdatedState<suspend () -> Unit>({
@@ -214,7 +216,7 @@ fun NfScopeDrawer(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         BoxWithConstraints(contentAlignment = Alignment.Center) {
-            val panelWidth = (maxWidth * 0.78f).coerceIn(680.dp, 1400.dp)
+            val panelWidth = (maxWidth * 0.8f).coerceAtMost(1600.dp)
             val panelHeight = (maxHeight * 0.82f).coerceAtMost(760.dp)
             Column(
                 Modifier
@@ -241,9 +243,9 @@ fun NfScopeDrawer(
                 }
                 Spacer(Modifier.height(16.dp))
                 Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                    // ---------- 左列：来源，按类型分组 ----------
+                    // ---------- 左列：来源，按类型分组（左 3.5 : 右 6.5）----------
                     LazyColumn(
-                        modifier = Modifier.width(340.dp).fillMaxHeight(),
+                        modifier = Modifier.weight(3.5f).fillMaxHeight(),
                         state = listState,
                         contentPadding = PaddingValues(vertical = 4.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -297,7 +299,7 @@ fun NfScopeDrawer(
 
                     // ---------- 右列：线路（TVBox 来源在光标停住时就占位，Emby 只留一句说明）----------
                     if (cursorIsTvBox) {
-                        Column(Modifier.weight(1f).fillMaxHeight()) {
+                        Column(Modifier.weight(6.5f).fillMaxHeight()) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     cursorSource?.name?.takeIf { it.isNotBlank() } ?: "线路",
@@ -321,17 +323,27 @@ fun NfScopeDrawer(
                             Spacer(Modifier.height(10.dp))
                             if (sitesVisible) {
                                 LazyVerticalGrid(
-                                    columns = GridCells.Adaptive(minSize = 150.dp),
+                                    columns = GridCells.Fixed(3),
                                     state = siteListState,
                                     modifier = Modifier.weight(1f),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                                     verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
+                                    // 第一位固定：线路管理入口（屏蔽/恢复该来源的线路，复用经典版管理弹窗）
+                                    item(key = "site_manage") {
+                                        NfSiteCell(
+                                            text = "线路管理",
+                                            selected = false,
+                                            anchor = null,
+                                            onLeft = { leaveSites() },
+                                            onClick = { cursorId?.let { onManageLines(it) } }
+                                        )
+                                    }
                                     item(key = "site_all") {
                                         NfSiteCell(
                                             text = "全部站点",
                                             selected = showSiteSelection && selectedSiteKey.isNullOrEmpty(),
-                                            anchor = if (siteEntryIndex == 0) siteEntryFocus else null,
+                                            anchor = if (siteEntryIndex == 1) siteEntryFocus else null,
                                             onLeft = { leaveSites() },
                                             onClick = { cursorSource?.let { pick(it, null, null) } }
                                         )
@@ -398,7 +410,7 @@ fun NfScopeDrawer(
                         }
                     } else {
                         Column(
-                            Modifier.weight(1f).fillMaxHeight(),
+                            Modifier.weight(7f).fillMaxHeight(),
                             verticalArrangement = Arrangement.Center
                         ) {
                             Text(

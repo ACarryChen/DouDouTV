@@ -95,6 +95,9 @@ class TvSearchUiState {
     /** 已完成搜索的关键字，从详情返回时据此跳过重复搜索 */
     var searchedKeyword by mutableStateOf("")
 
+    /** 上次搜索执行时的屏蔽版本号：屏蔽/恢复后同词也要重查，过滤或恢复结果 */
+    var searchedHideEpoch by mutableStateOf(0)
+
     /** 热门榜缓存版本，刷新后自增以触发联想重查 */
     var hotEpoch by mutableStateOf(0)
 

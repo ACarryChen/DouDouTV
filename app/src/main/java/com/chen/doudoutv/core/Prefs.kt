@@ -28,6 +28,9 @@ object Prefs {
     private const val KEY_THEME_ID = "theme_id"
     private const val KEY_EMBY_DEVICE_ID = "emby_device_id"
     private const val KEY_SKIP_INTRO_ENABLED = "skip_intro_enabled"
+    private const val KEY_HIDDEN_LINES = "hidden_tvbox_lines"
+    private const val KEY_NAV_TAB_ORDER = "tv_nav_tab_order"
+    private const val KEY_NAV_TAB_HIDDEN = "tv_nav_tab_hidden"
 
     /** 缩略图尺寸三档 */
     enum class PosterSize(val mobileDp: Int, val tvDp: Int) {
@@ -291,4 +294,53 @@ object Prefs {
         }
 
     fun clearSearchHistory() = sp.edit().remove(KEY_SEARCH_HISTORY).apply()
+
+    /**
+     * TVBox 线路屏蔽集合：元素形如 "sourceId:siteKey"（用 Long 转 String）。
+     * 被屏蔽的线路在搜索、首页线路选择、分类拉取三个入口都不会出现，
+     * 是全链路静默过滤，不是 UI 层藏一下。
+     */
+    private fun hiddenLinesRaw(): Set<String> =
+        sp.getStringSet(KEY_HIDDEN_LINES, emptySet()).orEmpty()
+
+    fun isLineHidden(sourceId: Long, siteKey: String): Boolean =
+        hiddenLinesRaw().contains("$sourceId:$siteKey")
+
+    fun setLineHidden(sourceId: Long, siteKey: String, hidden: Boolean) {
+        val set = LinkedHashSet(hiddenLinesRaw())
+        val key = "$sourceId:$siteKey"
+        if (hidden) set.add(key) else set.remove(key)
+        sp.edit().putStringSet(KEY_HIDDEN_LINES, set).apply()
+    }
+
+    fun allHiddenLines(): Set<String> = hiddenLinesRaw()
+
+    /**
+     * TV 顶栏左侧 tab 的自定义顺序与隐藏。
+     *
+     * 只管「首页/分类/我的/搜索」四个可管理 tab，设置齿轮不在内。存的是 NfTab 的 name 字符串，
+     * core 不认得具体 tab，也就不跟着 UI 枚举一起改。顺序表存全部四个（含隐藏的，
+     * 这样取消隐藏后还回到原位），隐藏集单独存；读时按顺序表过滤掉隐藏的即得可见 tab。
+     */
+    private val defaultNavTabs = listOf("Home", "Browse", "Mine", "Search")
+
+    /** 全部四个 tab 的排列顺序（含隐藏的）；旧数据缺项时按默认顺序补齐，保证四个都在。 */
+    fun navTabOrder(): List<String> {
+        val raw = sp.getString(KEY_NAV_TAB_ORDER, "").orEmpty()
+        if (raw.isBlank()) return defaultNavTabs
+        val saved = raw.split(",").filter { it in defaultNavTabs }.distinct()
+        return saved + defaultNavTabs.filter { it !in saved }
+    }
+
+    fun navTabHidden(): Set<String> =
+        sp.getStringSet(KEY_NAV_TAB_HIDDEN, emptySet()).orEmpty().filter { it in defaultNavTabs }.toSet()
+
+    fun setNavTabs(order: List<String>, hidden: Set<String>) {
+        val cleaned = order.filter { it in defaultNavTabs }.distinct()
+        val full = cleaned + defaultNavTabs.filter { it !in cleaned }
+        sp.edit()
+            .putString(KEY_NAV_TAB_ORDER, full.joinToString(","))
+            .putStringSet(KEY_NAV_TAB_HIDDEN, hidden.filter { it in defaultNavTabs }.toSet())
+            .apply()
+    }
 }

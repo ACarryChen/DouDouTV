@@ -89,15 +89,17 @@ internal sealed interface TvRoute {
 /**
  * 一级 tab 之间互切的栈规则（Netflix 版布局的导航条用）。
  *
- * 首页是根，tab 之间有层级：首页 → 分类 → 我的 走了一趟，返回键就该一级一级退回来
- * （我的 → 分类 → 首页），而不是不管从哪来都直接回首页 —— 直接回首页等于把
+ * 根 tab 是返回链的底座：首页可见时是首页，首页被藏时是第一颗可见 tab（[rootRoute]）。
+ * tab 之间有层级：根 → 分类 → 我的 走了一趟，返回键就该一级一级退回来
+ * （我的 → 分类 → 根），而不是不管从哪来都直接回根 —— 直接回根等于把
  * 「从哪来」这一层信息丢了，用户按返回时看到的却是另一颗 tab。
  *
  * 规则：
- *   · 按「首页」tab = 回根，历史清空（首页是根，不是历史里的一环）；
+ *   · 按根 tab = 回根，历史清空（根不是历史里的一环）；
  *   · 切到历史里已有的 tab = 截断到那一层（浏览器的前进/后退语义）；
+ *   · 被藏的 tab 不留在历史里：返回键不该退进一颗顶栏上看不到的页；
  *   · 历史最多 [TAB_HISTORY_MAX] 层：tab 只有四颗，再多也退不出去，
- *     退到首页就该走「双返回」退出了。
+ *     退到根就该走「双返回」退出了。
  * 旧布局不用这条，仍然是 push/出栈。
  */
 private const val TAB_HISTORY_MAX = 4
@@ -109,12 +111,28 @@ private fun TvRoute.isTabRoute(): Boolean = when (this) {
 }
 
 private fun tabStack(current: List<TvRoute>, route: TvRoute): List<TvRoute> {
-    if (route is TvRoute.Home) return listOf(TvRoute.Home)
-    // 历史段：栈里出现过的那些 tab 页（首页本身不算，它永远是根）
-    val history = current.filter { it.isTabRoute() && it !is TvRoute.Home }
+    val root = rootRoute()
+    if (route == root) return listOf(root)
+    // 历史段：栈里出现过的那些 tab 页（根 tab 不算；被藏的 tab 也不当返回落点）
+    val hidden = Prefs.navTabHidden()
+    val history = current.filter { it.isTabRoute() && it != root && nfTabOf(it)?.name !in hidden }
     val at = history.indexOf(route)
     val next = if (at >= 0) history.take(at + 1) else history + route
-    return listOf(TvRoute.Home) + next.takeLast(TAB_HISTORY_MAX - 1)
+    return listOf(root) + next.takeLast(TAB_HISTORY_MAX - 1)
+}
+
+/**
+ * 栈底根 tab：首页可见时是首页；首页被藏时回退到用户顺序里的第一颗可见 tab，
+ * 与顶栏管理弹窗保存时的回落（NfScaffold onSaved）同一口径。
+ * 冷启动、重建恢复、返回键回根都走这里 —— 藏了首页就不该再在任何路径落进首页。
+ * 经典版不参与 tab 自定义，恒以首页为根；全隐藏（持久化被清等异常）兜底回首页。
+ */
+private fun rootRoute(): TvRoute {
+    if (Prefs.tvLayout != Prefs.TvLayout.NETFLIX) return TvRoute.Home
+    val hidden = Prefs.navTabHidden()
+    if (NfTab.Home.name !in hidden) return TvRoute.Home
+    val first = Prefs.navTabOrder().firstOrNull { it !in hidden } ?: return TvRoute.Home
+    return nfRouteOf(NfTab.valueOf(first))
 }
 
 /**
@@ -122,7 +140,7 @@ private fun tabStack(current: List<TvRoute>, route: TvRoute): List<TvRoute> {
  *
  * 内嵌的爬虫壳在播放期间也会顺手 finish 宿主 MainActivity，MainActivity 于是 recreate()；
  * 栈要是只放在 remember 里，重建后组合树全新一份，用户看到的就是「看完视频回来落到首页」。
- * 放进程级和 [com.chen.doudoutv.ui.ReturnSpot] 一个道理：重建能穿过去，真正的新进程自然从首页开始。
+ * 放进程级和 [com.chen.doudoutv.ui.ReturnSpot] 一个道理：重建能穿过去，真正的新进程自然从根 tab 开始。
  */
 internal object TvNavHistory {
     var stack: List<TvRoute> = listOf(TvRoute.Home)
@@ -162,7 +180,13 @@ fun TvApp(vm: LibraryViewModel) {
         if (navStack.size > 1) {
             if (navStack.last() is TvRoute.Search) searchState.clear()
             if (navStack.last() is TvRoute.Detail) TvNavHistory.forgetEpisode()
-            navStack = navStack.dropLast(1)
+            val next = navStack.dropLast(1)
+            // 退出来的落点不能是被藏的 tab：在设置页藏首页时（设置页不参与回落）
+            // 栈底那颗首页已经看不见了，出栈设置页就直接改落根 tab
+            val topTab = nfTabOf(next.last())
+            navStack = if (Prefs.tvLayout == Prefs.TvLayout.NETFLIX &&
+                topTab != null && topTab.name in Prefs.navTabHidden()
+            ) tabStack(next, rootRoute()) else next
         }
     }
     // Netflix 版导航条：四颗 tab 互切走 tabStack 规则，并带上当前布局风格（切风格要重建栈底）
@@ -239,22 +263,23 @@ fun TvApp(vm: LibraryViewModel) {
     Box(
         Modifier
             .fillMaxSize()
-            // 返回键层级的最高一级：焦点在常驻导航条上时按返回，退回「首页」这一 tab，
-            // 焦点留在首页那颗标签上（NfTabSwitch 让新页面不把焦点抢进轮播播放键）。
-            // 导航条画在转场之外，各页自己的按键链收不到它这一层，只能在根上接。
-            // 已经在首页时原样交回：由下面的 BackHandler 走退栈 / 双返回退出。
+            // 返回键层级的最高一级：焦点在常驻导航条上时按返回，退回根 tab（首页可见时
+            // 是首页，被藏时是第一颗可见 tab），焦点留在那颗标签上（NfTabSwitch 让新页面
+            // 不把焦点抢进内容）。导航条画在转场之外，各页自己的按键链收不到它这一层，
+            // 只能在根上接。已经在根 tab 时原样交回：由下面的 BackHandler 走退栈 / 双返回退出。
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown || event.key != Key.Back) {
                     return@onPreviewKeyEvent false
                 }
                 val tab = if (nfLayout) nfTab else null
+                val rootTab = if (nfLayout) nfTabOf(rootRoute()) else null
                 // 设置页是 push 进来的覆盖页（不是 tab 互切）：焦点在顶栏按返回时原样交回，
-                // 由下面的 BackHandler 出栈回到「从哪来」那一页，而不是切到首页。
-                if (tab == null || tab == NfTab.Home || tab == NfTab.Settings || !nfShell.chrome.navFocused) {
+                // 由下面的 BackHandler 出栈回到「从哪来」那一页，而不是切到根 tab。
+                if (tab == null || tab == rootTab || tab == NfTab.Settings || !nfShell.chrome.navFocused) {
                     return@onPreviewKeyEvent false
                 }
-                NfTabSwitch.arm(NfTab.Home)
-                switchTab(TvRoute.Home)
+                NfTabSwitch.arm(rootTab ?: NfTab.Home)
+                switchTab(rootRoute())
                 true
             }
     ) {
@@ -436,18 +461,30 @@ private fun nfTabOf(route: TvRoute): NfTab? = when (route) {
 }
 
 /**
- * 恢复导航栈时把不能原样加载的路由换掉或丢弃。
+ * 恢复导航栈时把不能原样加载的路由换掉或丢弃，并把栈底对齐当前 tab 配置。
  *
  * 首页分类 / 搜索是内存里的临时条目（负 id），落库靠 ViewModel 里那份浏览结果；
  * 重建后那份内存没了，按负 id 只能渲染成「条目不存在」。
- * 所以记下过真实 id 的就换成真实 id 恢复；没记到的（含真 id 已不在库里）退回首页。
+ * 所以记下过真实 id 的就换成真实 id 恢复；没记到的（含真 id 已不在库里）退回根 tab。
  * 其余页面都按 id / 类型重新取数，栈照原样接回去。
+ *
+ * 栈底一律换成 [rootRoute]：首页被藏时冷启动不再落首页，而是第一颗可见 tab；
+ * 其余层里被藏的 tab 也一并滤掉，返回键不会退进隐藏页。
  */
 private fun restorableStack(stored: List<TvRoute>): List<TvRoute> {
-    val top = stored.lastOrNull() as? TvRoute.Detail ?: return stored
-    if (top.mediaId >= 0) return stored
-    val real = TvNavHistory.resolvedDetailId
-    return if (real > 0) stored.dropLast(1) + TvRoute.Detail(real) else listOf(TvRoute.Home)
+    val root = rootRoute()
+    val top = stored.lastOrNull() as? TvRoute.Detail
+    val base = when {
+        top == null || top.mediaId >= 0 -> stored
+        TvNavHistory.resolvedDetailId > 0 ->
+            stored.dropLast(1) + TvRoute.Detail(TvNavHistory.resolvedDetailId)
+        else -> listOf(root)
+    }
+    val hidden = Prefs.navTabHidden()
+    val rest = base.drop(1).filter {
+        !it.isTabRoute() || (it != root && nfTabOf(it)?.name !in hidden)
+    }
+    return listOf(root) + rest
 }
 
 /** LocalContext 可能被 ContextThemeWrapper 包一层，直接 cast 拿不到 Activity 就退不出去 */

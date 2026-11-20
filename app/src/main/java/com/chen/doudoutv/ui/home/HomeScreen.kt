@@ -24,6 +24,9 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItemsM
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -35,7 +38,9 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RemoveCircle
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Source
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -139,6 +144,9 @@ fun HomeScreen(
 
     // 「继续观看」卡片长按弹出的操作菜单（TV 端的对应实现在 TvHomeScreen，走遥控器长按 OK）
     var continueMenu by remember { mutableStateOf<MediaEntity?>(null) }
+
+    // 线路管理弹窗开关：HomeLineSelector 点「线路管理」入口时打开
+    var showLineManager by remember { mutableStateOf(false) }
 
     // 当前生效的来源：手动选择的来源，未选择（或已删除/停用）时回退到第一个启用中的来源
     val selectedSource = sources.firstOrNull { it.id == vm.homeSourceId } ?: sources.firstOrNull()
@@ -393,7 +401,8 @@ fun HomeScreen(
                     HomeLineSelector(
                         sites = namedSites,
                         selectedKey = vm.homeSiteKey,
-                        onSelect = { key, site -> vm.selectHomeSite(key, site) }
+                        onSelect = { key, site -> vm.selectHomeSite(key, site) },
+                        onManage = { showLineManager = true }
                     )
                 }
             }
@@ -436,6 +445,16 @@ fun HomeScreen(
                 continueMenu = null
             },
             onDismiss = { continueMenu = null }
+        )
+    }
+
+    // ---------- 线路管理弹窗：3 列网格，点击切换屏蔽 ----------
+    val effectiveSourceId = selectedSource?.id
+    if (showLineManager && effectiveSourceId != null) {
+        PhoneLineManagerDialog(
+            sourceId = effectiveSourceId,
+            vm = vm,
+            onDismiss = { showLineManager = false }
         )
     }
 }
@@ -812,29 +831,28 @@ private fun HomeSourceSelector(
     }
 }
 
-/** 顶栏线路（TVBox 站点）按钮：图标样式，点击弹出线路选择菜单 */
+/** 顶栏线路（TVBox 站点）按钮：图标样式，点击弹出线路选择菜单。
+ *  菜单第一位固定为「线路管理」入口，点击屏蔽/恢复线路。 */
 @Composable
 private fun HomeLineSelector(
     sites: List<TvBoxSite>,
     selectedKey: String?,
-    onSelect: (String?, TvBoxSite?) -> Unit
+    onSelect: (String?, TvBoxSite?) -> Unit,
+    onManage: () -> Unit = {}
 ) {
     var expanded by remember { mutableStateOf(false) }
-    // 菜单内是等高的 DropdownMenuItem（48dp），按「下标 × 行高」滚动即可定位到当前线路
     val scrollState = rememberScrollState()
     val density = LocalDensity.current
-    // 选中线路在列表中的下标（0 = 「全部站点」，其余 +1）
+    // 下标 +1 给「线路管理」；0 = 线路管理，1 = 全部站点，2.. = 各线路
     val selectedIndex = remember(sites, selectedKey) {
-        if (selectedKey == null) 0
-        else sites.indexOfFirst { it.key == selectedKey }.let { if (it < 0) 0 else it + 1 }
+        if (selectedKey == null) 1
+        else sites.indexOfFirst { it.key == selectedKey }.let { if (it < 0) 1 else it + 2 }
     }
-    // 打开菜单时自动定位到当前线路，线路有几十条时不用手动翻找
     LaunchedEffect(expanded) {
         if (!expanded) return@LaunchedEffect
-        // 弹窗内容完成首帧布局后 maxValue 才是真实可滚动距离
         repeat(3) { withFrameNanos { } }
         val itemPx = with(density) { 48.dp.roundToPx() }
-        val target = (selectedIndex * itemPx - itemPx).coerceIn(0, scrollState.maxValue)
+        val target = ((selectedIndex + 1) * itemPx - itemPx).coerceIn(0, scrollState.maxValue)
         scrollState.scrollTo(target)
     }
     Box {
@@ -847,39 +865,27 @@ private fun HomeLineSelector(
             scrollState = scrollState
         ) {
             DropdownMenuItem(
-                text = {
-                    Text(
-                        "全部站点",
-                        color = AppColors.TextPrimary,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                },
+                text = { Text("线路管理", color = AppColors.TextPrimary, style = MaterialTheme.typography.bodyMedium) },
+                leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null, tint = AppColors.Brand) },
+                onClick = { expanded = false; onManage() }
+            )
+            DropdownMenuItem(
+                text = { Text("全部站点", color = AppColors.TextPrimary, style = MaterialTheme.typography.bodyMedium) },
                 leadingIcon = if (selectedKey == null) {
                     { Icon(Icons.Filled.Check, contentDescription = null, tint = AppColors.Brand) }
                 } else null,
-                onClick = {
-                    expanded = false
-                    onSelect(null, null)
-                }
+                onClick = { expanded = false; onSelect(null, null) }
             )
             sites.forEach { site ->
                 DropdownMenuItem(
                     text = {
-                        Text(
-                            site.name,
-                            color = AppColors.TextPrimary,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Text(site.name, color = AppColors.TextPrimary,
+                            style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     },
                     leadingIcon = if (selectedKey == site.key) {
                         { Icon(Icons.Filled.Check, contentDescription = null, tint = AppColors.Brand) }
                     } else null,
-                    onClick = {
-                        expanded = false
-                        onSelect(site.key, site)
-                    }
+                    onClick = { expanded = false; onSelect(site.key, site) }
                 )
             }
         }
@@ -914,6 +920,74 @@ private fun HomePickerMenu(
             content()
         }
     }
+}
+
+/**
+ * 手机端「线路管理」弹窗：3 列网格展示全部线路，点击切换屏蔽/恢复。
+ *  屏蔽的线路右上角显示红减号。 */
+@Composable
+private fun PhoneLineManagerDialog(
+    sourceId: Long,
+    vm: LibraryViewModel,
+    onDismiss: () -> Unit
+) {
+    var allSites by remember { mutableStateOf<List<TvBoxSite>>(emptyList()) }
+    var hidden by remember(sourceId) {
+        mutableStateOf(Prefs.allHiddenLines().filter { it.startsWith("$sourceId:") }.map { it.substringAfter(":") }.toSet())
+    }
+    LaunchedEffect(sourceId) {
+        allSites = vm.allSitesForSource(sourceId)
+        hidden = Prefs.allHiddenLines().filter { it.startsWith("$sourceId:") }.map { it.substringAfter(":") }.toSet()
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AppColors.Surface,
+        title = { Text("线路管理 · 共 ${allSites.size} 条，${hidden.size} 已屏蔽", color = AppColors.TextPrimary) },
+        text = {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                gridItemsM(allSites, key = { "pmgr_${it.key}" }) { site ->
+                    val isHidden = hidden.contains(site.key)
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(Radius.Md)
+                            .background(if (isHidden) AppColors.Surface.copy(alpha = 0.55f) else AppColors.SurfaceHi)
+                            .clickable {
+                                val newHidden = !isHidden
+                                Prefs.setLineHidden(sourceId, site.key, newHidden)
+                                hidden = if (newHidden) hidden + site.key else hidden - site.key
+                                vm.reloadHomeSites(sourceId)
+                            }
+                            .padding(12.dp)
+                    ) {
+                        Text(
+                            site.name,
+                            color = if (isHidden) AppColors.TextSecondary.copy(alpha = 0.55f) else AppColors.TextPrimary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (isHidden) {
+                            Icon(
+                                Icons.Filled.RemoveCircle,
+                                contentDescription = "已屏蔽",
+                                tint = Color(0xFFE5484D),
+                                modifier = Modifier.size(18.dp).align(Alignment.TopEnd)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("完成", color = AppColors.Brand) }
+        }
+    )
 }
 
 /** 库里有内容但当前来源/站点还没同步到内容时的提示；error 非空时把真实失败原因透出 */
@@ -1230,6 +1304,9 @@ class SearchUiState {
     /** 已完成搜索的关键字：从详情返回时据此复用结果，不重复联网搜索 */
     var searchedKeyword by mutableStateOf("")
 
+    /** 上次搜索执行时的屏蔽版本号：屏蔽/恢复后同词也要重查，过滤或恢复结果 */
+    var searchedHideEpoch by mutableStateOf(0)
+
     /** 热门榜缓存版本，刷新后自增以触发联想重查 */
     var hotEpoch by mutableStateOf(0)
 
@@ -1359,9 +1436,13 @@ fun SearchScreen(
     // 从详情返回时关键字没变，直接复用已有结果，不重复搜索。
     // 本地结果先上屏（Room，几十毫秒），远程 TVBox 结果按站点流式追加：
     // 哪个站点先搜完就先把它的命中追加到列表，不再整批等到最后。
-    LaunchedEffect(state.submittedKeyword) {
+    LaunchedEffect(state.submittedKeyword, vm.hideEpoch) {
         val q = state.submittedKeyword.trim()
-        if (q.isEmpty() || q == state.searchedKeyword) return@LaunchedEffect
+        if (q.isEmpty() || (q == state.searchedKeyword && state.searchedHideEpoch == vm.hideEpoch)) {
+            return@LaunchedEffect
+        }
+        val epoch = vm.hideEpoch
+        state.searchedHideEpoch = epoch
         state.searching = true
         val local = runCatching { vm.searchMedia(q) }.getOrDefault(emptyList())
         state.results = local
@@ -1377,13 +1458,13 @@ fun SearchScreen(
         }
 
         val remote = vm.searchRemote(q) { partial ->
-            // 远程返回前用户可能已经发起了下一次搜索，旧结果不能覆盖当前列表
-            if (state.submittedKeyword != q) return@searchRemote
+            // 远程返回前用户可能已经发起了下一次搜索或切换了屏蔽，旧结果不能覆盖当前列表
+            if (state.submittedKeyword != q || state.searchedHideEpoch != epoch) return@searchRemote
             appendRemote(partial)
             // 首批结果已经上屏，就不再让用户对着「搜索中」干等
             state.searching = false
         }
-        if (state.submittedKeyword != q) return@LaunchedEffect
+        if (state.submittedKeyword != q || state.searchedHideEpoch != epoch) return@LaunchedEffect
         appendRemote(remote)
         state.searching = false
     }
@@ -1538,12 +1619,6 @@ fun SearchScreen(
 
             // 有结果：来源 → 线路两级分组，来源可整体折叠，线路为可展开面板
             else -> {
-                // 来源内再按线路（playSource）分组；Emby 条目无线路字段，归为单组直接展示
-                val lineGroups = remember(state.grouped) {
-                    state.grouped.mapValues { (_, items) ->
-                        items.groupBy { it.playSource.ifBlank { "默认线路" } }
-                    }
-                }
                 LazyColumn(
                     state = resultsListState,
                     contentPadding = PaddingValues(bottom = 28.dp + GlassBarClearance)
@@ -1551,7 +1626,9 @@ fun SearchScreen(
                     item { SectionTitle("搜索结果 ${state.results.size} 条 · ${state.grouped.size} 个来源") }
                     state.grouped.forEach { (srcName, itemsOfSource) ->
                         val srcCollapsed = srcName in state.collapsedSources
-                        val lines = lineGroups.getValue(srcName)
+                        // 直接从当前 grouped 实时算线路分组，不 remember —— 流式追加时 grouped 换了新 map，
+                        // remember 会基于旧 map 派生，导致 lineGroups 里还有已不存在的来源 → getValue 崩
+                        val lines = itemsOfSource.groupBy { it.playSource.ifBlank { "默认线路" } }
                         item(key = "srch_src_$srcName") {
                             SectionTitle(
                                 srcName,
@@ -1586,14 +1663,11 @@ fun SearchScreen(
                                 item(key = "srch_line_$key") {
                                     SearchLineHeader(lineName, items.size, expanded) { state.toggleLine(key) }
                                 }
-                                item(key = "srch_body_$key") {
-                                    AnimatedVisibility(
-                                        visible = expanded,
-                                        enter = expandVertically(),
-                                        exit = shrinkVertically()
-                                    ) {
-                                        SearchPosterRow(srcName, lineName, items, isTv, hSpacing, onOpenDetail)
-                                    }
+                                // 折叠时不发 body item：让 interval 计数和实际发出的 item 严格一致。
+                                // AnimatedVisibility 在 LazyColumn 里会让 invisible 的 content 挂在 composition 但不计 interval，
+                                // 远程流式追加同时换 grouped 结构时就会出现 intervals 计数和实际 item index 不一致 → IndexOutOfBounds。
+                                if (expanded) item(key = "srch_body_$key") {
+                                    SearchPosterRow(srcName, lineName, items, isTv, hSpacing, onOpenDetail)
                                 }
                             }
                         }

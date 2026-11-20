@@ -541,10 +541,13 @@ class TvBoxClient(
             rememberSpiderUrl(root.optString("spider"))
         }
 
-        // 优先按 siteKey 精确匹配，其余站点作为兜底
+        // vodId 是站点私有的：带 siteKey 时只查本站。
+        // 跨站兜底几乎必然落空（各站 vodId 命名空间不同），还会让每个无关站点吃满 30s
+        // detailContent 超时 —— 这正是「直播详情加载半天后空白」的真因。本站不支持/无数据
+        // 就快速返回，不再全库串行。siteKey 为空（无法定位来源）时保留旧的全站尝试路径。
+        // 完整故障档案（症状/两层真因/日志证据）与真支持 py 的路径见 SpiderLoader.isUnsupportedApi 注释。
         val ordered = if (siteKey.isNotBlank()) {
-            listOfNotNull(spSites.firstOrNull { it.key == siteKey }) +
-                spSites.filter { it.key != siteKey }
+            listOfNotNull(spSites.firstOrNull { it.key == siteKey })
         } else {
             spSites
         }

@@ -22,6 +22,8 @@ import com.chen.doudoutv.data.model.SourceUrl
 import com.chen.doudoutv.data.pair.PairedSaveRequest
 import com.chen.doudoutv.data.pair.PairedSaveResult
 import com.chen.doudoutv.data.pair.PairedSource
+import com.chen.doudoutv.data.pair.PairedTmdb
+import com.chen.doudoutv.data.pair.PairedTmdbRequest
 import com.chen.doudoutv.data.pair.SourcePairHandler
 import com.chen.doudoutv.data.tvbox.CatVodResultParser
 import com.chen.doudoutv.data.tvbox.TvBoxClient
@@ -182,6 +184,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     val homeSitesBySource: Map<Long, List<TvBoxSite>> get() = _homeSitesBySource
 
     var homeSitesLoading by mutableStateOf(false)
+        private set
+
+    /** 搜索刷新版本号：线路屏蔽/恢复、来源改名/改配置时自增，搜索页据此对同词重查，让变更立即生效 */
+    var hideEpoch by mutableIntStateOf(0)
         private set
 
     /**
@@ -398,8 +404,6 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val s = site ?: return
         homeSiteLoading = true
         viewModelScope.launch {
-            // 每次切线路都拉一次首页：取 homeContent 的 class 分类名
-            // 分类内容（categoryContent）按需懒加载，每个分类的 section 在 UI 首次可见时触发
             try {
                 val src = repo.getSource(sourceId) ?: return@launch
                 val sync = repo.syncTvBoxSite(src, s)
@@ -613,6 +617,34 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /** 首页首次进入 / 冷启动时确保线路列表已加载（之前只有「切来源」才会拉，冷启动首页没有线路按钮） */
     fun ensureHomeSites(sourceId: Long) = loadHomeSites(sourceId)
 
+    /** 线路管理弹窗屏蔽/恢复线路后刷新首页线路列表。
+     *  TvBoxClient 内部有 base URL 级缓存，repo.tvBoxSites 不会重发请求，
+     *  只是重新 apply 最新 Prefs 过滤，成本极低。 */
+    fun reloadHomeSites(sourceId: Long) {
+        hideEpoch++
+        viewModelScope.launch {
+            val src = repo.getSource(sourceId) ?: return@launch
+            if (src.kind != SourceKind.TVBOX) return@launch
+            val all = runCatching { repo.tvBoxSites(src) }.getOrDefault(emptyList())
+            _homeSitesBySource[sourceId] = all.filter { !Prefs.isLineHidden(sourceId, it.key) }
+            val currentKey = homeSiteKey
+            val current = all.firstOrNull { site -> site.key == currentKey }
+            if (current != null && Prefs.isLineHidden(sourceId, current.key)) {
+                selectHomeSite(null, null)
+            } else {
+                rebindActiveSite(sourceId)
+            }
+        }
+    }
+
+    /** 拿某个 TVBox 源的全部原始线路（含被屏蔽的），给「线路管理」弹窗用。
+     *  TvBoxClient 内部有 base URL 级缓存，不重复发请求。 */
+    suspend fun allSitesForSource(sourceId: Long): List<TvBoxSite> = withContext(Dispatchers.IO) {
+        val src = repo.getSource(sourceId)
+        if (src?.kind != SourceKind.TVBOX) return@withContext emptyList()
+        runCatching { repo.tvBoxSites(src) }.getOrDefault(emptyList())
+    }
+
     private fun loadHomeSites(sourceId: Long) {
         // 之前只要走过一次（哪怕拿到的是空列表）就不再重试，导致切到第二个来源后永远没有线路可选
         if (_homeSitesBySource[sourceId]?.isNotEmpty() == true) {
@@ -630,7 +662,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     emptyList()
                 }
             } else emptyList()
-            _homeSitesBySource[sourceId] = sites
+            _homeSitesBySource[sourceId] = sites.filter { !Prefs.isLineHidden(sourceId, it.key) }
             homeSitesLoading = false
             // 冷启动恢复上次选中的线路时，重新拉一次首页分类（分类只在 homeContent 里，重启后需重新获取）
             // 只有一条线路的来源：自动选中，避免首页空白又没按钮可点。
@@ -728,6 +760,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 userId = if (credentialsChanged) "" else existing.userId
             )
             repo.updateSource(updated)
+            // 来源改名/改配置后让搜索页对同词重查，立即按新名分组（缓存与入库名已在 repo 里刷新）
+            hideEpoch++
 
             if (kind == SourceKind.EMBY && updated.token.isBlank()) {
                 val error = repo.embyLogin(updated)
@@ -758,6 +792,23 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
         override suspend fun save(req: PairedSaveRequest): PairedSaveResult =
             saveSourceFromPair(req)
+
+        override suspend fun tmdb(): PairedTmdb = withContext(Dispatchers.IO) {
+            PairedTmdb(
+                enabled = Prefs.tmdbEnabled,
+                hasApiKey = Prefs.tmdbApiKey.isNotBlank(),
+                hasReadToken = Prefs.tmdbReadToken.isNotBlank()
+            )
+        }
+
+        override suspend fun saveTmdb(req: PairedTmdbRequest): PairedSaveResult =
+            withContext(Dispatchers.Main.immediate) {
+                Prefs.tmdbEnabled = req.enabled
+                // 与来源密码同一口径：手机页拿不到明文，留空 = 保持电视端原值
+                if (req.apiKey.isNotBlank()) Prefs.tmdbApiKey = req.apiKey
+                if (req.readToken.isNotBlank()) Prefs.tmdbReadToken = req.readToken
+                PairedSaveResult(true, "已推送到电视")
+            }
     }
 
     /**
@@ -946,7 +997,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun searchMedia(keyword: String): List<MediaEntity> =
-        if (keyword.isBlank()) emptyList() else repo.search(keyword)
+        if (keyword.isBlank()) emptyList() else repo.search(keyword, effectiveHomeSourceId())
 
     /** 拼音联想（debounce 在 UI 层做，这里直接跑） */
     suspend fun pinyinSuggest(input: String): List<String> = repo.pinyinSuggest(input)
@@ -962,16 +1013,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         searchMedia(keyword).groupBy { it.sourceName.ifBlank { "未知来源" } }
 
     /**
-     * 远程搜索：TVBox 各站点并发搜索，谁先搜完先把结果回调给 UI（[onPartial]），
-     * 全部站点共用一个 5 秒截止时间，命中关键词缓存时立即返回。
-     * 结果 id 为负数，点进去时走 TVBox 详情页；本地结果 id 正数，走已有详情页。
+     * 远程搜索：只搜当前首页这一个 TVBox 来源的各站点（其余 TVBox 来源不启动壳，避免多壳抢占全局代理），
+     * 谁先搜完先把结果回调给 UI（[onPartial]），全部站点共用一个 30 秒截止时间，命中关键词缓存时立即返回。
+     * Emby 源走 [searchMedia] 本地搜索。结果 id 为负数，点进去时走 TVBox 详情页；本地结果 id 正数，走已有详情页。
      */
     suspend fun searchRemote(
         keyword: String,
         onPartial: (List<MediaEntity>) -> Unit = {}
     ): List<MediaEntity> =
         runCatching {
-            repo.tvBoxRemoteSearch(keyword) { partial ->
+            repo.tvBoxRemoteSearch(keyword, effectiveHomeSourceId()) { partial ->
                 // 回调来自 IO 线程，切回主线程再改 Compose 状态
                 withContext(Dispatchers.Main.immediate) { onPartial(partial) }
             }

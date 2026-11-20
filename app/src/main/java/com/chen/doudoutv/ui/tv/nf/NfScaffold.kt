@@ -52,6 +52,7 @@ import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.chen.doudoutv.core.Prefs
 import com.chen.doudoutv.data.model.SourceEntity
 import com.chen.doudoutv.data.model.SourceKind
 import com.chen.doudoutv.ui.LibraryViewModel
@@ -61,6 +62,7 @@ import com.chen.doudoutv.ui.theme.Motion
 import com.chen.doudoutv.ui.theme.Radius
 import com.chen.doudoutv.ui.theme.TvText
 import com.chen.doudoutv.ui.theme.themeBackdrop
+import com.chen.doudoutv.ui.tv.TvLineManagerDialog
 import com.chen.doudoutv.ui.tv.tvFocusRing
 import com.chen.doudoutv.ui.tv.tvMoveFocus
 
@@ -199,6 +201,15 @@ class NfChromeState {
 
     var openScopeDrawer by mutableStateOf(false)
 
+    /** 顶栏 tab 管理弹窗开关（过滤图标点开） */
+    var openTabManager by mutableStateOf(false)
+
+    /**
+     * 顶栏 tab 配置版本号：保存后 +1，驱动可见 tab 列表重算。
+     * 顺序/隐藏存在 Prefs 里不是快照态，光改 Prefs 不会触发重组，靠这个版本号把顶栏叫醒。
+     */
+    var navTabEpoch by mutableStateOf(0)
+
     /**
      * 焦点此刻是不是落在导航条（含其子节点）上。
      * 首页「滚过轮播就撤顶栏」，但顶栏被撤时若焦点正在它上面会直接把焦点弄丢，
@@ -213,6 +224,25 @@ fun rememberNfChrome(): NfChromeState {
     // 常驻外壳在时四页共用同一份锚点：顶栏只有一份，tab 的 FocusRequester 也就只有一份，
     // 切页时焦点停在原来那颗标签上，不需要重新抢
     return LocalNfShell.current?.chrome ?: own
+}
+
+/**
+ * 顶栏当前可见的 tab（按用户设置的顺序、滤掉隐藏的）。
+ *
+ * 读 [NfChromeState.navTabEpoch]：保存后版本号 +1 触发这里重算，顶栏随即按新配置渲染。
+ * 设置齿轮不在这份名单里（它走右簇，不参与隐藏/排序）。万一持久化被清成全隐藏，
+ * 兜底回默认四颗，绝不让顶栏空掉。
+ */
+@Composable
+private fun rememberVisibleNavTabs(chrome: NfChromeState): List<NfTab> {
+    val epoch = chrome.navTabEpoch
+    return remember(epoch) {
+        val hidden = Prefs.navTabHidden()
+        val visible = Prefs.navTabOrder()
+            .map { NfTab.valueOf(it) }
+            .filter { it.name !in hidden }
+        visible.ifEmpty { listOf(NfTab.Home, NfTab.Browse, NfTab.Mine, NfTab.Search) }
+    }
 }
 
 /** 当前生效来源 + 线路名（Emby 没有线路概念，右半段为空） */
@@ -249,24 +279,58 @@ private fun NfScopeDrawerHost(
     vm: LibraryViewModel,
     scope: NfScope,
     chrome: NfChromeState,
+    current: NfTab,
+    onTab: (NfTab) -> Unit,
     onManageSources: () -> Unit
 ) {
-    if (!chrome.openScopeDrawer) return
-    NfScopeDrawer(
-        sources = scope.sources,
-        selectedSourceId = vm.effectiveHomeSourceId(),
-        selectedSiteKey = vm.homeSiteKey,
-        sitesOf = { id -> vm.homeSitesBySource[id].orEmpty() },
-        loadingSites = vm.homeSitesLoading,
-        onEnsureSites = { vm.ensureHomeSites(it) },
-        onPickSource = { vm.selectHomeSource(it) },
-        onPickSite = { key, site -> vm.selectHomeSite(key, site) },
-        onManage = {
-            chrome.openScopeDrawer = false
-            onManageSources()
-        },
-        onDismiss = { chrome.openScopeDrawer = false }
-    )
+    var manageLinesSourceId by remember { mutableStateOf<Long?>(null) }
+    if (chrome.openScopeDrawer) {
+        NfScopeDrawer(
+            sources = scope.sources,
+            selectedSourceId = vm.effectiveHomeSourceId(),
+            selectedSiteKey = vm.homeSiteKey,
+            sitesOf = { id -> vm.homeSitesBySource[id].orEmpty() },
+            loadingSites = vm.homeSitesLoading,
+            onEnsureSites = { vm.ensureHomeSites(it) },
+            onPickSource = { vm.selectHomeSource(it) },
+            onPickSite = { key, site -> vm.selectHomeSite(key, site) },
+            onManage = {
+                chrome.openScopeDrawer = false
+                onManageSources()
+            },
+            onManageLines = { id ->
+                // 先收抽屉再开管理弹窗（与经典版一致），避免两层 Dialog 叠焦点
+                chrome.openScopeDrawer = false
+                manageLinesSourceId = id
+            },
+            onDismiss = { chrome.openScopeDrawer = false }
+        )
+    }
+    manageLinesSourceId?.let { id ->
+        TvLineManagerDialog(
+            sourceId = id,
+            vm = vm,
+            onDismiss = { manageLinesSourceId = null },
+            matchDrawerWidth = true
+        )
+    }
+    if (chrome.openTabManager) {
+        NfTabManagerDialog(
+            onDismiss = { chrome.openTabManager = false },
+            onSaved = {
+                chrome.navTabEpoch++
+                val hiddenNow = Prefs.navTabHidden()
+                val visibleNow = Prefs.navTabOrder()
+                    .map { NfTab.valueOf(it) }
+                    .filter { it.name !in hiddenNow }
+                // 当前页的 tab 被藏了才回退到第一颗可见的；设置页不受影响（齿轮不参与隐藏）。
+                // 当前页仍可见时也重切一次自己：栈底按新配置重排，被藏的首页不再留在返回链里
+                if (current != NfTab.Settings && visibleNow.isNotEmpty()) {
+                    onTab(if (current in visibleNow) current else visibleNow.first())
+                }
+            }
+        )
+    }
 }
 
 /**
@@ -287,6 +351,7 @@ fun NfShellNav(
 ) {
     val scope = rememberNfScope(vm)
     val chrome = shell.chrome
+    val tabs = rememberVisibleNavTabs(chrome)
     val config = shell.configOf(current)
     val density = LocalDensity.current
     val visible = config?.visible ?: true
@@ -327,6 +392,7 @@ fun NfShellNav(
                 }
                 NfNavBar(
                     current = current,
+                    tabs = tabs,
                     sourceName = scope.sourceName,
                     siteName = scope.siteName,
                     scanning = vm.scanning,
@@ -334,6 +400,7 @@ fun NfShellNav(
                     onRefresh = { vm.refreshHome() },
                     onScope = { chrome.openScopeDrawer = true },
                     onSettings = onSettings,
+                    onManageTabs = { chrome.openTabManager = true },
                     belowFocusRequester = config?.below,
                     tabFocus = chrome::tabOf,
                     scopeFocus = chrome.scopeFocus,
@@ -349,7 +416,7 @@ fun NfShellNav(
                 )
             }
         }
-        NfScopeDrawerHost(vm, scope, chrome, onManageSources)
+        NfScopeDrawerHost(vm, scope, chrome, current, onTab, onManageSources)
     }
 }
 
@@ -430,11 +497,13 @@ fun NfScaffold(
         if (!navVisible) chrome.navFocused = false
     }
     val scope = rememberNfScope(vm)
+    val tabs = rememberVisibleNavTabs(chrome)
 
     // 导航条在两种装配方式下共用同一份构造：悬浮（首页）与流内（分类/我的/搜索）
     val navBar: @Composable (Modifier) -> Unit = { barModifier ->
         NfNavBar(
             current = current,
+            tabs = tabs,
             sourceName = scope.sourceName,
             siteName = scope.siteName,
             scanning = vm.scanning,
@@ -442,6 +511,7 @@ fun NfScaffold(
             onRefresh = { vm.refreshHome() },
             onScope = { chrome.openScopeDrawer = true },
             onSettings = onSettings,
+            onManageTabs = { chrome.openTabManager = true },
             belowFocusRequester = belowFocusRequester,
             tabFocus = chrome::tabOf,
             scopeFocus = chrome.scopeFocus,
@@ -496,7 +566,7 @@ fun NfScaffold(
             }
         }
 
-        NfScopeDrawerHost(vm, scope, chrome, onManageSources)
+        NfScopeDrawerHost(vm, scope, chrome, current, onTab, onManageSources)
     }
 }
 

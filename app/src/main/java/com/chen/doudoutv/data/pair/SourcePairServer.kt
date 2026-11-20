@@ -39,9 +39,25 @@ data class PairedSaveRequest(
 
 data class PairedSaveResult(val ok: Boolean, val message: String)
 
+/** 手机页 TMDB 面板的当前状态：只报「存没存过」，密钥本身绝不回传。 */
+data class PairedTmdb(
+    val enabled: Boolean,
+    val hasApiKey: Boolean,
+    val hasReadToken: Boolean
+)
+
+/** 手机页 TMDB 面板保存：留空的凭据表示保持电视端原值不动。 */
+data class PairedTmdbRequest(
+    val enabled: Boolean,
+    val apiKey: String,
+    val readToken: String
+)
+
 internal interface SourcePairHandler {
     suspend fun list(): List<PairedSource>
     suspend fun save(req: PairedSaveRequest): PairedSaveResult
+    suspend fun tmdb(): PairedTmdb
+    suspend fun saveTmdb(req: PairedTmdbRequest): PairedSaveResult
 }
 
 /**
@@ -174,6 +190,23 @@ internal object SourcePairServer {
                     }
                 }
 
+                method == "GET" && path == "/api/tmdb" -> {
+                    val status = call { handler?.tmdb() }
+                        ?: PairedTmdb(false, false, false)
+                    json(client, 200, gson.toJson(status))
+                }
+
+                method == "POST" && path == "/api/tmdb" -> {
+                    val req = parseTmdb(body)
+                    if (req == null) {
+                        json(client, 400, gson.toJson(mapOf("ok" to false, "message" to "表单数据无法解析")))
+                    } else {
+                        val result = call { handler?.saveTmdb(req) }
+                            ?: PairedSaveResult(false, "电视端已退出维护页，请重新扫码")
+                        json(client, 200, gson.toJson(mapOf("ok" to result.ok, "message" to result.message)))
+                    }
+                }
+
                 else -> respond(client, 404, "text/plain; charset=utf-8", "Not Found".toByteArray())
             }
         } catch (e: Exception) {
@@ -197,6 +230,15 @@ internal object SourcePairServer {
             location = obj.str("location"),
             username = obj.str("username"),
             password = obj.str("password")
+        )
+    }.getOrNull()
+
+    private fun parseTmdb(body: String): PairedTmdbRequest? = runCatching {
+        val obj: JsonObject = gson.fromJson(body, JsonObject::class.java) ?: return null
+        PairedTmdbRequest(
+            enabled = obj.get("enabled")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false,
+            apiKey = obj.str("apiKey"),
+            readToken = obj.str("readToken")
         )
     }.getOrNull()
 

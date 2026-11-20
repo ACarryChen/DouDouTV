@@ -126,15 +126,20 @@ fun NfSearchScreen(
             .getOrDefault(emptyList())
     }
 
-    // 实际搜索：只有 submittedKeyword 变化才执行；从详情返回时关键字没变，直接复用已有结果。
-    LaunchedEffect(state.submittedKeyword) {
+    // 实际搜索：submittedKeyword 变化才执行；从详情返回时关键字没变，直接复用已有结果。
+    // 屏蔽/恢复线路（hideEpoch 变化）后同词也重查，让屏蔽立即生效、取消立即恢复。
+    LaunchedEffect(state.submittedKeyword, vm.hideEpoch) {
         val q = state.submittedKeyword.trim()
-        if (q.isEmpty() || q == state.searchedKeyword) return@LaunchedEffect
+        if (q.isEmpty() || (q == state.searchedKeyword && state.searchedHideEpoch == vm.hideEpoch)) {
+            return@LaunchedEffect
+        }
+        val epoch = vm.hideEpoch
+        state.searchedHideEpoch = epoch
         state.loading = true
         state.searchedKeyword = q
 
         val local = runCatching { vm.searchMedia(q) }.getOrDefault(emptyList())
-        if (state.submittedKeyword == q) {
+        if (state.submittedKeyword == q && state.searchedHideEpoch == epoch) {
             state.results = local
             state.loading = false
             state.searched = true
@@ -148,11 +153,11 @@ fun NfSearchScreen(
 
         state.remoteSearching = true
         val remote = vm.searchRemote(q) { partial ->
-            // 远程返回前用户可能已经改词重新搜索，旧结果不能覆盖当前列表
-            if (state.submittedKeyword != q) return@searchRemote
+            // 远程返回前用户可能已经改词重新搜索或切换了屏蔽，旧结果不能覆盖当前列表
+            if (state.submittedKeyword != q || state.searchedHideEpoch != epoch) return@searchRemote
             appendRemote(partial)
         }
-        if (state.submittedKeyword == q) {
+        if (state.submittedKeyword == q && state.searchedHideEpoch == epoch) {
             appendRemote(remote)
             state.remoteSearching = false
         }

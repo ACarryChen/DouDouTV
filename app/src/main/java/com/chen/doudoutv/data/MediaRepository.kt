@@ -88,7 +88,19 @@ class MediaRepository(private val context: Context) {
     fun observeFeatured(): Flow<List<MediaEntity>> = mediaDao.observeFeatured()
     fun observeFavorites(): Flow<List<MediaEntity>> = mediaDao.observeFavorites()
 
-    suspend fun search(keyword: String): List<MediaEntity> = mediaDao.search(keyword, keyword)
+    /**
+     * 本地搜索只覆盖「当前首页来源 + 全部 Emby 源」：Emby 是本地库查询，不碰加密壳；
+     * 其余 TVBox 来源的已入库条目不参与搜索页搜索，避免为搜索启动多个加密壳互相抢占全局代理。
+     * [homeSourceId] 为空时只保留 Emby 条目。
+     */
+    suspend fun search(keyword: String, homeSourceId: Long? = null): List<MediaEntity> =
+        mediaDao.search(keyword, keyword).filter { row ->
+            // 范围过滤：首页来源（含其已入库 TVBox 条目）或 Emby 条目，其余 TVBox 来源排除
+            if (row.sourceId != homeSourceId && !row.remoteId.startsWith("emby:")) return@filter false
+            // 已入库的 TVBox 条目同样按线路屏蔽过滤；读时过滤而非删库，取消屏蔽即恢复
+            !row.remoteId.startsWith("tvbox:") ||
+                !Prefs.isLineHidden(row.sourceId, parseTvBoxKey(row.sourceId, row.remoteId).first)
+        }
 
     /** 拼音联想：输入 "tthr" → 返回 ["偷天换日", "偷天换日2", ...] 最多 10 条 */
     suspend fun pinyinSuggest(input: String): List<String> {
@@ -152,8 +164,10 @@ class MediaRepository(private val context: Context) {
     }
 
     /**
-     * TVBox 远程搜索：遍历所有已启用的 TVBox 源，每个源下再遍历它的全部线路站点，
-     * 并发调 Guard.searchContent()。返回的 Vod 不入库，直接转临时 MediaEntity 展示；
+     * TVBox 远程搜索：只搜「当前首页来源」这一个 TVBox 源（[homeSourceId]），遍历它的全部线路站点，
+     * 并发调 Guard.searchContent()。其余 TVBox 来源不启动壳 —— 进程级全局代理只有一个 invoker，
+     * 多壳并发 Init 会互相抢占代理（表现为切到 A 源却起了 B 源的壳、冷启动壳解不出 dex）。
+     * Emby 源走本地搜索（见 [search]），不在这里。返回的 Vod 不入库，直接转临时 MediaEntity 展示；
      * 命中会缓存在内存里，用户点进详情时再落库换成真实 id。
      * 再过滤一遍 —— 标题必须包含整串关键词（或拼音首字母包含），而不是按单字命中。
      *
@@ -162,18 +176,28 @@ class MediaRepository(private val context: Context) {
      */
     suspend fun tvBoxRemoteSearch(
         keyword: String,
+        homeSourceId: Long? = null,
         onPartial: (suspend (List<MediaEntity>) -> Unit)? = null
     ): List<MediaEntity> = withContext(Dispatchers.IO) {
         val kw = keyword.trim()
         if (kw.isBlank()) return@withContext emptyList()
         remoteHits.clear()
 
-        // 同一关键词的结果直接走内存缓存（重复搜索、从详情返回再搜都不再打网络）
-        val cacheKey = kw.lowercase()
+        // 同一关键词的结果直接走内存缓存（重复搜索、从详情返回再搜都不再打网络）。
+        // 缓存键带首页来源：切到另一个来源同词再搜要重打网络，不能复用上一个来源的命中。
+        val cacheKey = "$homeSourceId:${kw.lowercase()}"
         val cached = synchronized(searchCache) { searchCache[cacheKey] }
-        if (cached != null) return@withContext toRemoteEntities(cached)
+        if (cached != null) {
+            // 缓存存原始命中，屏蔽在读时过滤：取消屏蔽后同一份缓存立即恢复，不用重打网络。
+            // 排序与快照路径同口径，保证首搜与缓存复搜的顺序一致
+            return@withContext toRemoteEntities(
+                cached.filter { (vod, source) -> !Prefs.isLineHidden(source.id, vod.siteKey) }
+                    .sortedByDescending { (vod, _) -> searchScore(vod.name, kw.lowercase()) }
+            )
+        }
 
-        val tvboxSources = enabledSources().filter { it.kind == SourceKind.TVBOX }
+        // 只取当前首页这一个 TVBox 来源；homeSourceId 为空或不是 TVBox 时不搜远程
+        val tvboxSources = enabledSources().filter { it.kind == SourceKind.TVBOX && it.id == homeSourceId }
         if (tvboxSources.isEmpty()) return@withContext emptyList()
 
         val lower = kw.lowercase()
@@ -187,7 +211,6 @@ class MediaRepository(private val context: Context) {
                 vod.name.lowercase().contains(lower) || vod.name.toPinyinInitials().contains(lower)
             }
             .sortedByDescending { (vod, _) -> searchScore(vod.name, lower) }
-            .take(REMOTE_RESULT_LIMIT)
             .map { (vod, source) ->
                 val key = "${source.id}:${vod.siteKey}:${vod.vodId}"
                 val id = idByKey.getOrPut(key) { -(idByKey.size + 1).toLong() }
@@ -222,7 +245,7 @@ class MediaRepository(private val context: Context) {
                 // 慢速搜索（quick=false）照样能搜 —— 以前把它也跳掉，
                 // 很多源一半的线路在搜索结果里永远不出现。
                 client.availableSites()
-                    .filter { it.searchable }
+                    .filter { it.searchable && !Prefs.isLineHidden(source.id, it.key) }
                     .map { site ->
                         launch {
                             val hits = runCatching { client.search(site, kw, quick = site.quickSearch) }
@@ -346,8 +369,13 @@ class MediaRepository(private val context: Context) {
     suspend fun getSource(id: Long): SourceEntity? = sourceDao.get(id)
     suspend fun allSources(): List<SourceEntity> = sourceDao.getAll()
     suspend fun enabledSources(): List<SourceEntity> = sourceDao.getEnabled()
-    suspend fun updateSource(source: SourceEntity) = sourceDao.update(source).also {
+    suspend fun updateSource(source: SourceEntity) {
+        sourceDao.update(source)
         if (source.kind == SourceKind.TVBOX) TvBoxClient.invalidateConfig(source.location)
+        // 改名/改配置后：搜索缓存里冻结了旧来源名，清掉强制下轮重搜；
+        // 已入库条目的冗余来源名也刷新一遍，否则点开过的条目仍按旧名分组
+        synchronized(searchCache) { searchCache.clear() }
+        mediaDao.updateSourceName(source.id, source.name)
     }
     suspend fun setSourceEnabled(id: Long, enabled: Boolean) = sourceDao.setEnabled(id, enabled)
 
@@ -1903,8 +1931,9 @@ class MediaRepository(private val context: Context) {
         /** 拼音算法版本：TinyPinyin 为 1，改动算法时 +1 触发一次性重建 */
         const val PINYIN_VERSION = 1
 
-        /** 远程搜索条数上限（单站与总量共用）：以前总量只有 20，一两个站点的结果
-         *  就能把名额占满，其余线路整个消失；60 条按来源分组展示仍然流畅 */
+        /** 远程搜索单站条数上限：只限每个站点，总量不截断 —— 总量截断会让首搜只显示
+         *  前 60 条、复搜读缓存却出全量，两遍条数不一致。以前总量只有 20，一两个站点
+         *  的结果就能把名额占满，其余线路整个消失 */
         const val REMOTE_RESULT_LIMIT = 60
 
         /** 远程搜索整批截止时间（毫秒）：所有站点并发搜索，最多总共等这么久。

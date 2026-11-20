@@ -39,6 +39,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CircularProgressIndicator
@@ -176,10 +177,20 @@ val NfGridTopPadding = 18.dp
  * 一级导航的落点。前四颗是导航条上可见的 tab。
  *
  * [Settings] 是「外壳专用伪 tab」：设置页要像分类 / 搜索一样嵌在常驻顶栏下面，
- * 借这套槽位与焦点交棒管线，但它不在四颗 tab 那一行里出现（那行是写死的），
- * 选中态落在右簇的齿轮键上。它不参与 tab 互切的栈规则（仍是 push / 出栈）。
+ * 借这套槽位与焦点交棒管线，但它不在可管理的那行 tab 里出现（那行只列首页/分类/我的/搜索，
+ * 顺序与隐藏由用户在顶栏管理弹窗里定），选中态落在右簇的齿轮键上。
+ * 它不参与 tab 互切的栈规则（仍是 push / 出栈）。
  */
 enum class NfTab { Home, Browse, Mine, Search, Settings }
+
+/** 顶栏 tab 的中文名。可管理的四颗 + 设置兜底；管理弹窗与导航条共用这一份，避免两处各写一套。 */
+internal fun NfTab.label(): String = when (this) {
+    NfTab.Home -> "首页"
+    NfTab.Browse -> "分类"
+    NfTab.Mine -> "我的"
+    NfTab.Search -> "搜索"
+    NfTab.Settings -> "设置"
+}
 
 /**
  * 「刚点过导航条 tab」的进程级标记：点哪颗、哪页接住。
@@ -631,6 +642,7 @@ private fun NfNavIconButton(
 @Composable
 fun NfNavBar(
     current: NfTab,
+    tabs: List<NfTab>,
     sourceName: String,
     siteName: String?,
     scanning: Boolean,
@@ -638,6 +650,7 @@ fun NfNavBar(
     onRefresh: () -> Unit,
     onScope: () -> Unit,
     onSettings: () -> Unit,
+    onManageTabs: () -> Unit,
     belowFocusRequester: FocusRequester?,
     tabFocus: (NfTab) -> FocusRequester,
     scopeFocus: FocusRequester,
@@ -669,26 +682,26 @@ fun NfNavBar(
                 fontWeight = FontWeight.Bold,
                 maxLines = 1
             )
-            // 四颗 tab 共用一层移动焦点框：左右交棒时框平移过去，切页时也跟着走
+            // 可见 tab 共用一层移动焦点框：左右交棒时框平移过去，切页时也跟着走
             // （导航条画在转场之外、不随页面重建，所以这一下飞行是连贯的）
             val tabBar = rememberNfBarFocus()
             Box(Modifier.nfBarFrameHost(tabBar)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    NfNavTab(
-                        "首页", NfTab.Home == current, { goTab(NfTab.Home) }, tabBar, 0,
-                        modifier = route.nfBarFrameCoords(tabBar, 0).focusRequester(tabFocus(NfTab.Home))
-                    )
-                    NfNavTab(
-                        "分类", NfTab.Browse == current, { goTab(NfTab.Browse) }, tabBar, 1,
-                        modifier = route.nfBarFrameCoords(tabBar, 1).focusRequester(tabFocus(NfTab.Browse))
-                    )
-                    NfNavTab(
-                        "我的", NfTab.Mine == current, { goTab(NfTab.Mine) }, tabBar, 2,
-                        modifier = route.nfBarFrameCoords(tabBar, 2).focusRequester(tabFocus(NfTab.Mine))
-                    )
-                    NfNavTab(
-                        "搜索", NfTab.Search == current, { goTab(NfTab.Search) }, tabBar, 3,
-                        modifier = route.nfBarFrameCoords(tabBar, 3).focusRequester(tabFocus(NfTab.Search))
+                    // 按用户设置的顺序渲染可见 tab；焦点框靠「位置下标」平移，增删/排序后下标连续即可
+                    tabs.forEachIndexed { index, tab ->
+                        NfNavTab(
+                            tab.label(), tab == current, { goTab(tab) }, tabBar, index,
+                            modifier = route.nfBarFrameCoords(tabBar, index).focusRequester(tabFocus(tab))
+                        )
+                    }
+                    // 过滤入口紧跟最后一颗 tab，间距与 tab 之间一致（2dp），不再隔左簇那 20dp。
+                    // 底部补上「下划线那块」的高度，让图标中心对齐 tab 文字中心，而不是偏到整块底部。
+                    // 它不报焦点框坐标：聚焦它时上一颗 tab 自行 exit，飞行层无框可画，不会留残框。
+                    NfNavIconButton(
+                        icon = Icons.Filled.FilterList,
+                        contentDescription = "管理顶栏",
+                        onClick = onManageTabs,
+                        modifier = route.padding(bottom = 5.dp + NfSelectedRuleHeight)
                     )
                 }
                 Spacer(Modifier.matchParentSize().nfBarFrameOverlay(tabBar))

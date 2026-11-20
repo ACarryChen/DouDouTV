@@ -65,7 +65,7 @@ private const val PREFS_NAME = "app_prefs"
 private const val KEY_FORCE_TV = "force_tv_mode"
 
 /** 关于页的版本号：与 build.gradle.kts 的 versionName、CHANGELOG.md 一起改（发版纪律见 README「发版纪律」） */
-internal const val APP_VERSION_LABEL = "DouDouTV 1.0.0"
+internal const val APP_VERSION_LABEL = "DouDouTV 1.0.2"
 
 /** 强制 TV 模式开关（测试用）。true 时覆盖系统判断 */
 fun Context.forceTvMode(): Boolean =
