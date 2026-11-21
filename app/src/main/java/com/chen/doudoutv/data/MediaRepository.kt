@@ -186,7 +186,14 @@ class MediaRepository(private val context: Context) {
         // 同一关键词的结果直接走内存缓存（重复搜索、从详情返回再搜都不再打网络）。
         // 缓存键带首页来源：切到另一个来源同词再搜要重打网络，不能复用上一个来源的命中。
         val cacheKey = "$homeSourceId:${kw.lowercase()}"
-        val cached = synchronized(searchCache) { searchCache[cacheKey] }
+        val cached = synchronized(searchCache) {
+            val hit = searchCache[cacheKey]
+            // 超过 10 分钟的条目视为过期：站点内容会变，直接删掉走重搜
+            if (hit != null && System.currentTimeMillis() - hit.second > SEARCH_CACHE_TTL_MS) {
+                searchCache.remove(cacheKey)
+                null
+            } else hit?.first
+        }
         if (cached != null) {
             // 缓存存原始命中，屏蔽在读时过滤：取消屏蔽后同一份缓存立即恢复，不用重打网络。
             // 排序与快照路径同口径，保证首搜与缓存复搜的顺序一致
@@ -281,7 +288,7 @@ class MediaRepository(private val context: Context) {
         batches.close()
 
         val matched = collected.values.toList()
-        synchronized(searchCache) { searchCache[cacheKey] = matched }
+        synchronized(searchCache) { searchCache[cacheKey] = matched to System.currentTimeMillis() }
         snapshot()
     }
 
@@ -343,13 +350,14 @@ class MediaRepository(private val context: Context) {
     private val remoteHits = java.util.concurrent.ConcurrentHashMap<Long, RemoteHit>()
 
     /**
-     * 远程搜索结果缓存：关键词（小写归一）→ 原始命中，LRU 最多 16 个关键词。
-     * 命中缓存时直接重建临时结果，不再发起一轮网络请求。
+     * 远程搜索结果缓存：关键词（小写归一）→ (原始命中, 写入时刻)，LRU 最多 16 个关键词。
+     * 命中缓存时直接重建临时结果，不再发起一轮网络请求；超过 [SEARCH_CACHE_TTL_MS] 的条目
+     * 在读取时丢弃并走重搜。
      */
     private val searchCache = object :
-        java.util.LinkedHashMap<String, List<Pair<TvBoxClient.Vod, SourceEntity>>>(16, 0.75f, true) {
+        java.util.LinkedHashMap<String, Pair<List<Pair<TvBoxClient.Vod, SourceEntity>>, Long>>(16, 0.75f, true) {
         override fun removeEldestEntry(
-            eldest: MutableMap.MutableEntry<String, List<Pair<TvBoxClient.Vod, SourceEntity>>>
+            eldest: MutableMap.MutableEntry<String, Pair<List<Pair<TvBoxClient.Vod, SourceEntity>>, Long>>
         ) = size > 16
     }
 
@@ -1939,5 +1947,8 @@ class MediaRepository(private val context: Context) {
         /** 远程搜索整批截止时间（毫秒）：所有站点并发搜索，最多总共等这么久。
          *  5 秒时慢站点（海外接口、多页搜索的慢速模式）整批还没回就被掐掉，提到 10 秒 */
         const val SEARCH_DEADLINE_MS = 10000L
+
+        /** 搜索结果缓存有效期（毫秒）：超时后同词重搜走网络重新拉取 */
+        const val SEARCH_CACHE_TTL_MS = 10 * 60 * 1000L
     }
 }

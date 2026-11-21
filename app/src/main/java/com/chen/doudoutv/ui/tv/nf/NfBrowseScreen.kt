@@ -113,7 +113,11 @@ fun NfBrowseScreen(
     // 最右 chip 按 → 走到它、它按 ← 回到 chip 条；不掺进 chipFocuses 的返回键落点链
     val scrapeVisible = vm.scrapeEngine == ScrapeEngine.TMDB
     val scrapeChipFocus = remember { FocusRequester() }
-    // 网格首行按 ↑ 的落点：有分类条交回「当前选中」那颗 chip，只有一个分类时交回本页那颗「分类」tab（规范 R1）；
+    // 分类条上最后真正站过焦点的那颗：只给「焦点还站在分类条上、数据重载翻 tick」的抢焦当锚点
+    // （见下方 tvClaimFocusOnEnter），不许把焦点从用户站着的 chip 拽回选中那颗（规范 R4）。
+    var lastChipIdx by remember(scopeKey) { mutableStateOf(selIndex) }
+    // 网格首行按 ↑ 的落点：与顶栏同口径 —— 顶栏交回本页那颗 tab（选中的），这里交回选中的那颗 chip；
+    // 只有一个分类时交回本页那颗「分类」tab（规范 R1）；
     // 分类条只剩刮削按钮时（单分类 + TMDB 开启）先交给按钮、由它再 ↑ 交回 tab —— 否则按钮不在任何链路上，遥控器够不着
     val gridUpFocus = when {
         showSubNav -> currentChipFocus
@@ -168,8 +172,9 @@ fun NfBrowseScreen(
         anchorsProvider = {
             when {
                 entryFocusOnNav -> listOf(chrome.tabOf(NfTab.Browse))
-                // 分类条只剩刮削按钮时 currentChipFocus 没挂节点，交回按钮自己的锚点
-                subNavFocused -> listOf(if (showSubNav) currentChipFocus else scrapeChipFocus)
+                // 分类条只剩刮削按钮时 currentChipFocus 没挂节点，交回按钮自己的锚点。
+                // 持焦时锚到「最后站过」那颗：数据重载翻 tick 时不许把焦点从用户站着的 chip 拽回选中那颗
+                subNavFocused -> listOf(if (showSubNav) chipFocuses.getOrElse(lastChipIdx) { currentChipFocus } else scrapeChipFocus)
                 else -> listOfNotNull(stand.requester, contentAnchor)
             }
         }
@@ -250,6 +255,7 @@ fun NfBrowseScreen(
                             upFocusRequester = chrome.tabOf(NfTab.Browse),
                             firstChipFocus = firstChipFocus,
                             chipFocuses = chipFocuses,
+                            onChipFocus = { lastChipIdx = it },
                             trailingFocusRequester = if (scrapeVisible) scrapeChipFocus else null,
                             modifier = Modifier.weight(1f)
                         )

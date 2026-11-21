@@ -478,9 +478,9 @@ class PhonePlayerActivity : ComponentActivity() {
         val doubleTapMs = ViewConfiguration.getDoubleTapTimeout()
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
-        // 边缘调节区：左右各占屏宽 12%，中间区域不触发音量/亮度，
+        // 边缘调节区：左右各占屏宽 16%，中间区域不触发音量/亮度，
         // 避免下拉系统任务栏时误触。
-        val edgeZone = 0.12f
+        val edgeZone = 0.16f
 
         // 手势类型：用 Int 常量而不是 enum（enum 不能定义在函数内部）
         val G_NONE = 0; val G_SEEK = 1; val G_VOLUME = 2; val G_BRIGHTNESS = 3
@@ -558,14 +558,16 @@ class PhonePlayerActivity : ComponentActivity() {
                         }
                         G_VOLUME -> {
                             val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                            val delta = (-dy / v.height.coerceAtLeast(1)) * max * 1.5f
+                            // 滑过整屏高度 ≈ 0.75 倍满量程：1.5 倍时随便一滑就拉满，降一档
+                            val delta = (-dy / v.height.coerceAtLeast(1)) * max * 0.75f
                             val vol = (startVolume + delta).toInt().coerceIn(0, max)
                             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, vol, 0)
                             showSeekPreview("音量 ${vol * 100 / max.coerceAtLeast(1)}%")
                             true
                         }
                         G_BRIGHTNESS -> {
-                            val delta = (-dy / v.height.coerceAtLeast(1))
+                            // 滑过整屏高度 ≈ 0.5 倍量程：和音量一样降一档，免得轻扫就到底
+                            val delta = (-dy / v.height.coerceAtLeast(1)) * 0.5f
                             val b = (startBrightness + delta).coerceIn(0.01f, 1f)
                             window.attributes = window.attributes.apply { screenBrightness = b }
                             showSeekPreview("亮度 ${(b * 100).toInt()}%")

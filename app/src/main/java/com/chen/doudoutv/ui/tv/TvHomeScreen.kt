@@ -280,6 +280,9 @@ fun TvHomeScreen(
     // 用户要重按一次方向键才能重新出现高亮。
     val restoreCardFocus: (FocusRequester) -> Unit = { requester ->
         scope.launch {
+            // 先立即抢：弹窗窗口已销毁、本页元件都还挂着，正常一次到位；
+            // 抢空再等帧兜底，避免首帧焦点画在导航栏首项上闪一下。
+            if (tvMoveFocus(requester)) return@launch
             withFrameNanos { }
             runCatching { requester.requestFocus() }
         }
@@ -1843,8 +1846,11 @@ internal fun TvLineManagerDialog(
     }
     val firstFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
-        withFrameNanos { }
-        tvMoveFocus(firstFocus)
+        // 先立即抢，抢不到再等帧：避免弹窗打开的第一帧焦点环画在兜底元件上（闪现）。
+        if (!tvMoveFocus(firstFocus)) {
+            withFrameNanos { }
+            tvMoveFocus(firstFocus)
+        }
     }
     Dialog(
         onDismissRequest = onDismiss,

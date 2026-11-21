@@ -86,11 +86,14 @@ internal fun NfTabManagerDialog(
     val firstFocus = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
-        withFrameNanos { }
-        // 弹窗窗口与首行挂载顺序无保证，第一次可能落空——补一次，别开起来没人持焦
+        // 先立即抢一次（赶在首帧绘制前），抢空再等帧补抢——消除打开瞬间焦点环
+        // 画在兜底元件上的闪现。
         if (!tvMoveFocus(firstFocus)) {
-            delay(140)
-            tvMoveFocus(firstFocus)
+            withFrameNanos { }
+            if (!tvMoveFocus(firstFocus)) {
+                delay(140)
+                tvMoveFocus(firstFocus)
+            }
         }
     }
 

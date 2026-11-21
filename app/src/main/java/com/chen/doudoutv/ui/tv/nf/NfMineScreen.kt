@@ -327,8 +327,11 @@ private fun NfSwitchSourceDialog(
 ) {
     val cancelFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
-        withFrameNanos { }
-        tvMoveFocus(cancelFocus)
+        // 先立即抢，抢不到再等帧：避免弹窗首帧焦点环画在兜底元件上（闪现）。
+        if (!tvMoveFocus(cancelFocus)) {
+            withFrameNanos { }
+            tvMoveFocus(cancelFocus)
+        }
     }
     Dialog(onDismissRequest = onDismiss) {
         Column(

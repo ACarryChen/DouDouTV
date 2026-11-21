@@ -83,6 +83,12 @@ import kotlinx.coroutines.delay
 private const val NfSearchKey = "nf_search"
 
 /**
+ * 左栏来源折叠状态的进程级记忆：进详情时本页子树被整个销毁，组合级 remember 活不过这一趟。
+ * 按提交关键字分键 —— 换词就是另一份结果集，折叠状态各记各的，新搜索回到默认。
+ */
+private val nfRailExpandedMemory = HashMap<String, Map<String, Boolean>>()
+
+/**
  * Netflix 版布局的搜索页 —— 导航条里的第四颗 tab，不是从首页跳出去的独立页面。
  *
  * 数据和查询链路整条复用旧搜索页（[TvSearchUiState] 由导航层持有）：
@@ -175,15 +181,43 @@ fun NfSearchScreen(
 
     // 每个来源的折叠状态 —— 默认第一个来源展开，其余折叠。
     // 只有「来源」这一层可折叠；组内线路行常显、不折叠（点线路聚焦即切右侧，折叠反而多一层按键）。
-    val expandedSources = remember(sourceGroups.size) {
+    // 从详情返回时子树重建，先按提交关键字把离开前的折叠状态恢复回来：不恢复的话
+    // 全部塌回「只展开第一个」，用户离开的那条线路行不在组合树里，左移焦点只能落到首个表头。
+    val expandedSources = remember(state.submittedKeyword) {
         mutableStateMapOf<String, Boolean>().apply {
-            sourceGroups.firstOrNull()?.let { this[it.key] = true }
+            nfRailExpandedMemory[state.submittedKeyword]?.let { putAll(it) }
+            // 恢复之后新出现的来源（远程批次晚到）补一个默认展开位：只给第一个来源，
+            // 和首次进页的默认一致；用户显式折叠过的（记录里有 false）不会被覆盖。
+            sourceGroups.firstOrNull()?.let { first -> if (!containsKey(first.key)) this[first.key] = true }
+        }
+    }
+    // 提交那一刻 sourceGroups 还是空的，上面的 remember 补不了默认位；远程批次把结果带上来后
+    // 整张表若还空着，这里把第一个来源展开 —— 右侧显示的就是第一条线路，左栏必须同样看得见它。
+    LaunchedEffect(sourceGroups, state.submittedKeyword) {
+        if (expandedSources.isEmpty() && sourceGroups.isNotEmpty()) {
+            val firstKey = sourceGroups.first().key
+            expandedSources[firstKey] = true
+            nfRailExpandedMemory[state.submittedKeyword] = expandedSources.toMap()
         }
     }
     // 左栏第一颗可聚焦行（首个来源表头）：输入框 ↓ 与进页抢焦的落点（规范 R6 不留焦点死区）
     val firstHeaderFocus = remember(sourceGroups.firstOrNull()?.key) { FocusRequester() }
-    // 当前选中的线路：焦点移到线路行即切换右侧。改词 / 折叠让选中失效时回落第一条线路。
-    var selectedRouteKey by remember { mutableStateOf("") }
+    // 右侧网格只认「按过 OK 的线路」：上下移动只换高亮，不再重建右侧网格 ——
+    // 切线路要重排整屏海报，焦点每移到一行就重建一次，是搜索页上下卡顿的主因。
+    // 从详情返回时先恢复离开时确认过的线路：不恢复的话右侧整栏是空的，
+    // 离开那张卡不在组合树里，stand.requester 交不出来，抢焦只能退到输入框。
+    // 线路 key 记在 stand 落点里（"route/<线路key>#<媒体id>"），直接从那读；
+    // 新搜索提交时落点被清掉，回到「未确认」的提示态。
+    var confirmedRouteKey by remember(state.submittedKeyword) {
+        mutableStateOf(
+            ReturnSpot.standOf(NfSearchKey)?.let { spot ->
+                val i = spot.lastIndexOf('#')
+                if (i > 6 && spot.startsWith("route/")) spot.substring(6, i) else ""
+            } ?: ""
+        )
+    }
+    // 按 OK 确认新线路后，等网格组合完成再把焦点送进首卡
+    var pendingGridFocus by remember(state.submittedKeyword) { mutableStateOf(false) }
     // 每条线路行的锚点：网格首卡 ← 交回「刚离开的那一行」
     val railFocusers = remember { mutableStateMapOf<String, FocusRequester>() }
     // 摊平的线路表：key →（展示名，命中列表）。Emby 的线路名为空，展示名用来源名。
@@ -196,12 +230,18 @@ fun NfSearchScreen(
             }
         }
     }
-    val activeKey = routeIndex.keys.firstOrNull { it == selectedRouteKey }
-        ?: routeIndex.keys.firstOrNull().orEmpty()
+    val activeKey = routeIndex.keys.firstOrNull { it == confirmedRouteKey }.orEmpty()
     val activeRoute = routeIndex[activeKey]
     // 右栏首卡锚点：随「当前线路的首卡换成谁」重建 —— 切线路时旧首卡正在销毁、
     // 新首卡又挂同一个实例，同一 FocusRequester 同时占两个节点会撞 claim
     val gridFirstFocus = remember(activeRoute?.second?.firstOrNull()?.id) { FocusRequester() }
+    // 刚确认的线路要等这一帧组合出网格才挂得上首卡锚点，晚一小步再把焦点送进去
+    LaunchedEffect(pendingGridFocus, activeKey) {
+        if (pendingGridFocus && activeRoute != null) {
+            delay(60)
+            if (tvMoveFocus(gridFirstFocus)) pendingGridFocus = false
+        }
+    }
     // 输入框 ↓ / 导航条 ↓ 的落点：联想列表 > 左栏首行 > 历史首行 > 输入框自身
     // （空态且没有历史时页面只有输入框可聚焦，不能留焦点死区 —— 规范 R6）。
     val belowField = when {
@@ -288,7 +328,19 @@ fun NfSearchScreen(
                     onSubmit = { state.submit() }
                 )
                 Spacer(Modifier.width(16.dp))
-                NfActionButton(text = "搜索", onClick = { state.submit() }, primary = true)
+                NfActionButton(
+                    text = "搜索",
+                    // 提交会把联想/历史那一整块从组合里摘掉：焦点若还站在联想行 / 历史词章上，
+                    // 节点销毁后 Compose 找不到可聚焦的祖先，会一路掉回根节点 —— 树里第一个
+                    // 可聚焦元件正是导航条的「首页」tab，看起来就是焦点跑到了首页。
+                    // 提交完立刻把焦点显式交回输入框（常驻在输入行，不会被摘）。
+                    onClick = {
+                        // 新搜索 = 新结果集：清掉上次的落点/滚动记忆，右侧回到「按 OK 才加载」的初始态
+                        ReturnSpot.clear(NfSearchKey)
+                        state.submit(); tvMoveFocus(fieldFocus)
+                    },
+                    primary = true
+                )
                 Spacer(Modifier.width(12.dp))
                 // 清空：词、联想、结果和各进行中标记一次全清，回到「还没输入」的初始态。
                 // 清完把焦点交回输入框 —— 接着打下一个词不用再按一次 ↑。
@@ -321,7 +373,10 @@ fun NfSearchScreen(
                                 items(state.suggestions.take(8), key = { "nf_sug_$it" }) { title ->
                                     NfSuggestionRow(
                                         title = title,
-                                        onClick = { state.submit(title) },
+                                        onClick = {
+                                            ReturnSpot.clear(NfSearchKey)
+                                            state.submit(title); tvMoveFocus(fieldFocus)
+                                        },
                                         modifier = if (title == state.suggestions.firstOrNull())
                                             Modifier.nfFocusRoute(up = fieldFocus).focusRequester(sugFirstFocus)
                                         else Modifier
@@ -363,6 +418,9 @@ fun NfSearchScreen(
                                             upFocusRequester = if (sourceIdx == 0) fieldFocus else null,
                                             onToggle = {
                                                 expandedSources[group.key] = !isExpanded
+                                                // 实时写回进程级记忆：进详情销毁子树后还能按原样恢复
+                                                nfRailExpandedMemory[state.submittedKeyword] =
+                                                    expandedSources.toMap()
                                             }
                                         )
                                     }
@@ -378,9 +436,17 @@ fun NfSearchScreen(
                                                     selected = routeKey == activeKey,
                                                     focusRequester = fr,
                                                     rightFocusRequester = gridFirstFocus,
-                                                    onFocused = { selectedRouteKey = routeKey },
-                                                    // OK：进右侧网格首卡
-                                                    onEnter = { tvMoveFocus(gridFirstFocus) }
+                                                    // 上下移动只换高亮，不再动右侧（重排整屏海报是卡顿主因）
+                                                    onFocused = {},
+                                                    // OK：确认这条线路并进右侧网格首卡
+                                                    onEnter = {
+                                                        if (routeKey == confirmedRouteKey) {
+                                                            tvMoveFocus(gridFirstFocus)
+                                                        } else {
+                                                            confirmedRouteKey = routeKey
+                                                            pendingGridFocus = true
+                                                        }
+                                                    }
                                                 )
                                             }
                                         }
@@ -404,7 +470,10 @@ fun NfSearchScreen(
                                     modifier = Modifier.weight(1f),
                                     onDetail = onDetail
                                 )
-                            }
+                            } ?: NfInlineEmpty(
+                                text = "按 OK 查看线路资源",
+                                hint = "上下移动选择线路，按 OK 才加载右侧影片"
+                            )
                         }
                     }
 
@@ -413,7 +482,7 @@ fun NfSearchScreen(
 
                     state.searched -> NfInlineEmpty(
                         text = "没有找到「${state.submittedKeyword}」",
-                        hint = "换个关键词试试，左栏切线路看右侧影片"
+                        hint = "换个关键词试试，左栏选线路按 OK 看右侧影片"
                     )
 
                     else -> if (showHistory) {
@@ -421,8 +490,11 @@ fun NfSearchScreen(
                             history = history,
                             firstFocus = histFirstFocus,
                             upFocusRequester = fieldFocus,
-                            onSelect = { state.submit(it) },
-                            onClear = { state.clearHistory() }
+                            onSelect = {
+                                ReturnSpot.clear(NfSearchKey)
+                                state.submit(it); tvMoveFocus(fieldFocus)
+                            },
+                            onClear = { state.clearHistory(); tvMoveFocus(fieldFocus) }
                         )
                     } else NfInlineEmpty(
                         text = "搜索媒体库",

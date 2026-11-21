@@ -59,6 +59,13 @@ object ReturnSpot {
     /** 卡片落点：`行key#媒体id`。用 id 认卡，行内顺序变了也不会认错成别的片子。 */
     fun cardSpot(rowKey: String, mediaId: Long): String = "$rowKey#$mediaId"
 
+    /** 整页作废：结果集换了（重新搜索）时，旧落点和各列表滚动位置都没有恢复价值，一起清掉 */
+    @Synchronized
+    fun clear(pageKey: String) {
+        stands.remove(pageKey)
+        scrolls.keys.removeIf { it == pageKey || it.startsWith("$pageKey/") }
+    }
+
     /** 离开时是不是站在 [rowKey] 这一行的某张卡上；是就返回那张卡的媒体 id */
     fun standCard(pageKey: String, rowKey: String): Long? {
         val spot = standOf(pageKey) ?: return null

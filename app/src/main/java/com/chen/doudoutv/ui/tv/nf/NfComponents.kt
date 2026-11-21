@@ -356,7 +356,7 @@ class NfBarFocus internal constructor(private val scope: CoroutineScope) {
     /** 当前持焦的那一颗。只在绘制期读，写它只重绘不重组 */
     private var focusedIndex by mutableStateOf<Int?>(null)
 
-    /** 上一次画过的落点。跨颗飞行的起点，失焦不清它 */
+    /** 上一次画过的落点。跨颗飞行的起点；bar 整体失焦一帧后作废（见 exit 的 staleJob） */
     private var lastIndex: Int? = null
     private val coords = HashMap<Int, LayoutCoordinates>()
     private var hostCoords: LayoutCoordinates? = null
@@ -365,13 +365,21 @@ class NfBarFocus internal constructor(private val scope: CoroutineScope) {
     private var target by mutableStateOf(Rect.Zero)
     private val frame = Animatable(Rect.Zero, NfRectConverter)
 
+    /** 只在飞行进行中标记为 true。绘制层据此决定读 frame 还是读 target */
+    private var flying by mutableStateOf(false)
+
+    /** 焦点离开这条 bar 的延迟作废：一帧内又有新 enter = bar 内交棒，不作废 */
+    private var staleJob: Job? = null
+
     /** 这一层的矩形；null = 焦点不在这条 bar 上（或还没量到），交给单颗自己画 */
     internal val rect: Rect?
         get() {
             if (focusedIndex == null) return null
-            val flying = frame.value
-            return if (flying.width > 0f && flying.height > 0f) flying
-            else target.takeIf { it.width > 0f && it.height > 0f }
+            if (flying) {
+                val f = frame.value
+                if (f.width > 0f && f.height > 0f) return f
+            }
+            return target.takeIf { it.width > 0f && it.height > 0f }
         }
 
     internal fun host(coordinates: LayoutCoordinates) {
@@ -381,10 +389,22 @@ class NfBarFocus internal constructor(private val scope: CoroutineScope) {
 
     /** 单颗失焦只清自己那一份：新颗的 enter 可能排在它前面，清不到别人头上 */
     internal fun exit(index: Int) {
-        if (focusedIndex == index) focusedIndex = null
+        if (focusedIndex == index) {
+            focusedIndex = null
+            // 焦点真的走出了这条 bar（下到网格、上了 tab 栏）时，lastIndex 里留的是
+            // 临走前最后一颗的矩形。焦点再回来时若还拿它当飞行起点，框就会从
+            // 「临走前站过的位置」横扫到落点 —— 用户读作「焦点从 X 闪现到 Y」。
+            // 延后一帧作废：bar 内交棒的 exit/enter 落在同一批 apply 里，enter 会先取消这一趟。
+            staleJob?.cancel()
+            staleJob = scope.launch {
+                withFrameNanos { }
+                if (focusedIndex == null) lastIndex = null
+            }
+        }
     }
 
     internal fun enter(index: Int) {
+        staleJob?.cancel()
         focusedIndex = index
         retarget()
     }
@@ -401,7 +421,12 @@ class NfBarFocus internal constructor(private val scope: CoroutineScope) {
         val origin = host.positionInRoot()
         val next = c.boundsInRoot().translate(-origin.x, -origin.y)
         // 同一颗重复报点（容器和单颗的回调都会进来）不重启动画，否则飞行每帧被打断
-        if (next == target) return
+        if (next == target) {
+            // 矩形没变也要认领起点：失焦作废过 lastIndex 的话，
+            // 不补这一笔，下一次横移就从「无起点」起步，框不飞而是瞬移
+            lastIndex = index
+            return
+        }
         val from = lastIndex
         val fly = from != null && from != index && frame.value.width > 0f
         target = next
@@ -409,8 +434,13 @@ class NfBarFocus internal constructor(private val scope: CoroutineScope) {
         scope.launch {
             // Animatable 内部互斥：新目标取消上一次没飞完的那趟，连按时框从
             // 「当前走到的位置」接着走，不回弹。滚动时 from == index → 瞬移，框跟着列表走
-            if (fly) frame.animateTo(next, tween(NfBarFrameMillis, easing = Motion.Ease))
-            else frame.snapTo(next)
+            if (fly) {
+                flying = true
+                frame.animateTo(next, tween(NfBarFrameMillis, easing = Motion.Ease))
+            } else {
+                frame.snapTo(next)
+            }
+            flying = false
         }
     }
 }
@@ -431,9 +461,15 @@ private fun Modifier.nfBarFrameCoords(bar: NfBarFocus, index: Int): Modifier =
 
 /** 把元件自己那份焦点态喂给飞行层。放在元件内部，拿的就是驱动文字变白的同一个值 */
 @Composable
-private fun NfBarFrameItem(bar: NfBarFocus, index: Int, focused: Boolean) {
+private fun NfBarFrameItem(
+    bar: NfBarFocus,
+    index: Int,
+    focused: Boolean,
+    onFocusChange: ((Int, Boolean) -> Unit)? = null
+) {
     LaunchedEffect(focused) {
         if (focused) bar.enter(index) else bar.exit(index)
+        onFocusChange?.invoke(index, focused)
     }
 }
 
@@ -1021,6 +1057,8 @@ fun NfSubNav(
     upFocusRequester: FocusRequester? = null,
     /** 第一颗 chip 的锚点：内容网格首行按 ↑ 要落到它，而不是靠几何搜索猜 */
     firstChipFocus: FocusRequester? = null,
+    /** 哪颗 chip 拿到焦点就报哪颗：网格按 ↑ 要回到「最后站过的那颗」，而不是「当前选中的那颗」 */
+    onChipFocus: ((Int) -> Unit)? = null,
     /**
      * 逐颗 chip 的锚点，由调用方持有：返回键那一层要落回「当前选中的那颗」分类，
      * 光有第一颗的锚点不够。不传就用内建那一份（只能落到第一颗）。
@@ -1095,7 +1133,8 @@ fun NfSubNav(
                         .focusRequester(anchors[index])
                         .then(if (index == 0 && firstChipFocus != null) Modifier.focusRequester(firstChipFocus) else Modifier),
                     bar = chipBar,
-                    index = index
+                    index = index,
+                    onFocused = onChipFocus?.let { cb -> { i, f -> if (f) cb(i) } }
                 )
             }
         }
@@ -1115,6 +1154,7 @@ private fun NfSubChip(
     onClick: () -> Unit,
     bar: NfBarFocus,
     index: Int,
+    onFocused: ((Int, Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -1122,7 +1162,7 @@ private fun NfSubChip(
     // 焦点所在的 chip 不许被 LazyRow 回收：1.9 回收获焦项会直接 clearFocus，
     // 焦点随后落到整页第一个可聚焦节点 —— 也就是一级 tab 栏
     tvKeepFocusedItemAlive(focused)
-    NfBarFrameItem(bar, index, focused)
+    NfBarFrameItem(bar, index, focused, onFocused)
     Column(
         modifier
             .nfBarFrameFallback(bar, focused)

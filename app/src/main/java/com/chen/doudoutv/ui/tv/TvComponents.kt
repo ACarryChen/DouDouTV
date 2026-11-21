@@ -257,14 +257,27 @@ internal fun DrawScope.tvDrawFocusRing(rect: Rect, radiusPx: Float) {
     )
 }
 
-/** 每次界面重新回到前台 +1（进播放器再退出来也会走一次 ON_RESUME）。 */
+/**
+ * 每次界面重新回到前台 +1（进播放器再退出来也会走一次 ON_RESUME）。
+ *
+ * 注册观察者时 Lifecycle 会把当前状态同步回放一次 ON_RESUME —— 那不是「回到前台」，
+ * 是初始状态对齐。不滤掉它，入口抢焦会在进页后立刻被重放一遍：
+ * 搜索页「点 tab 进来焦点留标签」就是被这次重放拽到输入框的。
+ */
 @Composable
 fun tvResumeTick(): Int {
     val owner = LocalLifecycleOwner.current
     var tick by remember { mutableIntStateOf(0) }
     DisposableEffect(owner) {
+        var primed = false
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) tick++
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (!primed) {
+                    primed = true
+                    return@LifecycleEventObserver
+                }
+                tick++
+            }
         }
         owner.lifecycle.addObserver(observer)
         onDispose { owner.lifecycle.removeObserver(observer) }
@@ -311,14 +324,22 @@ fun tvClaimFocusOnEnter(
     LaunchedEffect(tick) {
         runCatching { scrollToTop() }
         if (settleMillis > 0) delay(settleMillis)
-        // 等一帧：requester 要等节点组合完成才挂得上
-        withFrameNanos { }
-        if (!tvMoveFocus(*anchorsProvider().toTypedArray())) {
-            // 只有「这一次没抢到」才补跳：Compose 1.9 的 requestFocus 会直接告诉我们落没落上，
-            // 抢到了就说明焦点已经在该去的地方，再补一次只会把用户已经走到的焦点拽回来。
-            // 没抢到多半是锚点节点这一帧还没挂上（路由淡入淡出、刚从播放器 resume 回来），等一下再试。
-            delay(120)
-            tvMoveFocus(*anchorsProvider().toTypedArray())
+        // 先立即抢一次：LaunchedEffect 跑在组合应用之后、下一帧绘制之前。上一屏销毁时
+        // 焦点被 Compose 兜底到树里第一个可聚焦元件（导航条的「首页」tab），直接等一帧再抢，
+        // 那一帧就会被画出来 —— 用户看到的就是「返回时焦点从首页闪一下再落到卡片」。
+        // 立即抢没有空窗；真没抢到（锚点节点还没挂上）再退回等帧重试。
+        val g0 = tvMoveFocus(*anchorsProvider().toTypedArray())
+        if (!g0) {
+            // 等一帧再试：requester 要等节点组合完成才挂得上
+            withFrameNanos { }
+            val g1 = tvMoveFocus(*anchorsProvider().toTypedArray())
+            if (!g1) {
+                // 只有「这一次没抢到」才补跳：Compose 1.9 的 requestFocus 会直接告诉我们落没落上，
+                // 抢到了就说明焦点已经在该去的地方，再补一次只会把用户已经走到的焦点拽回来。
+                // 没抢到多半是锚点节点这一帧还没挂上（路由淡入淡出、刚从播放器 resume 回来），等一下再试。
+                delay(120)
+                tvMoveFocus(*anchorsProvider().toTypedArray())
+            }
         }
         if (keepTop) {
             withFrameNanos { }

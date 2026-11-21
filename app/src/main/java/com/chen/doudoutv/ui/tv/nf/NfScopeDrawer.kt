@@ -121,6 +121,11 @@ fun NfScopeDrawer(
     val entryFocus = remember { FocusRequester() }
     val listState = rememberLazyListState()
     val siteListState = rememberLazyGridState()
+    // 抽屉刚挂上时，Compose 会先把焦点兜底给列表第一行，过几帧我们的抢焦才落回
+    // 「当前生效的来源」那颗 —— 中间这几帧就是用户看到的「打开后焦点闪现到别处」。
+    // 抢焦落位前，行/格子的焦点态一律不画（高亮、描边、缩放、光标联动全压住），
+    // 落位后直接从正确那颗亮起来。
+    var ringOn by remember { mutableStateOf(false) }
 
     val cursorSource = sources.firstOrNull { it.id == cursorId }
     val cursorIsTvBox = cursorSource?.kind == SourceKind.TVBOX
@@ -190,12 +195,17 @@ fun NfScopeDrawer(
     LaunchedEffect(Unit) {
         val at = rows.indexOfFirst { it is ScopeRow.Src && it.source.id == initialId }
         if (at >= 0) listState.scrollToItem(at)
-        withFrameNanos { }
-        // 抽屉窗口和列表项的挂载顺序没有保证，第一次可能还是空的 —— 补一次，别让抽屉开起来没人持焦
+        // 先立即抢一次：抢焦赶在下一帧绘制之前完成，焦点环就不会先画在
+        // 兜底元件上再跳过来（打开时"闪现到别处"的根源）。挂载顺序没保证，
+        // 抢空了再等帧补抢，别让抽屉开起来没人持焦。
         if (!tvMoveFocus(entryFocus)) {
-            delay(140)
-            tvMoveFocus(entryFocus)
+            withFrameNanos { }
+            if (!tvMoveFocus(entryFocus)) {
+                delay(140)
+                tvMoveFocus(entryFocus)
+            }
         }
+        ringOn = true
     }
 
     /** 只换来源（Emby 与「这条 TVBox 源没有线路」两条路径） */
@@ -274,6 +284,7 @@ fun NfScopeDrawer(
                                         isCursor = src.id == cursorId,
                                         focusedEntry = src.id == initialId,
                                         entryFocus = entryFocus,
+                                        ringOn = ringOn,
                                         onFocusHere = { requester ->
                                             cursorId = src.id
                                             cursorFocus = requester
@@ -335,6 +346,7 @@ fun NfScopeDrawer(
                                             text = "线路管理",
                                             selected = false,
                                             anchor = null,
+                                            ringOn = ringOn,
                                             onLeft = { leaveSites() },
                                             onClick = { cursorId?.let { onManageLines(it) } }
                                         )
@@ -344,6 +356,7 @@ fun NfScopeDrawer(
                                             text = "全部站点",
                                             selected = showSiteSelection && selectedSiteKey.isNullOrEmpty(),
                                             anchor = if (siteEntryIndex == 1) siteEntryFocus else null,
+                                            ringOn = ringOn,
                                             onLeft = { leaveSites() },
                                             onClick = { cursorSource?.let { pick(it, null, null) } }
                                         )
@@ -353,6 +366,7 @@ fun NfScopeDrawer(
                                             text = site.name,
                                             selected = showSiteSelection && selectedSiteKey == site.key,
                                             anchor = if (site.key == siteEntryKey) siteEntryFocus else null,
+                                            ringOn = ringOn,
                                             onLeft = {
                                                 val cell = siteListState.layoutInfo.visibleItemsInfo
                                                     .firstOrNull { it.key == "site_${site.key}" }
@@ -457,6 +471,7 @@ private fun NfSourceRow(
     isCursor: Boolean,
     focusedEntry: Boolean,
     entryFocus: FocusRequester,
+    ringOn: Boolean,
     onFocusHere: (FocusRequester) -> Unit,
     onRight: () -> Boolean,
     canRight: Boolean,
@@ -465,14 +480,18 @@ private fun NfSourceRow(
     val requester = remember { FocusRequester() }
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    val scale = animateFloatAsState(if (focused) 1.03f else 1f, tween(Motion.FAST, easing = Motion.Ease), label = "srcRow")
+    // 抢焦落位前兜底焦点可能临时停在这行：焦点态一律不画、光标联动也不触发
+    val shown = focused && ringOn
+    val scale = animateFloatAsState(if (shown) 1.03f else 1f, tween(Motion.FAST, easing = Motion.Ease), label = "srcRow")
     Box(
         Modifier
-            .zIndex(if (focused) 1f else 0f)
+            .zIndex(if (shown) 1f else 0f)
             .graphicsLayer { scaleX = scale.value; scaleY = scale.value }
             .then(if (focusedEntry) Modifier.focusRequester(entryFocus) else Modifier)
             .focusRequester(requester)
-            .onFocusChanged { if (it.isFocused) onFocusHere(requester) }
+            .onFocusChanged {
+                if (it.isFocused && ringOn) onFocusHere(requester)
+            }
             .onPreviewKeyEvent { e ->
                 // → 跨到右列。右列可能刚被摘掉，tvMoveFocus 内部兜异常，跳不动就交回默认几何搜索
                 if (canRight && e.type == KeyEventType.KeyDown && e.key.nativeKeyCode == android.view.KeyEvent.KEYCODE_DPAD_RIGHT) {
@@ -483,12 +502,12 @@ private fun NfSourceRow(
             .clip(Radius.Md)
             .background(
                 when {
-                    focused -> AppColors.Brand.copy(alpha = 0.5f)
+                    shown -> AppColors.Brand.copy(alpha = 0.5f)
                     active -> Color.White.copy(alpha = 0.12f)
                     else -> AppColors.Surface.copy(alpha = 0.6f)
                 }
             )
-            .tvFocusRing(focused)
+            .tvFocusRing(shown)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .focusable(interactionSource = interaction)
             .padding(horizontal = 16.dp, vertical = 13.dp)
@@ -504,7 +523,7 @@ private fun NfSourceRow(
             )
             Text(
                 label,
-                color = if (focused || active) TvText.Title else TvText.Section,
+                color = if (shown || active) TvText.Title else TvText.Section,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
@@ -546,14 +565,16 @@ private fun NfSiteCell(
     text: String,
     selected: Boolean,
     anchor: FocusRequester?,
+    ringOn: Boolean,
     onLeft: () -> Boolean,
     onClick: () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
+    val shown = focused && ringOn
     Box(
         Modifier
-            .zIndex(if (focused) 1f else 0f)
+            .zIndex(if (shown) 1f else 0f)
             .then(if (anchor != null) Modifier.focusRequester(anchor) else Modifier)
             .onPreviewKeyEvent { e ->
                 if (e.type == KeyEventType.KeyDown && e.key.nativeKeyCode == android.view.KeyEvent.KEYCODE_DPAD_LEFT) {
@@ -565,14 +586,14 @@ private fun NfSiteCell(
             .clip(Radius.Md)
             .background(
                 when {
-                    focused -> AppColors.Brand.copy(alpha = 0.5f)
+                    shown -> AppColors.Brand.copy(alpha = 0.5f)
                     selected -> AppColors.Brand.copy(alpha = 0.22f)
                     else -> AppColors.Surface.copy(alpha = 0.6f)
                 }
             )
-            .tvFocusRing(focused)
+            .tvFocusRing(shown)
             .then(
-                if (focused) Modifier
+                if (shown) Modifier
                 else if (selected) Modifier.border(1.dp, AppColors.Brand, Radius.Md)
                 else Modifier.border(1.dp, Edge.Hairline, Radius.Md)
             )
@@ -583,7 +604,7 @@ private fun NfSiteCell(
     ) {
         Text(
             text,
-            color = if (focused || selected) TvText.Title else TvText.Section,
+            color = if (shown || selected) TvText.Title else TvText.Section,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 1,

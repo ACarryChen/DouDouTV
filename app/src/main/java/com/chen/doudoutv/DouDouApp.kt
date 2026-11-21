@@ -9,6 +9,7 @@ import com.chen.doudoutv.core.VideoCache
 import com.chen.doudoutv.data.db.AppDatabase
 import com.chen.doudoutv.data.image.PicHeaderInterceptor
 import com.chen.doudoutv.data.scrape.ScrapeStrategy
+import com.chen.doudoutv.ui.theme.isTelevision
 
 class DouDouTvApp : Application(), ImageLoaderFactory {
 
@@ -54,12 +55,15 @@ class DouDouTvApp : Application(), ImageLoaderFactory {
      * [PicHeaderInterceptor] 负责拆 TVBox 海报直链末尾的 @Referer= / @User-Agent= 后缀，
      * 否则豆瓣图床会把整串当路径并返回 418（表现为大量卡片没有封面）。
      */
-    override fun newImageLoader(): ImageLoader =
-        ImageLoader.Builder(this)
-            .crossfade(true)
-            .crossfade(220)
+    override fun newImageLoader(): ImageLoader {
+        // TV 端低端 GPU 大面积 alpha 混合吃不消：一屏海报同时做 220ms 淡入，
+        // 每帧都要重画整屏卡片，实测掉帧里「Slow issue draw commands」占一半。
+        // TV 直接出图，手机端保留淡入过渡。
+        val builder = ImageLoader.Builder(this).crossfade(!isTelevision())
+        return builder
             .components { add(PicHeaderInterceptor()) }
             .build()
+    }
 
     companion object {
         lateinit var instance: DouDouTvApp
