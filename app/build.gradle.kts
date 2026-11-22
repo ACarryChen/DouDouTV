@@ -43,8 +43,8 @@ android {
         applicationId = "com.chen.doudoutv"
         minSdk = 21
         targetSdk = 28
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.0.3"
 
         vectorDrawables { useSupportLibrary = true }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
