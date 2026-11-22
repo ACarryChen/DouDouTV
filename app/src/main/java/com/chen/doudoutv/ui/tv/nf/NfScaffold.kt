@@ -480,8 +480,8 @@ fun NfScaffold(
         Box(Modifier.fillMaxSize().themeBackdrop()) {
             if (navInFlow) {
                 Column(Modifier.fillMaxSize()) {
-                    // 顶栏常驻在转场之外，这里只给它让出高度；4dp 是它和内容之间那条窄缝
-                    Spacer(Modifier.height(shell.navHeight + 4.dp))
+                    // 顶栏常驻在转场之外，这里只给它让出高度；2dp 是它和内容之间那条窄缝
+                    Spacer(Modifier.height(shell.navHeight + 2.dp))
                     Box(Modifier.fillMaxWidth().weight(1f)) { content() }
                 }
             } else {

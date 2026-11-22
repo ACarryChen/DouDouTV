@@ -142,7 +142,7 @@ fun HomeScreen(
 
     val cardWidth = if (isTv) Prefs.posterSize.tvDp.dp else Prefs.posterSize.mobileDp.dp
 
-    // 「继续观看」卡片长按弹出的操作菜单（TV 端的对应实现在 TvHomeScreen，走遥控器长按 OK）
+    // 「继续观看」卡片长按弹出的操作菜单（TV 端的对应实现在 NfHomeScreen，走遥控器长按 OK）
     var continueMenu by remember { mutableStateOf<MediaEntity?>(null) }
 
     // 线路管理弹窗开关：HomeLineSelector 点「线路管理」入口时打开

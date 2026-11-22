@@ -861,7 +861,10 @@ class SpiderProxy(private val clazz: Class<*>, private val instance: Any) {
         filter: Boolean = true,
         extend: Map<String, String>? = null
     ): String? = timedCall {
-        val map = (extend as? HashMap<String, String>) ?: HashMap()
+        // 反射签名要的是 HashMap 本体：调用方传的多是 LinkedHashMap/Map 视图，
+        // 直接 as? HashMap 会静默失败成空 map（筛选值永远传不进爬虫），必须显式拷贝一份
+        val map = if (extend.isNullOrEmpty()) HashMap<String, String>() else HashMap(extend)
+        if (map.isNotEmpty()) Log.w(TAG, "categoryContent tid=$tid pg=$pg extend=$map")
         clazz.getMethod(
             "categoryContent",
             String::class.java, String::class.java,

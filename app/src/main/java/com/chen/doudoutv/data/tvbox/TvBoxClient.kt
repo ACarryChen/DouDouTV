@@ -106,7 +106,9 @@ class TvBoxClient(
      */
     data class SiteHomeResult(
         val vods: List<Vod>,
-        val categories: List<CatVodResultParser.ClassItem> = emptyList()
+        val categories: List<CatVodResultParser.ClassItem> = emptyList(),
+        /** 源站下发的筛选条件（typeId → 组列表）；空表示该线路不支持筛选 */
+        val filters: Map<String, List<CatVodResultParser.FilterGroup>> = emptyMap()
     )
 
     private data class SpiderSite(
@@ -377,7 +379,7 @@ class TvBoxClient(
             throw IllegalStateException("TVBox 配置缺少 spider 字段，无法加载爬虫")
         }
         val merged = LinkedHashMap<String, Vod>()
-        val categories = try {
+        val homeData = try {
             loadSpiderHome(
                 listOf(SpiderSite(site.key, site.name, site.api, site.ext, site.searchable, site.quickSearch)),
                 merged
@@ -386,13 +388,19 @@ class TvBoxClient(
             // 不再吞异常：把壳初始化/爬虫调用的真实原因透出到 UI（否则切线路静默失败、内容不变）
             throw IllegalStateException("站点「${site.name}」爬取失败：${e.message ?: e.javaClass.simpleName}")
         }
-        SiteHomeResult(merged.values.take(limit).toList(), categories)
+        SiteHomeResult(merged.values.take(limit).toList(), homeData.categories, homeData.filters)
     }
 
     /**
      * 站点分类内容（对应 TVBox 点分类后调 categoryContent 的分页）。
+     * [extend] 为筛选面板选中值（组 key → 取值 v），空则等同不带筛选。
      */
-    suspend fun categoryContent(site: TvBoxSite, typeId: String, page: Int = 1): List<Vod> =
+    suspend fun categoryContent(
+        site: TvBoxSite,
+        typeId: String,
+        page: Int = 1,
+        extend: Map<String, String> = emptyMap()
+    ): List<Vod> =
         withContext(Dispatchers.IO) {
             val loader = spiderLoader ?: return@withContext emptyList()
             if (configSpiderUrl.isBlank()) {
@@ -402,7 +410,10 @@ class TvBoxClient(
             val loaderKey = runCatching { loader.ensureLoaded(configSpiderUrl) }.getOrNull()
                 ?: return@withContext emptyList()
             val proxy = loader.getSpider(loaderKey, site.api, site.ext) ?: return@withContext emptyList()
-            val json = proxy.categoryContent(typeId, page.toString(), filter = true, extend = null)
+            val json = proxy.categoryContent(
+                typeId, page.toString(), filter = true,
+                extend = if (extend.isEmpty()) null else extend
+            )
                 ?: return@withContext emptyList()
             CatVodResultParser.parseVodList(json, site.key, site.name)
         }
@@ -434,11 +445,17 @@ class TvBoxClient(
             CatVodResultParser.parseVodList(json, site.key, site.name)
         }
 
-    /** type 3 spider 站点首页聚合；返回各站点 homeContent 的 class（分类）数组 */
+    /** 单线路 homeContent 聚合结果：分类 + 筛选条件 */
+    private data class SpiderHomeData(
+        val categories: List<CatVodResultParser.ClassItem>,
+        val filters: Map<String, List<CatVodResultParser.FilterGroup>>
+    )
+
+    /** type 3 spider 站点首页聚合；返回各站点 homeContent 的 class（分类）与 filters（筛选） */
     private suspend fun loadSpiderHome(
         sites: List<SpiderSite>,
         merged: LinkedHashMap<String, Vod>
-    ): List<CatVodResultParser.ClassItem> = withContext(Dispatchers.IO) {
+    ): SpiderHomeData = withContext(Dispatchers.IO) {
         val loader = spiderLoader ?: throw IllegalStateException("缺少 Android Context，无法加载爬虫")
         val loaderKey = try {
             loader.ensureLoaded(configSpiderUrl)
@@ -488,6 +505,7 @@ class TvBoxClient(
         }
 
         val categories = ArrayList<CatVodResultParser.ClassItem>()
+        val filters = LinkedHashMap<String, List<CatVodResultParser.FilterGroup>>()
         for (result in results) {
             val json = result.json
             if (json.isNullOrEmpty()) {
@@ -497,6 +515,8 @@ class TvBoxClient(
             // 分类（class）：即使 list 为空、只有分类，站点也「有数据」，UI 可按分类分区浏览
             val siteCategories = CatVodResultParser.parseClasses(json)
             categories += siteCategories
+            // 筛选（filters）：按 typeId 合并，已有该分类的站点不覆盖
+            CatVodResultParser.parseFilters(json).forEach { (tid, gs) -> filters.putIfAbsent(tid, gs) }
             val list = CatVodResultParser.parseVodList(json, result.site.key, result.site.name)
             if (list.isEmpty() && siteCategories.isEmpty()) reasons += "${result.site.name}: homeContent 无影片"
             list.forEach { merged["${result.site.key}:${it.vodId}"] = it }
@@ -509,7 +529,7 @@ class TvBoxClient(
                 else "爬虫站点均无数据：${reasons.take(3).joinToString("；")}"
             )
         }
-        categories
+        SpiderHomeData(categories, filters)
     }
 
     private data class SiteHomeFetch(val site: SpiderSite, val json: String?)

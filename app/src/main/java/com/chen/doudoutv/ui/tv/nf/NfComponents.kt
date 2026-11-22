@@ -1105,8 +1105,8 @@ fun NfSubNav(
                 .heightIn(min = 44.dp),
             state = state,
             verticalAlignment = Alignment.CenterVertically,
-            // 纵向留白：框画在 chip 边界之内，这 6dp 只是让它不贴着导航条和网格
-            contentPadding = PaddingValues(horizontal = TvPagePadding, vertical = 6.dp),
+            // 纵向留白：框画在 chip 边界之内，这 3dp 只是让它不贴着导航条和网格
+            contentPadding = PaddingValues(horizontal = TvPagePadding, vertical = 3.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             itemsIndexed(labels) { index, label ->

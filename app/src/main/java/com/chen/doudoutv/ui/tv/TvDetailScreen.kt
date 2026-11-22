@@ -1486,7 +1486,7 @@ private fun TvDetailHeroHeader(
             .fillMaxWidth(0.72f)
             .padding(start = TvPagePadding, end = 12.dp)
     ) {
-        // 标题位：Logo 与文字标题共用同一块标题槽，两套布局同一尺度（[TvMediaTitle]）
+        // 标题位：Logo 与文字标题共用同一块标题槽（[TvMediaTitle]）
         Row(verticalAlignment = Alignment.CenterVertically) {
             TvMediaTitle(
                 title = item.title,

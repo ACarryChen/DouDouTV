@@ -1535,10 +1535,11 @@ class MediaRepository(private val context: Context) {
         source: SourceEntity,
         site: TvBoxSite,
         typeId: String,
-        page: Int = 1
+        page: Int = 1,
+        extend: Map<String, String> = emptyMap()
     ): List<MediaEntity> = withContext(Dispatchers.IO) {
         if (source.kind != SourceKind.TVBOX) return@withContext emptyList()
-        val vods = TvBoxClient(source.location, context).categoryContent(site, typeId, page)
+        val vods = TvBoxClient(source.location, context).categoryContent(site, typeId, page, extend)
         // 网盘类线路同一页里常出现重复条目（同一个 vodId 出现两次），
         // 不去重会让 browseEntity 返回同一个临时负 id，列表 key 重复 → LazyRow 直接崩溃
         vods.distinctBy { it.siteKey to it.vodId }.map { browseEntity(source, it) }

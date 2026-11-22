@@ -38,6 +38,7 @@ import com.chen.doudoutv.data.model.LibraryDisplayOrder
 import com.chen.doudoutv.data.model.MediaKind
 import com.chen.doudoutv.data.model.SourceKind
 import com.chen.doudoutv.data.scrape.ScrapeEngine
+import com.chen.doudoutv.data.tvbox.CatVodResultParser
 import com.chen.doudoutv.ui.LibraryViewModel
 import com.chen.doudoutv.ui.PrecomposeWindow
 import com.chen.doudoutv.ui.ReturnSpot
@@ -49,6 +50,7 @@ import com.chen.doudoutv.ui.tv.TvBatchScrapeDialog
 import com.chen.doudoutv.ui.tv.TvPagePadding
 import com.chen.doudoutv.ui.tv.TvScrapeChip
 import com.chen.doudoutv.ui.tv.tvClaimFocusOnEnter
+import com.chen.doudoutv.ui.tv.tvMoveFocus
 import com.chen.doudoutv.ui.tv.tvPosterColumns
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.TvText
@@ -116,10 +118,44 @@ fun NfBrowseScreen(
     // 分类条上最后真正站过焦点的那颗：只给「焦点还站在分类条上、数据重载翻 tick」的抢焦当锚点
     // （见下方 tvClaimFocusOnEnter），不许把焦点从用户站着的 chip 拽回选中那颗（规范 R4）。
     var lastChipIdx by remember(scopeKey) { mutableStateOf(selIndex) }
+
+    // 筛选面板：
+    // · TVBox —— 焦点在已选中的分类 chip 上再按一次 OK → 收起分类条，原位展开「组名行 + 取值行」两行 NfSubNav，
+    //   与分类条同一套视觉与间距；选中值以 extend 传给 categoryContent 重新请求该分类第 1 页。
+    // · Emby —— 组从本地库聚合（年份/类型/题材/排序），选中值直接对本地条目做谓词过滤，不发网络请求。
+    val localGroups = remember(localItems) { nfLocalFilterGroups(localItems) }
+    val groups = if (isTvBox) vm.homeFilters[currentTypeId].orEmpty() else localGroups
+    // 面板状态按「当前分类」重置：Emby 分支 currentTypeId 恒 null，改用分类名做 key，
+    // 否则换题材 chip 时上一类的选中值会残留
+    val panelCatKey = if (isTvBox) currentTypeId else localCats.getOrNull(safeLocalIdx)?.name
+    var panelOpen by remember(scopeKey, panelCatKey) { mutableStateOf(false) }
+    var activeGroup by remember(scopeKey, panelCatKey) { mutableStateOf(0) }
+    var filterSel by remember(scopeKey, panelCatKey) { mutableStateOf<Map<Int, Int>>(emptyMap()) }
+    val gIdx = activeGroup.coerceIn(0, (groups.size - 1).coerceAtLeast(0))
+    // 组 key → 选中取值 v（「全部」= 0 不传）
+    val extend = remember(filterSel, groups) {
+        buildMap {
+            groups.forEachIndexed { i, g ->
+                val vi = filterSel[i] ?: 0
+                if (vi > 0) put(g.key.ifBlank { i.toString() }, g.value[vi].v)
+            }
+        }
+    }
+    val filterSig = remember(extend) { extend.entries.joinToString("|") { "${it.key}=${it.value}" } }
+    // 面板两行各自的 chip 锚点：组行含「返回分类」多一颗；取值行随当前组重建
+    val groupAnchors = remember(groups) { List(groups.size + 1) { FocusRequester() } }
+    val valueAnchors = remember(groups, gIdx) { groups.getOrNull(gIdx)?.value?.map { FocusRequester() }.orEmpty() }
+    // 面板整体 / 取值行是否持焦：入口抢焦与返回键都按这两档决定落点
+    var panelFocused by remember { mutableStateOf(false) }
+    var panelValueFocused by remember { mutableStateOf(false) }
+    var panelWasOpen by remember(scopeKey) { mutableStateOf(false) }
+
     // 网格首行按 ↑ 的落点：与顶栏同口径 —— 顶栏交回本页那颗 tab（选中的），这里交回选中的那颗 chip；
+    // 面板展开时交回取值行第一颗；
     // 只有一个分类时交回本页那颗「分类」tab（规范 R1）；
     // 分类条只剩刮削按钮时（单分类 + TMDB 开启）先交给按钮、由它再 ↑ 交回 tab —— 否则按钮不在任何链路上，遥控器够不着
     val gridUpFocus = when {
+        panelOpen -> valueAnchors.firstOrNull() ?: currentChipFocus
         showSubNav -> currentChipFocus
         scrapeVisible -> scrapeChipFocus
         else -> chrome.tabOf(NfTab.Browse)
@@ -133,9 +169,10 @@ fun NfBrowseScreen(
     // 本页只抢一次焦：有内容交给网格首卡，没内容交给空态那颗按钮，
     // 不出现「没人持焦、按一下才亮」（规范 R6/R7）
     val sitePicked = vm.homeSiteKey != null
-    val onlineItems = if (isTvBox && sitePicked) vm.browseItems(currentTypeId.orEmpty()) else emptyList()
-    val localShown = if (!isTvBox) localCats.getOrNull(safeLocalIdx)?.let { cat -> localItems.filter(cat.matches) }
-        ?: emptyList() else emptyList()
+    val onlineItems = if (isTvBox && sitePicked) vm.browseItems(currentTypeId.orEmpty(), extend) else emptyList()
+    val localShown = if (!isTvBox) localCats.getOrNull(safeLocalIdx)?.let { cat ->
+        nfApplyLocalFilters(localItems.filter(cat.matches), extend)
+    } ?: emptyList() else emptyList()
     // 批量刮削：已刮标记（网格角标）、确认弹窗、批次进度（与经典版分类页同一套组件）
     val scrapeUi = rememberBatchScrapeUiState(vm)
     /** 当前分类已加载的条目：刮削按钮和角标都只认这一份 */
@@ -172,6 +209,11 @@ fun NfBrowseScreen(
         anchorsProvider = {
             when {
                 entryFocusOnNav -> listOf(chrome.tabOf(NfTab.Browse))
+                // 焦点站在筛选面板里：数据重载翻 tick 时不许把焦点拽进网格，原地落在当前那一行
+                panelFocused -> listOfNotNull(
+                    if (panelValueFocused) valueAnchors.getOrNull(filterSel[gIdx] ?: 0) ?: valueAnchors.firstOrNull()
+                    else groupAnchors.getOrNull(gIdx) ?: groupAnchors.firstOrNull()
+                )
                 // 分类条只剩刮削按钮时 currentChipFocus 没挂节点，交回按钮自己的锚点。
                 // 持焦时锚到「最后站过」那颗：数据重载翻 tick 时不许把焦点从用户站着的 chip 拽回选中那颗
                 subNavFocused -> listOf(if (showSubNav) chipFocuses.getOrElse(lastChipIdx) { currentChipFocus } else scrapeChipFocus)
@@ -180,8 +222,19 @@ fun NfBrowseScreen(
         }
     )
 
-    LaunchedEffect(currentTypeId, vm.homeRefreshEpoch) {
-        if (isTvBox && sitePicked) currentTypeId?.let { vm.ensureBrowsePage(it) }
+    LaunchedEffect(currentTypeId, extend, vm.homeRefreshEpoch) {
+        if (isTvBox && sitePicked) currentTypeId?.let { vm.ensureBrowsePage(it, extend) }
+    }
+
+    // 面板开/关的焦点交接：展开给组行第一颗，收起还给当前选中的分类 chip。
+    // panelWasOpen 门禁：首次组合（panelOpen 本来就是 false）不许把焦点从网格/入口落点拽到分类条。
+    LaunchedEffect(panelOpen) {
+        if (panelOpen) {
+            groupAnchors.firstOrNull()?.let { tvMoveFocus(it) }
+        } else if (panelWasOpen && showSubNav) {
+            tvMoveFocus(currentChipFocus)
+        }
+        panelWasOpen = panelOpen
     }
 
     // 返回键的层级：卡片 → 分类栏 → tab 栏（tab 栏那一层由 TvApp 根部接，它不在这页的子树里）
@@ -189,8 +242,8 @@ fun NfBrowseScreen(
     val scope = rememberCoroutineScope()
     // 网格滚动 state 提到页面级：返回键要就地把网格滚回顶部。
     // key 必须和下面两个 NfPosterGrid 的 pageKey 逐字一致，否则记账会分成两份。
-    val gridPageKey = if (isTvBox) "$NfBrowseKey/$currentTypeId"
-        else "$NfBrowseKey/local_${localCats.getOrNull(safeLocalIdx)?.name}"
+    val gridPageKey = if (isTvBox) "$NfBrowseKey/$currentTypeId/$filterSig"
+        else "$NfBrowseKey/local_${localCats.getOrNull(safeLocalIdx)?.name}/$filterSig"
     val gridState = ReturnSpot.gridState(gridPageKey, precompose = PrecomposeWindow.Tv)
 
     NfScaffold(
@@ -200,6 +253,7 @@ fun NfBrowseScreen(
         // 每一向都显式给落点（规范 R1）：有分类条 → 当前选中的那颗 chip，没有 → 这一屏的接焦元件
         navInFlow = true,
         belowFocusRequester = when {
+            panelOpen -> groupAnchors.first()
             showSubNav -> currentChipFocus
             scrapeVisible -> scrapeChipFocus
             else -> contentAnchor
@@ -213,22 +267,26 @@ fun NfBrowseScreen(
                 .fillMaxSize()
                 .nfBackKey {
                     when {
+                        // 面板展开时 Back 先收起面板：焦点由 panelOpen 的交焦逻辑还给当前分类 chip
+                        panelFocused -> { panelOpen = false; true }
                         subNavFocused -> jumpTo(chrome.tabOf(NfTab.Browse))
                         showSubNav -> {
-                            // 从卡片层返回：滚过就先瞬跳回顶部，再把焦点交给当前选中的那颗 chip。
-                            // 已经在顶部时只做交焦点 —— 无条件 scrollToItem 会白白重组合一屏卡片。
+                            // 从卡片层返回：滚过就先瞬跳回顶部，再把焦点交给面板组行（展开时）
+                            // 或当前选中的那颗 chip。已经在顶部时只做交焦点 ——
+                            // 无条件 scrollToItem 会白白重组合一屏卡片。
                             val scrolled = gridState.firstVisibleItemIndex > 0 ||
                                 gridState.firstVisibleItemScrollOffset > 0
+                            val target = if (panelOpen) groupAnchors.first() else currentChipFocus
                             if (scrolled) {
                                 scope.launch {
                                     // 先滚再交焦点：滚回顶部会回收持焦的那张卡，1.9 会顺手 clearFocus，
                                     // 焦点落到整页第一个可聚焦节点（tab 栏），随后这一跳再把它拿回来
                                     gridState.scrollToItem(0, 0)
-                                    jumpTo(currentChipFocus, firstChipFocus)
+                                    jumpTo(target, firstChipFocus)
                                 }
                                 true
                             } else {
-                                jumpTo(currentChipFocus, firstChipFocus)
+                                jumpTo(target, firstChipFocus)
                             }
                         }
                         else -> jumpTo(chrome.tabOf(NfTab.Browse))
@@ -236,8 +294,47 @@ fun NfBrowseScreen(
                 }
         ) {
             // 分类 chip 条拆两区：chip 栏占掉除按钮以外的全部宽度（weight(1f)），
-            // 刮削按钮固定在最右一颗 —— 分类再多也不会把按钮挤出屏幕（与经典版题材页同一做法）
-            if (showSubNav || scrapeVisible) {
+            // 刮削按钮固定在最右一颗 —— 分类再多也不会把按钮挤出屏幕（与经典版题材页同一做法）。
+            // 焦点在已选中的分类 chip 上再按一次 OK → 收起分类条，原位展开筛选面板（组名行 + 取值行）。
+            if (panelOpen && groups.isNotEmpty()) {
+                // 筛选面板：两行 NfSubNav —— 与分类条同一套视觉、间距、焦点路由
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .onFocusEvent { panelFocused = it.hasFocus }
+                ) {
+                    NfSubNav(
+                        labels = groups.mapIndexed { i, g ->
+                            val vi = filterSel[i] ?: 0
+                            if (vi > 0) "${g.name} · ${g.value[vi].n}" else g.name
+                        } + "重置",
+                        selectedIndex = gIdx,
+                        // 「重置」清空全部选中值、面板保持展开（收起分类条走返回键）
+                        onSelect = { i -> if (i < groups.size) activeGroup = i else filterSel = emptyMap() },
+                        downFocusRequester = valueAnchors.firstOrNull(),
+                        upFocusRequester = chrome.tabOf(NfTab.Browse),
+                        firstChipFocus = firstChipFocus,
+                        chipFocuses = groupAnchors
+                    )
+                    groups.getOrNull(gIdx)?.let { gv ->
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .onFocusEvent { panelValueFocused = it.hasFocus }
+                        ) {
+                            NfSubNav(
+                                labels = gv.value.map { it.n },
+                                selectedIndex = filterSel[gIdx] ?: 0,
+                                onSelect = { vi -> filterSel = filterSel + (gIdx to vi) },
+                                downFocusRequester = contentAnchor,
+                                upFocusRequester = groupAnchors.getOrNull(gIdx),
+                                firstChipFocus = gridUpFocus,
+                                chipFocuses = valueAnchors
+                            )
+                        }
+                    }
+                }
+            } else if (showSubNav || scrapeVisible) {
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -250,7 +347,16 @@ fun NfBrowseScreen(
                         NfSubNav(
                             labels = labels,
                             selectedIndex = selIndex,
-                            onSelect = { i -> if (isTvBox) onlineIdx = i else localIdx = i },
+                            onSelect = { i ->
+                                if (isTvBox) {
+                                    // 二次 OK 落在已选中的分类上 → 展开筛选面板（源站没下发 filters 则无动作）
+                                    if (i == safeOnlineIdx && groups.isNotEmpty()) panelOpen = true
+                                    else onlineIdx = i
+                                } else if (i == safeLocalIdx && groups.isNotEmpty()) {
+                                    // Emby 同口径：二次 OK 展开本地筛选面板
+                                    panelOpen = true
+                                } else localIdx = i
+                            },
                             downFocusRequester = contentAnchor,
                             upFocusRequester = chrome.tabOf(NfTab.Browse),
                             firstChipFocus = firstChipFocus,
@@ -326,12 +432,12 @@ fun NfBrowseScreen(
                         focusRequester = emptyFocus
                     )
 
-                    onlineItems.isEmpty() && vm.browseItemsError(currentTypeId.orEmpty()) != null -> NfInlineEmpty(
-                        text = "加载失败：${vm.browseItemsError(currentTypeId.orEmpty())}",
+                    onlineItems.isEmpty() && vm.browseItemsError(currentTypeId.orEmpty(), extend) != null -> NfInlineEmpty(
+                        text = "加载失败：${vm.browseItemsError(currentTypeId.orEmpty(), extend)}",
                         hint = "重试这一页，或者换一条线路",
                         actionLabel = "重试",
                         actionIcon = Icons.Filled.Refresh,
-                        onAction = { currentTypeId?.let { vm.retryBrowsePage(it) } },
+                        onAction = { currentTypeId?.let { vm.retryBrowsePage(it, extend) } },
                         focusRequester = emptyFocus
                     )
 
@@ -347,12 +453,12 @@ fun NfBrowseScreen(
                         modifier = Modifier.fillMaxSize(),
                         state = gridState,
                         scrapedRatings = scrapeUi.scrapedRatings,
-                        onNearEnd = { currentTypeId?.let { vm.loadMoreBrowsePage(it) } },
+                        onNearEnd = { currentTypeId?.let { vm.loadMoreBrowsePage(it, extend) } },
                         footer = {
                             NfGridFooter(
-                                loading = vm.browseItemsLoading(currentTypeId.orEmpty()),
-                                ended = vm.browseItemsEnded(currentTypeId.orEmpty()),
-                                error = vm.browseItemsError(currentTypeId.orEmpty())
+                                loading = vm.browseItemsLoading(currentTypeId.orEmpty(), extend),
+                                ended = vm.browseItemsEnded(currentTypeId.orEmpty(), extend),
+                                error = vm.browseItemsError(currentTypeId.orEmpty(), extend)
                             )
                         }
                     )
@@ -481,6 +587,82 @@ private fun nfLocalCategories(
     }
     tags.forEach { tag ->
         out += NfLocalCategory(tag) { it.genreTokens().contains(tag) }
+    }
+    return out
+}
+
+/**
+ * Emby 筛选面板的组：从本地库聚合「年份 / 类型 / 题材 / 排序」。
+ *
+ * 形状与 TVBox 源站下发的 homeContent filters 完全一致（首值一律「全部」，v 为空串不参与 extend），
+ * 面板两行 NfSubNav、焦点路由、选中态显示全部共用一套，不为 Emby 另写第二份 UI。
+ * 库里没有的维度不出组（比如全片单没有年份就不放年份行），排序组恒在。
+ */
+private fun nfLocalFilterGroups(items: List<MediaEntity>): List<CatVodResultParser.FilterGroup> {
+    if (items.isEmpty()) return emptyList()
+    val out = mutableListOf<CatVodResultParser.FilterGroup>()
+    val years = items.map { it.year }.filter { it > 0 }.distinct().sortedDescending()
+    if (years.size > 1) {
+        out += CatVodResultParser.FilterGroup(
+            "year", "年份",
+            listOf(CatVodResultParser.FilterValue("全部", "")) +
+                years.map { CatVodResultParser.FilterValue(it.toString(), it.toString()) }
+        )
+    }
+    val movieCount = items.count { it.kind == MediaKind.MOVIE }
+    if (movieCount > 0 && movieCount < items.size) {
+        out += CatVodResultParser.FilterGroup(
+            "kind", "类型",
+            listOf(
+                CatVodResultParser.FilterValue("全部", ""),
+                CatVodResultParser.FilterValue("电影", "movie"),
+                CatVodResultParser.FilterValue("剧集", "series")
+            )
+        )
+    }
+    // 题材取频次前 20：和分类 chip 的兜底口径同源，「类型」chip 已表达的不重复列
+    val counts = LinkedHashMap<String, Int>()
+    items.forEach { item ->
+        item.genreTokens().distinct().forEach { tag ->
+            if (tag !in NfKindLikeGenres) counts[tag] = (counts[tag] ?: 0) + 1
+        }
+    }
+    val tags = counts.entries.sortedByDescending { it.value }.take(20).map { it.key }
+    if (tags.size > 1) {
+        out += CatVodResultParser.FilterGroup(
+            "genre", "题材",
+            listOf(CatVodResultParser.FilterValue("全部", "")) +
+                tags.map { CatVodResultParser.FilterValue(it, it) }
+        )
+    }
+    out += CatVodResultParser.FilterGroup(
+        "sort", "排序",
+        listOf(
+            CatVodResultParser.FilterValue("默认", ""),
+            CatVodResultParser.FilterValue("按年份", "year"),
+            CatVodResultParser.FilterValue("按评分", "rating"),
+            CatVodResultParser.FilterValue("按片名", "title")
+        )
+    )
+    return out
+}
+
+/** 把面板选中值作用到本地条目上：各维度是 AND 关系，排序最后统一施加 */
+private fun nfApplyLocalFilters(
+    items: List<MediaEntity>,
+    extend: Map<String, String>
+): List<MediaEntity> {
+    if (extend.isEmpty()) return items
+    var out = items
+    extend["year"]?.toIntOrNull()?.let { y -> out = out.filter { it.year == y } }
+    extend["genre"]?.let { g -> out = out.filter { it.genreTokens().contains(g) } }
+    extend["kind"]?.let { k ->
+        out = out.filter { if (k == "movie") it.kind == MediaKind.MOVIE else it.kind != MediaKind.MOVIE }
+    }
+    when (extend["sort"]) {
+        "year" -> out = out.sortedByDescending { it.year }
+        "rating" -> out = out.sortedByDescending { it.rating }
+        "title" -> out = out.sortedBy { it.title }
     }
     return out
 }

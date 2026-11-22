@@ -523,18 +523,17 @@ fun TvPlayButton(
 }
 
 /**
- * 按钮圆角档：NF 版一律圆角矩形。经典版分支只作代码保留，入口已下线、恒走 NF。
- * 详情页、来源页、设置页这些元件两套布局共用同一份，不复制第二份元件。
+ * 按钮圆角档：一律圆角矩形（Radius.Md）。
+ * 详情页、来源页、设置页这些元件共用同一份。
  */
 @Composable
-fun tvButtonShape(): Shape =
-    if (Prefs.tvLayout == Prefs.TvLayout.NETFLIX) Radius.Md else Radius.Pill
+fun tvButtonShape(): Shape = Radius.Md
 
 /**
  * 图标按钮：电视端的次操作（收藏等）用图标而不是长条文字按钮。
  * 横向只占一个按钮宽度，把省下来的空间留给海报；
  * 聚焦时放大并加白边，符合十英尺界面的可辨识要求。
- * 形状见 [tvButtonShape]：NF 版圆角矩形，经典版圆形。
+ * 形状见 [tvButtonShape]：圆角矩形。
  */
 @Composable
 fun TvIconButton(
@@ -594,199 +593,9 @@ fun TvIconButton(
 }
 
 /**
- * 电视端海报卡：2:3 竖版，比手机大一圈，聚焦时加白色描边，位移看 [Prefs.tvCardMotion] 两档：
- * · 放大（默认）—— 整卡涨 10%；
- * · 上抬 —— 整卡不涨，往上走 [TvPosterLift]。
- * 和 NF 版同一套档位，切换在设置页「焦点移动效果」。
- * 有播放进度的条目底部带一条进度线，方便一眼看出「这片看了一半」。
- *
- * 放进 LazyRow / LazyVerticalGrid 时，行的纵向 contentPadding 至少给 [TvRowVerticalPadding]，
- * 否则抬起或涨出来的那几像素会被容器边界裁掉一条边。
- */
-@Composable
-fun TvPosterCard(
-    item: MediaEntity,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    width: Dp = Prefs.posterSize.tvDp.dp,
-    /**
-     * 网格模式：铺满格子宽度并按 2:3 自适应高度。
-     * 固定 [width] 原本只适合首页横排，放进 LazyVerticalGrid 会溢出格子或留白，
-     * 所以网格页（分类/查看全部/搜索）统一用这个模式。
-     */
-    fillCell: Boolean = false,
-    /**
-     * 这一行/列的第一张卡：放大时把左缘补回原位。
-     *
-     * 默认绕中心放大，首卡会往左吃掉 5% 卡宽的左边距，于是它比下面各行、
-     * 各列的首卡都更靠左 —— 焦点一走到行首就「越界、对不齐」。
-     */
-    anchorStart: Boolean = false,
-    /** 已经刮过：左上角挂 TMDB 官方图标 + 评分（透明底，不衬黑块）；null = 没刮过 */
-    scrapedRating: Double? = null
-) {
-    val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
-    val density = LocalDensity.current
-    val liftPx = with(density) { TvPosterLift.toPx() }
-    val liftMode = Prefs.tvCardMotion == Prefs.CardMotion.LIFT
-    // 焦点所在的那一项不许被 Lazy 回收，否则 1.9 会直接把焦点清空（见 tvKeepFocusedItemAlive）
-    tvKeepFocusedItemAlive(focused)
-    // 不用 by 解包：放大动画每帧都变，解包等于每帧重组整张卡（含图片和文字）。
-    // 保留 State 在 graphicsLayer 的 draw phase 读，动画只重绘这一层。
-    val scale = animateFloatAsState(if (focused && !liftMode) 1.10f else 1f, tween(Motion.FAST, easing = Motion.Ease), label = "card")
-    val lift = animateFloatAsState(if (focused && liftMode) liftPx else 0f, tween(Motion.FAST, easing = Motion.Ease), label = "cardLift")
-    val cardShape = remember { Radius.Md }
-
-    val progress = if (item.durationMs > 0L) {
-        (item.positionMs.toFloat() / item.durationMs).coerceIn(0f, 1f)
-    } else 0f
-
-    Column(
-        modifier
-            .then(if (fillCell) Modifier.fillMaxWidth() else Modifier.width(width))
-            // 放大 10% 后要抬高绘制层级，否则描边会被同行后面的卡片压住
-            .zIndex(if (focused) 1f else 0f)
-            // 焦点目标（clickable）必须排在 graphicsLayer 前面：
-            // 缩放会进 Compose 的焦点矩形（rectInParent 里 layer.mapBounds），
-            // 获焦卡一大，同一行的邻卡全变成「在它下面」的合法候选，
-            // ↓ 被吃掉去横向跳格，Lazy 网格也不再补组合下一行。
-            // 缩放挪到 clickable 之后，焦点矩形回到卡片本身（与 NF 版同一顺序）。
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            // 缩放和圆角裁剪合成同一个 layer：原来 graphicsLayer + clip 是两个 layer，
-            // 滚动时每张卡都多一层离屏缓冲。
-            .graphicsLayer {
-                scaleX = scale.value
-                scaleY = scale.value
-                // 上抬档的位移和放大档同层、同样在 clickable 之后：
-                // translationY 会进焦点矩形，挂到 clickable 外面就会让同行邻卡被读成「在这张下面」，
-                // ↓ 被吃掉去横向跳格，网格也不再补组合下一行（和 NfPosterCard 同一条约束）。
-                translationY = -lift.value
-                // 首卡往右扩：绕中心放大 10% 会把左缘往左推掉 5% 卡宽，于是行首卡比
-                // 下面各行更靠左，左轴第二条就出现了。
-                // 这里用 translationX 精确补回这半个增量，而不是改 transformOrigin ——
-                // 平移是 layer 最基础的一项，任何 API 档位都确定生效；真机上上一版改
-                // transformOrigin 后仍报「超出」，换成补偿就不依赖那条属性的实现了。
-                if (anchorStart) {
-                    translationX = (scale.value - 1f) * size.width / 2f
-                }
-                shape = cardShape
-                clip = true
-            }
-            .background(AppColors.Surface)
-            .tvFocusRing(focused)
-            // 静止态勾一道亮边：近黑底上投影读不出来，卡片与页面底的分离只能靠描边+明度差。
-            // 一屏几十张卡只描边不挂投影，避免弱盒子多出一层离屏缓冲。
-            .then(
-                if (focused) Modifier
-                else Modifier.border(1.dp, Edge.Hairline, cardShape)
-            )
-            .padding(0.dp)
-    ) {
-        // 内容体单独一个组合函数、只收稳定原语参数：焦点态翻转会重组卡片外壳
-        // （zIndex / 描边都跟着变），参数没变时内容体整块被跳过，图片和文字不跟着重排。
-        // 一屏几十张卡，焦点一动就是两张卡的重组，这块不切开就白吃一遍布局。
-        TvPosterBody(
-            model = item.posterUrl.ifBlank { item.backdropUrl },
-            title = item.title,
-            metaLine = posterMetaLine(item),
-            progress = progress,
-            fillCell = fillCell,
-            width = width,
-            scrapedRating = scrapedRating
-        )
-    }
-}
-
-/**
- * 海报卡内容体：图 + 观看进度线 + 标题。
- *
- * 参数刻意只有 [String] / [Float] / [Boolean] / [Dp] 这类稳定原语，这样它是可跳过的 ——
- * 焦点态翻转只重组外壳，这块原样复用。
- */
-@Composable
-private fun TvPosterBody(
-    model: String,
-    title: String,
-    metaLine: String,
-    progress: Float,
-    fillCell: Boolean,
-    width: Dp,
-    scrapedRating: Double? = null,
-) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .then(if (fillCell) Modifier.aspectRatio(2f / 3f) else Modifier.height(width * 1.5f))
-            .background(AppColors.SurfaceHi)
-    ) {
-        // 无海报（TVBox 的 vod_pic 常是空串）或图是 404 死链时，用按片名哈希的渐变封面顶上，
-        // 不再出现一整排空灰块。
-        PosterArt(model = model, contentDescription = title) {
-            PosterFallback(
-                title = title,
-                subtitle = metaLine,
-                titleFontSize = MaterialTheme.typography.titleMedium.fontSize,
-                subtitleFontSize = MaterialTheme.typography.bodySmall.fontSize
-            )
-        }
-        // 已刮削标记：左上角深磨砂微章（蓝字 TMDB + 白色评分）
-        if (scrapedRating != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(3.dp)
-            ) {
-                ScrapedBadge(rating = scrapedRating, compact = false)
-            }
-        }
-        if (progress > 0f) {
-            Box(
-                Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .background(Color.Black.copy(alpha = 0.55f))
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth(progress)
-                        .height(4.dp)
-                        .background(AppColors.Brand)
-                )
-            }
-        }
-    }
-    Text(
-        title,
-        // 卡片标题不靠粗体压海报，靠 88% 白 + Medium 保持和正文同族
-        color = TvText.Section,
-        style = MaterialTheme.typography.bodyMedium,
-        fontWeight = FontWeight.Medium,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp)
-    )
-}
-
-/**
- * 兜底封面上那行小字：年份 + 首个分类标签。
- * TVBox 的 vod_year 常常是空或 "0000"，取不到就只剩分类，两个都没有就返回空串不占位。
- */
-private fun posterMetaLine(item: MediaEntity): String {
-    val genre = item.genres.split(TvGenreSplit).firstOrNull { it.isNotBlank() }?.trim()
-    return listOfNotNull(
-        item.year.takeIf { it > 0 }?.toString(),
-        genre?.takeIf { it.isNotBlank() }
-    ).joinToString(" · ")
-}
-
-private val TvGenreSplit = Regex("[,，、/\\s]+")
-
-/**
  * 片名艺术字（刮削来的 ClearLogo）优先、文字兜底。
  *
- * 详情页两套布局都走这里，和 NF 首页轮播同为一档 80dp：原来详情页只让 Logo 长到 48dp，
+ * 详情页与首页轮播都走这里，同为一档 80dp：原来详情页只让 Logo 长到 48dp，
  * 贴在元信息上面小得像水印，同一部片在首页和详情页是两种量级的标题。
  * 图挂不上就回落文字标题，不留一格空白。
  */
@@ -868,12 +677,6 @@ fun TvSectionTitle(
         )
         trailing?.invoke()
     }
-}
-
-/** 电视端的「更多」入口：和分区标题同排，取中档 —— 比它旁边的 20sp 标题略小，不抢字 */
-@Composable
-fun TvMoreButton(onClick: () -> Unit) {
-    TvPillButton(text = "查看全部", primary = false, size = TvButtonSize.Md, onClick = onClick)
 }
 
 /**
@@ -1004,42 +807,6 @@ fun TvMetaRow(item: MediaEntity, modifier: Modifier = Modifier) {
     }
 }
 
-/** 电视端返回按钮（左上角），可聚焦 */
-@Composable
-fun TvBackButton(onBack: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
-    Box(
-        Modifier
-            .padding(start = TvPagePadding, top = 20.dp)
-            .clip(Radius.Md)
-            .background(if (focused) Color.White else Color.Black.copy(alpha = 0.45f))
-            .then(if (focused) Modifier.border(2.dp, Color.White, Radius.Md) else Modifier)
-            .onFocusChanged { focused = it.isFocused }
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onBack
-            )
-            .padding(horizontal = 18.dp, vertical = 9.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            androidx.compose.material3.Icon(
-                imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = null,
-                tint = if (focused) Color.Black else TvText.Body,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                "返回",
-                // 返回按钮用 titleSmall + Body 级白：够用但不抢焦点
-                color = if (focused) Color.Black else TvText.Body,
-                style = MaterialTheme.typography.titleSmall
-            )
-        }
-    }
-}
-
 /**
  * 页面左右边距：电视端所有页面共用这一条左轴。
  *
@@ -1115,43 +882,19 @@ fun tvPosterColumns(): Int = tvGridColumns(
     }
 )
 
-/**
- * 网格首行上方的余量。
- *
- * 纵向滚动容器贴着容器上下边缘裁剪（ClipScrollableContainer 只在左右各放宽 30dp），
- * 首行获焦时向外扩的那一圈必须整个装进这一段，超出容器上缘就被切，
- * 看着就像被上面那条分类栏压住。经典版整卡绕中心放大 1.10，向上多出 0.05×卡高：
- * 大卡档（4 列）单元宽约 208~288dp，海报 2:3 加字幕卡高约 340~460dp，
- * 也就是向上 17~23dp；原来只留 14dp，正好差这一截。
- * 行与行之间不用管，下面总有下一行兜着，且行距本来就是 20dp。
- */
-internal val TvGridTopPadding = 24.dp
-
-/**
- * 「上抬」档的抬起量，取 NF 版同一个数（`NfComponents.PosterLift`），两套布局切换时观感才连得上。
- */
-internal val TvPosterLift = 12.dp
-
-/**
- * 海报横排的纵向 contentPadding：必须同时容得下两档移动效果，
- * 上抬抬 [TvPosterLift]=12dp，放大档整卡涨 10% 后上下各出约 9dp（卡高 ~180dp 时）。
- * 原来只给 6~7dp，两档都会被 LazyRow 上下边界削掉一条边。
- * NF 版同一处取 14dp（`NfRowVerticalPadding`），这里对齐。
- */
-internal val TvRowVerticalPadding = 14.dp
-
 /** 电视端可聚焦的小尺寸标签（题材筛选等） */
 @Composable
 fun TvFilterChip(
     text: String,
     selected: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
     /** 拿到焦点时回调一次：横向 chip 排被裁掉时，靠它把焦点项滚进可视区 */
     onFocused: (() -> Unit)? = null
 ) {
     var focused by remember { mutableStateOf(false) }
     Box(
-        Modifier
+        modifier
             // 与 TvPillButton 同档圆角：这颗原来是胶囊，和同一屏里的按钮不是一套元件
             .clip(Radius.Md)
             .background(

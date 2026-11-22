@@ -75,13 +75,11 @@ import kotlinx.coroutines.delay
 internal sealed interface TvRoute {
     data object Home : TvRoute
 
-    /** 以下三颗只在 Netflix 版布局的常驻导航条上出现（旧布局没有一级 tab） */
+    /** 常驻导航条上的 tab 路由 */
     data object Browse : TvRoute
     data object Mine : TvRoute
     data object Search : TvRoute
     data class Detail(val mediaId: Long) : TvRoute
-    data class Genre(val kind: String?, val genre: String?) : TvRoute
-    data class Category(val typeId: String, val typeName: String) : TvRoute
     data object Sources : TvRoute
     data object Settings : TvRoute
 }
@@ -100,7 +98,6 @@ internal sealed interface TvRoute {
  *   · 被藏的 tab 不留在历史里：返回键不该退进一颗顶栏上看不到的页；
  *   · 历史最多 [TAB_HISTORY_MAX] 层：tab 只有四颗，再多也退不出去，
  *     退到根就该走「双返回」退出了。
- * 旧布局不用这条，仍然是 push/出栈。
  */
 private const val TAB_HISTORY_MAX = 4
 
@@ -125,10 +122,9 @@ private fun tabStack(current: List<TvRoute>, route: TvRoute): List<TvRoute> {
  * 栈底根 tab：首页可见时是首页；首页被藏时回退到用户顺序里的第一颗可见 tab，
  * 与顶栏管理弹窗保存时的回落（NfScaffold onSaved）同一口径。
  * 冷启动、重建恢复、返回键回根都走这里 —— 藏了首页就不该再在任何路径落进首页。
- * 经典版不参与 tab 自定义，恒以首页为根；全隐藏（持久化被清等异常）兜底回首页。
+ * 全隐藏（持久化被清等异常）兜底回首页。
  */
 private fun rootRoute(): TvRoute {
-    if (Prefs.tvLayout != Prefs.TvLayout.NETFLIX) return TvRoute.Home
     val hidden = Prefs.navTabHidden()
     if (NfTab.Home.name !in hidden) return TvRoute.Home
     val first = Prefs.navTabOrder().firstOrNull { it !in hidden } ?: return TvRoute.Home
@@ -184,12 +180,11 @@ fun TvApp(vm: LibraryViewModel) {
             // 退出来的落点不能是被藏的 tab：在设置页藏首页时（设置页不参与回落）
             // 栈底那颗首页已经看不见了，出栈设置页就直接改落根 tab
             val topTab = nfTabOf(next.last())
-            navStack = if (Prefs.tvLayout == Prefs.TvLayout.NETFLIX &&
-                topTab != null && topTab.name in Prefs.navTabHidden()
-            ) tabStack(next, rootRoute()) else next
+            navStack = if (topTab != null && topTab.name in Prefs.navTabHidden())
+                tabStack(next, rootRoute()) else next
         }
     }
-    // Netflix 版导航条：四颗 tab 互切走 tabStack 规则，并带上当前布局风格（切风格要重建栈底）
+    // 导航条：四颗 tab 互切走 tabStack 规则
     val switchTab: (TvRoute) -> Unit = { route ->
         // 手动切 tab 离开搜索（哪怕此刻站在搜索页推进去的详情页上）：搜索缓存作废。
         // 只有这一条和返回键直接退出搜索页会清 —— 从详情退回搜索页不走这里，结果原样留着
@@ -228,13 +223,11 @@ fun TvApp(vm: LibraryViewModel) {
     // Netflix 口径：退出播放器落详情页，而不是回到起播那张卡。
     // 轮播 / 继续观看是直接起播的，起播前先把这一条目的详情页压进栈；已经在详情页就不重复压。
     // 首页的滚动与落点由 ReturnSpot 记着，从详情页再返回时还站在原来那张卡上。
-    // 两套布局（旧首页 / Netflix 版首页）共用这一条起播路径，行为完全一致。
     val playFromRoot: (MediaEntity) -> Unit = { item ->
         if (navStack.last() !is TvRoute.Detail) push(TvRoute.Detail(item.id))
         context.startActivity(TvPlayerActivity.intent(context, item.id))
     }
 
-    val nfLayout = Prefs.tvLayout == Prefs.TvLayout.NETFLIX
     val nfShell = rememberNfShell()
     val nfTab = nfTabOf(navStack.last())
 
@@ -259,7 +252,7 @@ fun TvApp(vm: LibraryViewModel) {
     }
 
     MaterialTheme(typography = typography) {
-    CompositionLocalProvider(LocalNfShell provides (if (nfLayout) nfShell else null)) {
+    CompositionLocalProvider(LocalNfShell provides nfShell) {
     Box(
         Modifier
             .fillMaxSize()
@@ -271,8 +264,8 @@ fun TvApp(vm: LibraryViewModel) {
                 if (event.type != KeyEventType.KeyDown || event.key != Key.Back) {
                     return@onPreviewKeyEvent false
                 }
-                val tab = if (nfLayout) nfTab else null
-                val rootTab = if (nfLayout) nfTabOf(rootRoute()) else null
+                val tab = nfTab
+                val rootTab = nfTabOf(rootRoute())
                 // 设置页是 push 进来的覆盖页（不是 tab 互切）：焦点在顶栏按返回时原样交回，
                 // 由下面的 BackHandler 出栈回到「从哪来」那一页，而不是切到根 tab。
                 if (tab == null || tab == rootTab || tab == NfTab.Settings || !nfShell.chrome.navFocused) {
@@ -293,21 +286,10 @@ fun TvApp(vm: LibraryViewModel) {
             modifier = Modifier.fillMaxSize().clipToBounds()
         ) { target ->
                 when (target) {
-                    is TvRoute.Home -> if (nfLayout) {
-                        NfHomeScreen(
-                            vm = vm,
-                            onTab = { tab -> switchTab(nfRouteOf(tab)) },
-                            onDetail = { id -> push(TvRoute.Detail(id)) },
-                            onPlay = playFromRoot,
-                            onSources = { push(TvRoute.Sources) },
-                            onSettings = { push(TvRoute.Settings) }
-                        )
-                    } else TvHomeScreen(
+                    is TvRoute.Home -> NfHomeScreen(
                         vm = vm,
-                        onSearch = { push(TvRoute.Search) },
+                        onTab = { tab -> switchTab(nfRouteOf(tab)) },
                         onDetail = { id -> push(TvRoute.Detail(id)) },
-                        onGenre = { kind, genre -> push(TvRoute.Genre(kind, genre)) },
-                        onCategory = { typeId, typeName -> push(TvRoute.Category(typeId, typeName)) },
                         onPlay = playFromRoot,
                         onSources = { push(TvRoute.Sources) },
                         onSettings = { push(TvRoute.Settings) }
@@ -329,8 +311,8 @@ fun TvApp(vm: LibraryViewModel) {
                         onSettings = { push(TvRoute.Settings) }
                     )
 
-                    is TvRoute.Search -> if (nfLayout) {
-                        // Netflix 版：搜索是导航条上的第四颗 tab，外壳和其他三页完全一样
+                    is TvRoute.Search -> {
+                        // 搜索是导航条上的第四颗 tab，外壳和其他三页完全一样
                         NfSearchScreen(
                             vm = vm,
                             state = searchState,
@@ -339,28 +321,7 @@ fun TvApp(vm: LibraryViewModel) {
                             onSources = { push(TvRoute.Sources) },
                             onSettings = { push(TvRoute.Settings) }
                         )
-                    } else TvSearchScreen(
-                        vm = vm,
-                        state = searchState,
-                        onBack = pop,
-                        onDetail = { id -> push(TvRoute.Detail(id)) }
-                    )
-
-                    is TvRoute.Genre -> TvGenreScreen(
-                        vm = vm,
-                        initialKind = target.kind,
-                        initialGenre = target.genre,
-                        onBack = pop,
-                        onDetail = { id -> push(TvRoute.Detail(id)) }
-                    )
-
-                    is TvRoute.Category -> TvCategoryScreen(
-                        vm = vm,
-                        typeId = target.typeId,
-                        typeName = target.typeName,
-                        onBack = pop,
-                        onDetail = { id -> push(TvRoute.Detail(id)) }
-                    )
+                    }
 
                     is TvRoute.Detail -> TvDetailScreen(
                         vm = vm,
@@ -384,7 +345,7 @@ fun TvApp(vm: LibraryViewModel) {
 
             // 常驻导航条挂在转场之外：切 tab 只让下面的内容滑动，顶栏不动、不重建、不闪。
             // 每颗 tab 页把自己的顶栏配置交进 shell 的槽位，这里按当前路由取一份来画。
-            if (nfLayout && nfTab != null) {
+            if (nfTab != null) {
                 NfShellNav(
                     vm = vm,
                     shell = nfShell,

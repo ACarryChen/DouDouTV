@@ -154,7 +154,7 @@ fun NfHomeScreen(
     val hero = heroItems.getOrNull(heroIndex.coerceIn(0, (heroItems.size - 1).coerceAtLeast(0)))
     // 底图 URL：有刮削横板优先用刮削的，否则源站给的 backdrop，再否则 poster
     val heroBackdropUrl = hero?.let { (heroBackdropOverrides[it.id]?.takeIf { u -> u.isNotBlank() } ?: it.backdropUrl).ifBlank { it.posterUrl } }.orEmpty()
-    // 底图下缘取样色：渐隐遮罩和下面的收色带共用一个值，见旧首页 TvHomeScreen 的同名变量
+    // 底图下缘取样色：渐隐遮罩和下面的收色带共用一个值，见 [TvHero] 的同名变量
     val heroAmbient = rememberHeroAmbient(heroBackdropUrl)
 
     val listState = ReturnSpot.listState(NfHomeKey, precompose = PrecomposeWindow.Tv)

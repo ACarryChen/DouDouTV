@@ -16,6 +16,12 @@ object CatVodResultParser {
 
     data class ClassItem(val typeId: String, val typeName: String)
 
+    /** 筛选取值（协议 value 数组项：n 显示文案、v 传给 categoryContent 的值） */
+    data class FilterValue(val n: String, val v: String)
+
+    /** 筛选组（类型/年份/地区/排序…），来自 homeContent 的 filters 字段 */
+    data class FilterGroup(val key: String, val name: String, val value: List<FilterValue>)
+
     data class PlayUrlResult(
         val url: String,
         val headers: Map<String, String>
@@ -31,6 +37,43 @@ object CatVodResultParser {
             val id = o.optString("type_id").ifBlank { o.optString("typeId") }
             val name = o.optString("type_name").ifBlank { o.optString("typeName") }
             if (id.isNotBlank() && name.isNotBlank()) out += ClassItem(id, name)
+        }
+        return out
+    }
+
+    /**
+     * 解析 filters 字段：`{ "type_id": [ {key, name, value:[{n,v}]} ] }`。
+     * 只有「全部」一项的组没有筛选意义，直接丢弃；整体缺失返回空 Map。
+     */
+    fun parseFilters(json: String): Map<String, List<FilterGroup>> {
+        val root = runCatching { JSONObject(json) }.getOrNull() ?: return emptyMap()
+        val obj = root.optJSONObject("filters") ?: return emptyMap()
+        val out = LinkedHashMap<String, List<FilterGroup>>()
+        for (tid in obj.keys()) {
+            val arr = obj.optJSONArray(tid) ?: continue
+            val groups = ArrayList<FilterGroup>(arr.length())
+            for (i in 0 until arr.length()) {
+                val g = arr.optJSONObject(i) ?: continue
+                val name = g.optString("name")
+                val varr = g.optJSONArray("value") ?: continue
+                val values = ArrayList<FilterValue>(varr.length())
+                for (j in 0 until varr.length()) {
+                    val vo = varr.optJSONObject(j) ?: continue
+                    val n = vo.optString("n")
+                    if (n.isBlank()) continue
+                    values += FilterValue(n, vo.optString("v"))
+                }
+                if (name.isNotBlank() && values.size > 1) {
+                    // 源站约定不统一：有的组首值就是「全部/不限」（v 空串），有的直接以实值开头。
+                    // 缺兜底值的补一颗「全部」，保证每组都能取消筛选、下标语义与 Emby 本地组一致（0=不筛）
+                    val first = values.first()
+                    if (first.v.isNotBlank() && first.n != "全部" && first.n != "不限") {
+                        values.add(0, FilterValue("全部", ""))
+                    }
+                    groups += FilterGroup(g.optString("key"), name, values)
+                }
+            }
+            if (groups.isNotEmpty()) out[tid] = groups
         }
         return out
     }

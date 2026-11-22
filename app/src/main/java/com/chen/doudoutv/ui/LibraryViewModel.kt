@@ -205,6 +205,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     var homeCategories by mutableStateOf<List<CatVodResultParser.ClassItem>>(emptyList())
         private set
 
+    /** 当前线路 homeContent 的筛选条件（typeId → 组列表）；空表示该线路不支持筛选 */
+    var homeFilters by mutableStateOf<Map<String, List<CatVodResultParser.FilterGroup>>>(emptyMap())
+        private set
+
     /**
      * 当前线路 homeContent 的条目，**保持源站返回顺序**。
      * 首页轮播取它的前 N 条：源站推荐顺序才有意义，库里按 addedAt 排的是同步批次顺序。
@@ -345,6 +349,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         homeSiteKey = sourceId?.let { Prefs.homeSiteKeyOf(it).takeIf { key -> key.isNotBlank() } }
         homeSitesError = null
         homeCategories = emptyList()
+        homeFilters = emptyMap()
         siteHomeItems = emptyList()
         activeCategoryId = null
         clearCategoryState()
@@ -390,6 +395,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         homeSitesError = null
         // 切线路后重置分类状态
         homeCategories = emptyList()
+        homeFilters = emptyMap()
         siteHomeItems = emptyList()
         activeCategoryId = null
         clearCategoryState()
@@ -410,6 +416,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 // 请求期间用户可能又切了线路：旧结果不能盖掉新线路的分类/轮播
                 if (homeSiteKey != s.key) return@launch
                 homeCategories = sync.result.categories
+                homeFilters = sync.result.filters
                 siteHomeItems = sync.entities.filter {
                     it.posterUrl.isNotBlank() || it.backdropUrl.isNotBlank()
                 }
@@ -503,52 +510,60 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _browseCache = mutableStateMapOf<String, BrowsePaging>()
 
-    /** 缓存按「来源 + 线路 + 分类」分键：换任何一个维度都是另一份内容 */
-    private fun browseKey(typeId: String): String? {
+    /** 筛选选择 → 稳定字符串键：同一组选择永远得到同一个 key，缓存才能命中 */
+    private fun extendSig(extend: Map<String, String>): String =
+        if (extend.isEmpty()) "" else extend.toSortedMap().entries.joinToString("|") { "${it.key}=${it.value}" }
+
+    /** 缓存按「来源 + 线路 + 分类 + 筛选」分键：换任何一个维度都是另一份内容 */
+    private fun browseKey(typeId: String, extend: Map<String, String>): String? {
         val sourceId = homeSourceId ?: return null
         val siteKey = homeSiteKey ?: return null
-        return "$sourceId|$siteKey|$typeId"
+        return "$sourceId|$siteKey|$typeId|${extendSig(extend)}"
     }
 
-    private fun browseState(typeId: String): BrowsePaging? =
-        browseKey(typeId)?.let { _browseCache[it] }
+    private fun browseState(typeId: String, extend: Map<String, String>): BrowsePaging? =
+        browseKey(typeId, extend)?.let { _browseCache[it] }
 
     /** 已加载到内存的全部条目（页面直接渲染这个，不需要自己再攒） */
-    fun browseItems(typeId: String): List<MediaEntity> = browseState(typeId)?.items.orEmpty()
+    fun browseItems(typeId: String, extend: Map<String, String> = emptyMap()): List<MediaEntity> =
+        browseState(typeId, extend)?.items.orEmpty()
 
-    fun browseItemsLoading(typeId: String): Boolean = browseState(typeId)?.loading ?: false
+    fun browseItemsLoading(typeId: String, extend: Map<String, String> = emptyMap()): Boolean =
+        browseState(typeId, extend)?.loading ?: false
 
-    fun browseItemsEnded(typeId: String): Boolean = browseState(typeId)?.ended ?: false
+    fun browseItemsEnded(typeId: String, extend: Map<String, String> = emptyMap()): Boolean =
+        browseState(typeId, extend)?.ended ?: false
 
-    fun browseItemsError(typeId: String): String? = browseState(typeId)?.error
+    fun browseItemsError(typeId: String, extend: Map<String, String> = emptyMap()): String? =
+        browseState(typeId, extend)?.error
 
     /**
      * 确保第 1 页在内存里：已经有数据就直接返回，一个请求都不发。
      * 只有「从没拉过 / 刚被刷新清掉」才会真的去请求第 1 页。
      */
-    fun ensureBrowsePage(typeId: String) {
-        val key = browseKey(typeId) ?: return
+    fun ensureBrowsePage(typeId: String, extend: Map<String, String> = emptyMap()) {
+        val key = browseKey(typeId, extend) ?: return
         val st = _browseCache.getOrPut(key) { BrowsePaging() }
         if (st.loadedPage > 0 || st.loading) return
-        loadBrowsePage(typeId, st, 1)
+        loadBrowsePage(typeId, extend, st, 1)
     }
 
     /** 触底翻页 */
-    fun loadMoreBrowsePage(typeId: String) {
-        val st = browseState(typeId) ?: return
+    fun loadMoreBrowsePage(typeId: String, extend: Map<String, String> = emptyMap()) {
+        val st = browseState(typeId, extend) ?: return
         if (st.loading || st.ended || st.error != null || st.loadedPage == 0) return
-        loadBrowsePage(typeId, st, st.loadedPage + 1)
+        loadBrowsePage(typeId, extend, st, st.loadedPage + 1)
     }
 
     /** 失败后重试：已经拿到过条目就接着往下翻，否则重新拉第 1 页 */
-    fun retryBrowsePage(typeId: String) {
-        val st = browseState(typeId) ?: return
+    fun retryBrowsePage(typeId: String, extend: Map<String, String> = emptyMap()) {
+        val st = browseState(typeId, extend) ?: return
         if (st.loading) return
         st.error = null
-        loadBrowsePage(typeId, st, if (st.loadedPage > 0) st.loadedPage + 1 else 1)
+        loadBrowsePage(typeId, extend, st, if (st.loadedPage > 0) st.loadedPage + 1 else 1)
     }
 
-    private fun loadBrowsePage(typeId: String, st: BrowsePaging, page: Int) {
+    private fun loadBrowsePage(typeId: String, extend: Map<String, String>, st: BrowsePaging, page: Int) {
         val sourceId = homeSourceId ?: return
         val site = activeSite ?: run {
             // 线路还没选中（冷启动直接进这一页）：和改造前一样按「没有内容」收口，
@@ -564,7 +579,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 st.loading = false
                 return@launch
             }
-            val more = runCatching { repo.tvBoxCategory(src, site, typeId, page) }
+            val more = runCatching { repo.tvBoxCategory(src, site, typeId, page, extend) }
                 .getOrElse {
                     st.error = it.message ?: "网络或接口异常"
                     st.loading = false
@@ -1214,6 +1229,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     // 分类行内容不落库，刷新时要连带重拉：先清缓存再自增轮次触发 UI 重新 ensure
                     clearCategoryState()
                     homeCategories = sync.result.categories
+                    homeFilters = sync.result.filters
                     siteHomeItems = sync.entities.filter {
                         it.posterUrl.isNotBlank() || it.backdropUrl.isNotBlank()
                     }

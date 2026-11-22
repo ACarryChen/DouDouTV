@@ -14,7 +14,6 @@ object Prefs {
     private const val KEY_TMDB_READ_TOKEN = "tmdb_read_token"
     private const val KEY_TMDB_ENABLED = "tmdb_enabled"
     private const val KEY_POSTER_SIZE = "poster_size"
-    private const val KEY_TV_LAYOUT = "tv_layout_style"
     private const val KEY_TV_CARD_MOTION = "tv_card_motion"
     private const val KEY_TONE_PREFIX = "detail_tone_"
     private const val KEY_HOME_SOURCE_ID = "home_source_id"
@@ -47,28 +46,12 @@ object Prefs {
         }
 
     /**
-     * 电视端布局风格：已收敛成 NF 一套，经典版入口下线。
-     *
-     * [TvLayout.CLASSIC]（ui/tv）与 [TvLayout.NETFLIX]（ui/tv/nf）两套页面都还在，
-     * 存储键和枚举也原样保留 —— 老用户存的 CLASSIC 不删不改，只是读出来一律按 NF 走，
-     * 于是圆角档、导航条、首页形态不会再出现「存的是经典、界面是 NF」的混装。
-     */
-    var tvLayout: TvLayout
-        get() = TvLayout.NETFLIX
-        set(value) {
-            sp.edit().putString(KEY_TV_LAYOUT, value.name).apply()
-        }
-
-    /** 布局风格的历史取值；界面入口已下线，只留作存储兼容 */
-    enum class TvLayout { CLASSIC, NETFLIX }
-
-    /**
-     * TV 端海报卡的焦点移动档，两套布局共用（nf 版在 NfPosterCard，经典版在 TvPosterCard）。
+     * TV 端海报卡的焦点移动档（NF 版在 NfPosterCard）。
      *
      * 两档都必须留在行内纵向余量以内，超出就会被 Lazy 容器边界裁掉一条边：
-     * nf 版取 `NfRowVerticalPadding` = 14dp，经典版横排取 `TvRowVerticalPadding` = 14dp
+     * nf 版取 `NfRowVerticalPadding` = 14dp
      * （原来只有 6~7dp，放大档那 10% 也一直是被切掉一点的）：
-     * · [ART_ZOOM] nf 版图片从中心涨 5%（上下各 6~17dp，随卡宽），经典版整卡涨 10%；
+     * · [ART_ZOOM] nf 版图片从中心涨 5%（上下各 6~17dp，随卡宽）；
      * · [LIFT] 整卡不涨、只上抬 12dp。
      */
     var tvCardMotion: CardMotion
