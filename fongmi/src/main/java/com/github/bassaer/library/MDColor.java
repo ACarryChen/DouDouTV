@@ -1,0 +1,48 @@
+package com.github.bassaer.library;
+
+// FongMi 的 ColorGenerator 只取 MDColor 常量做占位图配色，为它引入整个
+// chatmessageview 库不值：这里按 bassaer MDColor 的标准 Material 色板给同值常量。
+public final class MDColor {
+
+    private MDColor() {}
+
+    public static final int RED_400 = 0xFFEF5350;
+    public static final int PINK_400 = 0xFFEC407A;
+    public static final int PURPLE_400 = 0xFFAB47BC;
+    public static final int DEEP_PURPLE_400 = 0xFF7E57C2;
+    public static final int INDIGO_400 = 0xFF5C6BC0;
+    public static final int BLUE_400 = 0xFF42A5F5;
+    public static final int LIGHT_BLUE_400 = 0xFF29B6F6;
+    public static final int CYAN_400 = 0xFF26C6DA;
+    public static final int TEAL_400 = 0xFF26A69A;
+    public static final int GREEN_400 = 0xFF66BB6A;
+    public static final int LIGHT_GREEN_400 = 0xFF9CCC65;
+    public static final int LIME_400 = 0xFFD4E157;
+    public static final int YELLOW_400 = 0xFFFFEE58;
+    public static final int AMBER_400 = 0xFFFFCA28;
+    public static final int ORANGE_400 = 0xFFFFA726;
+    public static final int DEEP_ORANGE_400 = 0xFFFF7043;
+    public static final int BROWN_400 = 0xFF8D6E63;
+    public static final int GREY_400 = 0xFFBDBDBD;
+    public static final int BLUE_GREY_400 = 0xFF78909C;
+
+    public static final int RED_700 = 0xFFD32F2F;
+    public static final int PINK_700 = 0xFFC2185B;
+    public static final int PURPLE_700 = 0xFF7B1FA2;
+    public static final int DEEP_PURPLE_700 = 0xFF512DA8;
+    public static final int INDIGO_700 = 0xFF303F9F;
+    public static final int BLUE_700 = 0xFF1976D2;
+    public static final int LIGHT_BLUE_700 = 0xFF0288D1;
+    public static final int CYAN_700 = 0xFF0097A7;
+    public static final int TEAL_700 = 0xFF00796B;
+    public static final int GREEN_700 = 0xFF388E3C;
+    public static final int LIGHT_GREEN_700 = 0xFF689F38;
+    public static final int LIME_700 = 0xFFAFB42B;
+    public static final int YELLOW_700 = 0xFFFBC02D;
+    public static final int AMBER_700 = 0xFFFFA000;
+    public static final int ORANGE_700 = 0xFFF57C00;
+    public static final int DEEP_ORANGE_700 = 0xFFE64A19;
+    public static final int BROWN_700 = 0xFF5D4037;
+    public static final int GREY_700 = 0xFF616161;
+    public static final int BLUE_GREY_700 = 0xFF455A64;
+}

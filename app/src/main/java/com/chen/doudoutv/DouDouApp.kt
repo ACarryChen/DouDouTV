@@ -1,6 +1,5 @@
 package com.chen.doudoutv
 
-import android.app.Application
 import android.util.Log
 import coil.ImageLoader
 import coil.ImageLoaderFactory
@@ -11,14 +10,21 @@ import com.chen.doudoutv.data.image.PicHeaderInterceptor
 import com.chen.doudoutv.data.scrape.ScrapeStrategy
 import com.chen.doudoutv.ui.theme.isTelevision
 
-class DouDouTvApp : Application(), ImageLoaderFactory {
+class DouDouTvApp : com.fongmi.android.tv.App(), ImageLoaderFactory {
 
     val db: AppDatabase by lazy { AppDatabase.get(this) }
 
     override fun onCreate() {
         super.onCreate()
+        // super.onCreate：Notify 建通知渠道 + 注册 Activity 生命周期回调（App.activity() 追踪）。
+        // 继承 FongMi App 是初始化其运行时的最短路径：instance / 主线程 Handler / catvod Init
+        // 都在它的构造与 attachBaseContext 里就位，PlayerManager 全家桶直接可用。
         instance = this
         Prefs.init(this)
+        // FongMi 本地在配置解析时启动 Nano 代理（9978 起）。爬虫返回的播放地址里
+        // 会带自己的代理转发（如韩小圈 http://127.0.0.1:<port>/proxy?do=hxq&...），
+        // 端口取 Proxy.getPort()；Server 不启动时恒为 -1，喂给播放器就是 Malformed URL。
+        com.fongmi.android.tv.server.Server.get().start()
         // 网盘直链的磁盘缓存只记一个 applicationContext，真正的 SimpleCache 到首次取数才建
         VideoCache.init(this)
 

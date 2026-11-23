@@ -60,6 +60,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
@@ -67,6 +69,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.danmaku.DanmakuConfig
+import android.net.Uri
 import com.chen.doudoutv.R
 import com.chen.doudoutv.core.Prefs
 import com.chen.doudoutv.data.MediaRepository
@@ -75,6 +79,9 @@ import com.chen.doudoutv.data.model.MediaEntity
 import com.chen.doudoutv.data.model.MediaKind
 import com.chen.doudoutv.data.tvbox.TvBoxClient
 import com.chen.doudoutv.player.PlayerFactory
+import com.fongmi.android.tv.Constant
+import com.fongmi.android.tv.player.PlayerManager
+import com.fongmi.android.tv.player.media.PlaySpec
 import com.chen.doudoutv.ui.components.AppButton
 import com.chen.doudoutv.ui.components.AppButtonVariant
 import com.chen.doudoutv.player.DownloadMeter
@@ -111,6 +118,18 @@ class PhonePlayerActivity : ComponentActivity() {
 
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
+
+    /**
+     * FongMi 播放器舱内核（Prefs.playerKernel = fongmi 档）的持有者。
+     * PlayerManager 全程一份，切集/换源直接 start() 换 MediaItem；
+     * [player] 在 fongmi 档下指向 manager 的底层 ExoPlayer，全部既有 UI 交互
+     * （seek/倍速/轨道/进度保存）零改动复用。
+     */
+    private var manager: PlayerManager? = null
+
+    /** 内核档位在进入本页时定格：设置页改了要重进播放器才生效 */
+    private val useFongmiKernel = Prefs.playerKernel == Prefs.KERNEL_FONGMI
+
     /** 基础请求头（如 Emby 的 X-Emby-Authorization），同一次播放会话内不变 */
     private var baseHeaders: Map<String, String> = emptyMap()
     /** 当前播放器实际使用的 HTTP 请求头（baseHeaders + 云盘解析出的 headers），切换源时需重建播放器 */
@@ -625,6 +644,119 @@ class PhonePlayerActivity : ComponentActivity() {
             item.title
         }
 
+    // ---------- FongMi 内核桥 ----------
+
+    /**
+     * FongMi 内核起播（fongmi 档）。
+     *
+     * ①b 纯 FongMi 栈：数据源/extractor/缓冲/错误恢复全用它的默认链
+     * （OkHttp.player + 只读 SimpleCache + DefaultExtractorsFactory + 15s 起播超时），
+     * 我们的磁盘缓存、防和谐归一化、字节计量、LoadControl 调优都不在环上——
+     * 这一档是效果对照观测期，翻车可设置页切回 classic。
+     */
+    private fun startWithFongmiKernel(item: MediaEntity, url: String, headers: Map<String, String>, startPosition: Long) {
+        val m = obtainManager()
+        val spec = PlaySpec.from(playKey(item), url, headers, MediaMetadata.Builder().setTitle(displayTitle(item)).build()).checkUa()
+        // 网盘直链不带 .iso 后缀，media3 靠「URL 后缀或 MIME=video/iso」二选一识别蓝光 ISO；
+        // 不标的话会掉进普通 extractor 管线报 UnrecognizedInputFormatException。
+        // 文件名可能藏在分集名（网盘分集 title=文件名）或直链 query（filename=xxx.iso）里
+        val looksIso = item.title.contains(".iso", ignoreCase = true) || url.contains(".iso", ignoreCase = true)
+        Log.i("PhonePlayer", "fongmi start: title=${item.title} playSource=${item.playSource} iso=$looksIso url=${url.take(150)}")
+        if (looksIso) spec.setFormat(MimeTypes.VIDEO_ISO)
+        m.start(spec, Constant.TIMEOUT_PLAY, if (startPosition > 3_000L) startPosition else 0L)
+        m.setSpeed(speedState)
+    }
+
+    /** FongMi 内核的轨道记忆键：集级稳定，跨会话可复用 */
+    private fun playKey(item: MediaEntity): String = "phone/${item.sourceId}/${item.id}"
+
+    private fun obtainManager(): PlayerManager {
+        manager?.let { return it }
+        val m = PlayerManager(FongMiCallback())
+        manager = m
+        val p = m.player
+        player = p as ExoPlayer
+        playerView?.player = p
+        playerView?.controllerAutoShow = false
+        // PlayerManager 自带装载超时与错误恢复（decode/IO 自动重试），这里只挂它
+        // 不覆盖的三件事：播完连播、首帧撤黑幕、播放按钮状态
+        p.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED && endedEpisodeId != (current?.id ?: 0L)) {
+                    endedEpisodeId = current?.id ?: 0L
+                    playNext()
+                }
+                if (state == Player.STATE_READY) {
+                    armNextPrefetch()
+                    clearLoadingWhenFirstFrameLate(p)
+                }
+                watchBuffering()
+            }
+
+            override fun onRenderedFirstFrame() {
+                setLoading(false)
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                updatePlayPauseLabel()
+            }
+        })
+        return m
+    }
+
+    /**
+     * PlayerManager.Callback 桥：把内核事件映射到本页既有状态。
+     * 弹幕四个回调给空体——没有弹幕源，二期再接。
+     */
+    private inner class FongMiCallback : PlayerManager.Callback {
+        override fun onPrepare() {
+        }
+
+        override fun onTracksChanged() {
+            player?.currentTracks?.let { rememberFormat(it) }
+        }
+
+        override fun onDecodeChanged() {
+        }
+
+        override fun onMediaOptionsChanged() {
+        }
+
+        override fun onError(msg: String) {
+            setLoading(false)
+            Log.e("PhonePlayer", "kernel error: $msg")
+            val p = player
+            // 片尾的坏数据不当故障报：按看完落盘，让连播接手（与 classic 路径同口径）
+            if (p != null && isTailSourceError(p)) {
+                if (endedEpisodeId != (current?.id ?: 0L)) {
+                    endedEpisodeId = current?.id ?: 0L
+                    saveProgress(force = true)
+                    playNext()
+                }
+                return
+            }
+            toastState = msg
+        }
+
+        override fun onPlayerRebuild(newPlayer: Player) {
+            playerView?.player = newPlayer
+        }
+
+        // Java 侧无 @NonNull：没接弹幕时 uri 传 null（notifyDanmakuSourceChanged ← setMediaItem），
+        // 参数必须可空，否则 Kotlin 非空检查直接 NPE 闪退
+        override fun onDanmakuSourceChanged(uri: Uri?) {
+        }
+
+        override fun onDanmakuConfigChanged(config: DanmakuConfig?) {
+        }
+
+        override fun onDanmakuEnabledChanged(enabled: Boolean) {
+        }
+
+        override fun onDanmakuSent(text: String?) {
+        }
+    }
+
     private fun startPlayback(
         item: MediaEntity,
         startPosition: Long = item.positionMs,
@@ -657,15 +789,21 @@ class PhonePlayerActivity : ComponentActivity() {
             introSkips = resolved.skips
             updateIntroButton()
 
-            // 必须先释放旧 player 再创建新的 —— SimpleCache 单例同一时刻只能被一个 player 引用
-            PlayerFactory.release(player)
-            player = null
-
             // baseHeaders 是本次播放会话的固定头（如 Emby 鉴权），后续切集时复用
             baseHeaders = headers
             // 合并调用方传入的 headers（如 Emby 鉴权）与云盘解析出的 headers（如 Cookie）
             val mergedHeaders = headers + resolved.headers
             currentPlayHeaders = mergedHeaders
+
+            // fongmi 档：PlayerManager 单实例全程复用，headers 走 MediaItem 级传递
+            if (useFongmiKernel) {
+                startWithFongmiKernel(item, resolved.url, mergedHeaders, startPosition)
+                return@launch
+            }
+
+            // 必须先释放旧 player 再创建新的 —— SimpleCache 单例同一时刻只能被一个 player 引用
+            PlayerFactory.release(player)
+            player = null
 
             val p = PlayerFactory.createPhonePlayer(this@PhonePlayerActivity, mergedHeaders)
             player = p
@@ -955,6 +1093,12 @@ class PhonePlayerActivity : ComponentActivity() {
             // 对 Emby 的 http 直链：resolved.headers 为空 → mergedHeaders = baseHeaders（不变，不重建）。
             // 对云盘切源：resolved.headers 变化 → mergedHeaders 变化 → 重建播放器带新 Cookie。
             val mergedHeaders = baseHeaders + resolved.headers
+            // fongmi 档：headers 走 MediaItem 级传递，无需重建
+            if (useFongmiKernel) {
+                currentPlayHeaders = mergedHeaders
+                startWithFongmiKernel(episode, resolved.url, mergedHeaders, episode.positionMs)
+                return@launch
+            }
             val needRebuild = mergedHeaders != currentPlayHeaders
             val p = if (needRebuild) {
                 // 切换了播放源（Cookie 等 headers 变化），必须重建播放器
@@ -1483,7 +1627,14 @@ class PhonePlayerActivity : ComponentActivity() {
     override fun onDestroy() {
         saveProgress(force = true)
         playerView?.player = null
-        PlayerFactory.release(player)
+        if (useFongmiKernel) {
+            // manager 拥有底层 ExoPlayer 的生命周期，统一走它的 release；
+            // player 引用随之一并清掉，避免误走 PlayerFactory.release 双重释放
+            manager?.release()
+            manager = null
+        } else {
+            PlayerFactory.release(player)
+        }
         player = null
         super.onDestroy()
     }

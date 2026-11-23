@@ -27,3 +27,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "DouDouTV"
 include(":app")
+include(":fongmi")
+include(":catvod")

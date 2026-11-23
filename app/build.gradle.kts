@@ -16,8 +16,9 @@ ksp {
 
 android {
     namespace = "com.chen.doudoutv"
-    // Compose 1.9 的 foundation 要求 compileSdk 35（aar-metadata 里 minCompileSdk=35）
-    compileSdk = 35
+    // FongMi 私改版 media3（release-1.11.0-fongmi）的 aar-metadata 要求 compileSdk 36；
+    // 36 ≥ Compose 1.9 foundation 要求的 35，两者兼容
+    compileSdk = 36
 
     // 固定签名（照 FongMi/影视仓的做法）：keystore 随仓库分发。
     //
@@ -41,13 +42,16 @@ android {
 
     defaultConfig {
         applicationId = "com.chen.doudoutv"
-        minSdk = 21
+        // media3 1.11 起 gradle 侧要求 minSdk 24（随 FongMi 对齐，P0-① 已批）
+        minSdk = 24
         targetSdk = 28
         versionCode = 4
         versionName = "1.0.3"
 
         vectorDrawables { useSupportLibrary = true }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // 本机与目标设备都是 arm，砍掉 x86 系
+        ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
     }
 
     buildTypes {
@@ -75,7 +79,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-        isCoreLibraryDesugaringEnabled = false
+        // :fongmi 开了 desugaring，aar-metadata 要求下游也开启
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -97,7 +102,37 @@ android {
 }
 
 dependencies {
-    val media3 = "1.4.1"
+    // desugaring（:fongmi 要求下游开启）：hook/thunder aar 的 aar-metadata 要 nio flavor
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
+
+    // FongMi 播放器舱（PlayerManager/ExoPlayerEngine）：源码模块直接依赖。
+    // 不能用 aar 落仓 —— AGP 禁止本地 aar 依赖参与 bundleReleaseAar，项目依赖是唯一通路
+    implementation(project(":fongmi"))
+
+    // FongMi 私改版 media3（源码 E:/tmp/ref/FongMi-media，分支 release-1.11.0-fongmi，
+    // 与 TV 锚点 773cae11b 配对）。官方 maven 没有这批改动，只能本地源码编 aar 进仓。
+    // aar 在根级 libs/（与 :fongmi 模块共用）；aar 之间没有传递依赖信息，
+    // exoplayer 的兄弟模块（container/decoder/common/datasource/extractor/database）
+    // 必须逐个显式声明；guava 是 common 的传递依赖。
+    implementation(rootProject.files(
+        "libs/lib-common-release.aar",
+        "libs/lib-database-release.aar",
+        "libs/lib-container-release.aar",
+        "libs/lib-decoder-release.aar",
+        "libs/lib-datasource-release.aar",
+        "libs/lib-datasource-okhttp-release.aar",
+        "libs/lib-exoplayer-release.aar",
+        "libs/lib-exoplayer-dash-release.aar",
+        "libs/lib-exoplayer-hls-release.aar",
+        "libs/lib-extractor-release.aar",
+        "libs/lib-effect-release.aar",
+        "libs/lib-session-release.aar",
+        "libs/lib-ui-release.aar",
+        "libs/lib-ui-danmaku-release.jar"
+    ))
+    implementation("com.google.guava:guava:33.4.0-android")
+    // lib-session 的通知模板布局（notification_template_lines_media 等）定义在 legacy androidx.media 里
+    implementation("androidx.media:media:1.7.0")
 
     // TVBox Spider Guard 内部依赖（饭太硬/花卷/玩偶/观影等线路的加密壳都用了 Gson 做 JSON 解析）
     implementation("com.google.code.gson:gson:2.10.1")
@@ -114,15 +149,6 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-
-    // 播放内核
-    implementation("androidx.media3:media3-exoplayer:$media3")
-    implementation("androidx.media3:media3-ui:$media3")
-    implementation("androidx.media3:media3-exoplayer-hls:$media3")
-    implementation("androidx.media3:media3-exoplayer-dash:$media3")
-    implementation("androidx.media3:media3-datasource-okhttp:$media3")
-    implementation("androidx.media3:media3-datasource:$media3")
-    implementation("androidx.media3:media3-database:$media3")
 
     // 网络 / JSON
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

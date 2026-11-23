@@ -25,6 +25,7 @@ object Prefs {
     private const val KEY_SEARCH_HISTORY = "search_history_list"
     private const val KEY_PINYIN_VERSION = "pinyin_version"
     private const val KEY_VIDEO_CACHE_TIER = "video_cache_tier"
+    private const val KEY_PLAYER_KERNEL = "player_kernel"
     private const val KEY_THEME_ID = "theme_id"
     private const val KEY_EMBY_DEVICE_ID = "emby_device_id"
     private const val KEY_SKIP_INTRO_ENABLED = "skip_intro_enabled"
@@ -104,6 +105,19 @@ object Prefs {
         GB2("2 GB", 2048L * 1024 * 1024),
         GB4("4 GB", 4096L * 1024 * 1024)
     }
+
+    /**
+     * 播放内核：fongmi = FongMi 播放器舱（PlayerManager），classic = 原有 ExoPlayer 直连。
+     * 默认 fongmi；翻车时设置页一键切回 classic。改动在下次进播放器时生效。
+     */
+    var playerKernel: String
+        get() = sp.getString(KEY_PLAYER_KERNEL, KERNEL_FONGMI).orEmpty()
+        set(value) {
+            sp.edit().putString(KEY_PLAYER_KERNEL, value).apply()
+        }
+
+    const val KERNEL_FONGMI = "fongmi"
+    const val KERNEL_CLASSIC = "classic"
 
     private lateinit var sp: SharedPreferences
 
