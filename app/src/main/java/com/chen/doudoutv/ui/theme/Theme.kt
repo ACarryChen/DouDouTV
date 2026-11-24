@@ -7,21 +7,44 @@ import android.content.res.Configuration
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+
+import com.chen.doudoutv.core.Prefs
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 object AppColors {
-    /**
-     * 详情页取色的静态兜底 —— 固定中性灰，**不跟主题**。
-     *
-     * 详情页背景由海报取色决定，取不到色时才落到这里；它不接主题是有意的：
-     * 换主题色不该把某一部片的详情页底色一起换掉。所以默认色板换成 Netflix 红之后
-     * 这两个值仍留灰，不跟着变。
-     */
+    // ---------- 三档颜色模式（暗 / 浅 / 跟随系统） ----------
+    //
+    // themeMode 是快照状态，设置页是唯一写点（同时落 Prefs）；所有中性色令牌的 getter 都读它，
+    // 改档即全局重组 —— 调用点全部保持 `AppColors.Xxx` 原样，不引入 CompositionLocal 大迁移。
+    // 手机端是「浅色 / 暗色 / 跟随系统」三档；TV 端设置里只给「浅色 / 暗色」两档，
+    // 但底层共用同一个 Prefs 键（手机存的「跟随系统」落到 TV 上表现为跟随系统，属可接受的边角）。
+    // darkUi 只由播放器 Activity 生命周期写（进入压 true、返回时 Main.onResume 写回 false）：
+    // 播放器界面一律恒暗，浏览界面（手机 / TV / 强制 TV）跟随颜色模式。
+    // systemDark 在 DouDouTvTheme 里随 LocalConfiguration 同步（manifest 对 uiMode 做了
+    // configChanges，系统切换深浅色不会重建 Activity，只能靠组合内跟着配置走）。
+    var themeMode by mutableStateOf(Prefs.ThemeMode.LIGHT)
+    var darkUi by mutableStateOf(true)
+    var systemDark by mutableStateOf(true)
+
+    fun lightOn(): Boolean = !darkUi && when (themeMode) {
+        Prefs.ThemeMode.LIGHT -> true
+        Prefs.ThemeMode.DARK -> false
+        Prefs.ThemeMode.SYSTEM -> !systemDark
+    }
+
+    /** 详情页取色的静态兜底 —— 固定中性灰，**不跟主题**。 */
     val BrandBase = Color(0xFF8E8E93)
     val BrandSoftBase = Color(0xFFAEAEB4)
 
@@ -29,47 +52,39 @@ object AppColors {
     val Brand: Color
         @Composable get() = LocalPalette.current.brand
 
-    /** 品牌浅色：用于品牌色上的文字与弱强调 */
+    /** 品牌浅色：用于品牌色上的文字与弱强调；浅色模式下直接用品牌色本体保对比度 */
     val BrandSoft: Color
-        @Composable get() = LocalPalette.current.brandSoft
+        @Composable get() = if (lightOn()) LocalPalette.current.brand else LocalPalette.current.brandSoft
 
     /**
-     * 材质四层里的 L0 —— 页面底。
-     *
-     * 这一整套中性色原来带蓝调（B 通道比 R 高 6~23），铺开就是「蓝黑」：
-     * 蓝底配任何品牌色相都像两套系统焊在一起。
-     * 2026-11-10 起四层全部换成纯中性灰，**明度一档没动** ——
-     * 对比度基线原样保留（正文在页面底上仍是 18.2:1），变的只是色相：
-     * 从「冷蓝」拉回「无色相」。
-     * 引用这个常量的地方（背景层、大图渐隐、详情页 scrim）会一起跟上，不会出现两套底色。
+     * 材质四层 L0~L3 与文字三级。暗色为纯中性灰（2026-11-10 去蓝调，明度未动）；
+     * 浅色为 Apple TV 口径：#F5F5F7 底 + 白卡 + 灰字，hairline 反转为黑 8%。
      */
-    val Bg = Color(0xFF080808)
+    val Bg: Color get() = if (lightOn()) Color(0xFFF5F5F7) else Color(0xFF080808)
 
     /** L1 —— 分区容器、分组面板、图片占位 */
-    val Surface = Color(0xFF131313)
+    val Surface: Color get() = if (lightOn()) Color(0xFFFFFFFF) else Color(0xFF131313)
 
     /** L2 —— 卡片、列表行、输入控件 */
-    val SurfaceHi = Color(0xFF1F1F1F)
+    val SurfaceHi: Color get() = if (lightOn()) Color(0xFFE9E9EE) else Color(0xFF1F1F1F)
 
-    /** L3 —— 焦点/抬起态的填充，十英尺下靠这一层区分「选中」和「没选中」 */
-    val SurfaceRaise = Color(0xFF2C2C2C)
+    /** L3 —— 焦点/抬起态的填充 */
+    val SurfaceRaise: Color get() = if (lightOn()) Color(0xFFD9D9DF) else Color(0xFF2C2C2C)
 
-    /** 文字三级：白 → 灰。同样去蓝调，明度未动 */
-    val TextPrimary = Color(0xFFF4F4F4)
-    val TextSecondary = Color(0xFFA3A3A3)
-    val TextTertiary = Color(0xFF747474)
+    /** 文字三级：白 → 灰（暗色）/ 近黑 → 灰（浅色） */
+    val TextPrimary: Color get() = if (lightOn()) Color(0xFF1C1C1E) else Color(0xFFF4F4F4)
+    val TextSecondary: Color get() = if (lightOn()) Color(0xFF6E6E73) else Color(0xFFA3A3A3)
+    val TextTertiary: Color get() = if (lightOn()) Color(0xFF98989D) else Color(0xFF747474)
     val Rating = Color(0xFFFFC107)
 
+    /** 磨砂玻璃底（底栏抓不到模糊时的兜底色） */
+    val GlassBase: Color get() = if (lightOn()) Color(0xFFF2F2F6) else Color(0xFF161618)
+
+    /** 磨砂玻璃的暗色压层：浅色下换成透明白（防止 copy(alpha) 把 RGB 拖向纯黑） */
+    val GlassShade: Color get() = if (lightOn()) Color(0x00FFFFFF) else Color(0xFF0B0B0D)
+
     /**
-     * 语义色三档：危险 / 警告 / 正常。
-     *
-     * 这三个颜色原来在各个页面里各写一遍字面量（危险红 8 处、警告橙 6 处），
-     * 改一个语义要翻六七个文件，而且新页面很容易漏写又造一个近似值。
-     * 这里收口成令牌：状态类颜色是「语义」，不属于用户可换的品牌色板，
-     * 所以不跟随主题色变，也就不进 [ThemePalette]。
-     *
-     * 取值沿用页面上已经在用的那三档，改成令牌不改观感：
-     * 危险红在 Bg 上对比度 5.12:1，警告橙 8.66:1，正常绿在 Bg 上约 10:1，都过 AA。
+     * 语义色三档：危险 / 警告 / 正常。状态色是语义，不随颜色模式换。
      */
     val Danger = Color(0xFFE5484D)
 
@@ -80,51 +95,78 @@ object AppColors {
     val Ok = Color(0xFF34C759)
 
     /** 已停用这类中性弱状态（原先散落在各处的灰色字面量） */
-    val Disabled = Color(0xFF747474)
+    val Disabled: Color get() = if (lightOn()) Color(0xFF98989D) else Color(0xFF747474)
 
     /**
-     * 详情页顶栏 scrim 的底色。
-     *
-     * 这里要的是「和屏幕底色完全一致」，不是一个会随主题漂移的语义品牌色，
-     * 所以详情页直接用它、绕开 MaterialTheme；详情页自己有一套从海报取色的配色体系。
-     * 和 [Bg] 取同一个值 —— 底色调了这里必须跟着调，否则接缝重新露出来。
+     * 焦点态指示色：焦点环 / 焦点描边。TV 的焦点语言是「反白高亮」，
+     * 浅色模式下白环落在亮底上读不出来，翻成近黑。
      */
-    val ScrimTop = Bg
+    val Focus: Color get() = if (lightOn()) Color(0xFF1C1C1E) else Color.White
+
+    /**
+     * 详情页顶栏 scrim 的底色：要「和屏幕底色完全一致」，跟 [Bg] 同源。
+     */
+    val ScrimTop: Color get() = Bg
 }
 
 /**
- * 电视端文字色阶 —— 参考 Netflix：整屏只用「白 → 灰」一条轴拉开层级，
+ * 电视端文字色阶 —— 参考 Netflix：整屏只用「白 → 灯」一条轴拉开层级，
  * 正文、元信息、辅助提示靠不透明度分级，不引入第二种色相；
  * 品牌色只留给按钮和进度条这类「可操作 / 进行中」的元素。
  *
  * 数值取 Netflix TV 的量级：正文约 70%，元信息约 60%，辅助约 45%。
- * 统一走这里的档位，不要在页面里再手写 Color.White.copy(alpha = …)。
+ * 暗色为白系、浅色翻为近黑系（同色系同透明度），全部做成 getter 跟随颜色模式：
+ * TV 端 144 处调用点零改动，切档即全局重组。
  */
 object TvText {
+    private val baseDark get() = if (AppColors.lightOn()) Color(0xFF1C1C1E) else Color.White
+
     /** Hero 片名、按钮文字 */
-    val Title = Color(0xFFFFFFFF)
+    val Title get() = baseDark
 
     /** 分区标题、卡片标题 */
-    val Section = Color(0xE0FFFFFF)
+    val Section get() = baseDark.copy(alpha = 0.88f)
 
     /** 简介正文、次按钮文字、返回按钮 */
-    val Body = Color(0xB3FFFFFF)
+    val Body get() = baseDark.copy(alpha = 0.70f)
 
     /** 元信息、空状态的补充说明 */
-    val Meta = Color(0x99FFFFFF)
+    val Meta get() = baseDark.copy(alpha = 0.60f)
 
     /**
      * 计数、时间戳这类可有可无的信息。
      *
-     * 不透明度从 0x73 提到 0x80（50% 白）。0x73 在页面底 Bg 上是 4.50:1，
-     * 但落在卡片那两层（SurfaceHi 4.39 / SurfaceRaise 4.09）达不到 WCAG AA 的 4.5:1；
-     * 0x80 在这四个表面上分别是 5.35 / 5.33 / 5.11 / 4.70，全部过线，
-     * 且和 Meta(0x99) 仍差出一档，层级不会塌掉。
+     * 不透明度 0x80（50%）。暗色下落在四个表面分别是 5.35 / 5.33 / 5.11 / 4.70，
+     * 全部过 WCAG AA 的 4.5:1，且和 Meta(60%) 仍差出一档，层级不会塌掉。
      */
-    val Muted = Color(0x80FFFFFF)
+    val Muted get() = baseDark.copy(alpha = 0.50f)
 
     /** 分隔点、极弱提示 */
+    val Hairline get() = baseDark.copy(alpha = 0.25f)
+}
+
+/**
+ * 恒暗页标记：TV 详情页这类海报基调页永远暗底（与手机端详情页同一策略），
+ * 页上共享组件（TvPillButton / TvIconButton / TvSectionTitle / TvMetaRow / TvEmptyState）
+ * 按暗页口径取色，不随颜色模式翻转。页面根节点 provides true，模式色弹窗局部 provides false 豁免。
+ */
+val LocalTvPageDark = staticCompositionLocalOf { false }
+
+/**
+ * 恒暗页（TV 详情页）的钉死取色：页面永远暗底，不随颜色模式翻转。
+ * 数值沿用 TV 详情页原本的 Page* 白系常量与暗色模式的表面值，保证暗色模式观感零变化。
+ */
+object TvPageText {
+    val Title = Color.White
+    val Section = Color(0xE0FFFFFF)
+    val Body = Color(0xB3FFFFFF)
+    val Meta = Color(0x99FFFFFF)
+    val Muted = Color(0x80FFFFFF)
     val Hairline = Color(0x40FFFFFF)
+
+    /** 页上组件的暗底（对齐暗色模式 Surface / SurfaceHi） */
+    val Surface = Color(0xFF131313)
+    val SurfaceHi = Color(0xFF1F1F1F)
 }
 
 /**
@@ -134,7 +176,18 @@ object TvText {
  * 所以改成按色板现算。传进来的是色板而不是直接读状态，让「谁订阅了主题」这件事
  * 只发生在 DouDouTvTheme 那一处，下面整棵树都靠 CompositionLocal 各自订阅。
  */
-private fun schemeFor(palette: ThemePalette) = darkColorScheme(
+private fun schemeFor(palette: ThemePalette) = if (AppColors.lightOn()) lightColorScheme(
+    primary = palette.brand,
+    onPrimary = Color.White,
+    primaryContainer = palette.brandSoft,
+    secondary = palette.brand,
+    background = AppColors.Bg,
+    onBackground = AppColors.TextPrimary,
+    surface = AppColors.Surface,
+    onSurface = AppColors.TextPrimary,
+    surfaceVariant = AppColors.SurfaceHi,
+    onSurfaceVariant = AppColors.TextSecondary
+) else darkColorScheme(
     primary = palette.brand,
     onPrimary = Color.White,
     primaryContainer = palette.brandSoft,
@@ -225,6 +278,13 @@ fun Context.isTelevision(): Boolean {
 
 @Composable
 fun DouDouTvTheme(isTv: Boolean = false, content: @Composable () -> Unit) {
+    // 跟随系统档的数据源：manifest 对 uiMode 做了 configChanges，系统切换深浅色
+    // 不重建 Activity，只能在这里随 LocalConfiguration 同步（组合订阅配置变化）。
+    val config = LocalConfiguration.current
+    SideEffect {
+        AppColors.systemDark =
+            (config.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    }
     val palette = AppPalette.current
     CompositionLocalProvider(
         LocalPalette provides palette,

@@ -239,8 +239,9 @@ private fun NfTabRow(
             .background(
                 when {
                     focused -> AppColors.SurfaceRaise
-                    expanded -> Color.White.copy(alpha = 0.07f)
-                    else -> Color.White.copy(alpha = 0.03f)
+                    // 浅色下白透明填充落在亮底上读不出，翻成黑透明
+                    expanded -> if (AppColors.lightOn()) Color.Black.copy(alpha = 0.07f) else Color.White.copy(alpha = 0.07f)
+                    else -> if (AppColors.lightOn()) Color.Black.copy(alpha = 0.03f) else Color.White.copy(alpha = 0.03f)
                 }
             )
             .tvFocusRing(focused)
@@ -299,7 +300,10 @@ private fun NfTabOptionChip(
     Row(
         Modifier
             .clip(Radius.Sm)
-            .background(if (focused) AppColors.SurfaceRaise else Color.White.copy(alpha = 0.06f))
+            .background(
+                if (focused) AppColors.SurfaceRaise
+                else if (AppColors.lightOn()) Color.Black.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.06f)
+            )
             .tvFocusRing(focused)
             .clickable(interactionSource = interaction, indication = null) { if (enabled) onClick() }
             .focusable(interactionSource = interaction)

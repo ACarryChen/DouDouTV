@@ -507,10 +507,14 @@ private fun NfNavTab(
     onClick: () -> Unit,
     bar: NfBarFocus,
     index: Int,
+    /** 悬浮在首页 Hero 上时为 true：字钉白系，不随颜色模式翻深 */
+    onImage: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
+    // 钉白只在浅色模式生效（2026-11-24 反馈：暗色下本来就是白系，别动）
+    val pinWhite = onImage && AppColors.lightOn()
     NfBarFrameItem(bar, index, focused)
     Column(
         modifier
@@ -525,7 +529,12 @@ private fun NfNavTab(
     ) {
         Text(
             text,
-            color = if (selected || focused) Color.White else TvText.Meta,
+            // 选中/聚焦 tab 落在页面底色上，跟着 TvText 走两种模式都成立；浅色压图时钉白
+            color = when {
+                pinWhite -> if (selected || focused) Color.White else Color.White.copy(alpha = 0.75f)
+                selected || focused -> TvText.Title
+                else -> TvText.Meta
+            },
             style = MaterialTheme.typography.titleMedium,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
             maxLines = 1
@@ -557,12 +566,18 @@ private fun NfScopeChip(
     sourceName: String,
     siteName: String?,
     onClick: () -> Unit,
+    /** 悬浮在首页 Hero 上时为 true：字钉白，不随颜色模式翻深 */
+    onImage: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val bg = animateColorAsState(
-        if (focused) AppColors.Brand.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.05f),
+        when {
+            // 聚焦落在品牌实底上：白字两种模式都成立；浅色下 45% 透明会把品牌色冲成粉底、白字读不出
+            focused -> if (AppColors.lightOn()) AppColors.Brand else AppColors.Brand.copy(alpha = 0.45f)
+            else -> if (AppColors.lightOn()) Color.Black.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.05f)
+        },
         tween(Motion.BASE, easing = Motion.Ease), label = "scopeBg"
     )
     Row(
@@ -580,7 +595,11 @@ private fun NfScopeChip(
     ) {
         Text(
             sourceName,
-            color = if (focused) Color.White else TvText.Body,
+            color = when {
+                focused -> Color.White
+                onImage && AppColors.lightOn() -> Color.White
+                else -> TvText.Body
+            },
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
@@ -591,12 +610,16 @@ private fun NfScopeChip(
             Icon(
                 imageVector = Icons.Filled.ChevronRight,
                 contentDescription = null,
-                tint = TvText.Muted,
+                tint = if (onImage && AppColors.lightOn()) Color.White.copy(alpha = 0.6f) else TvText.Muted,
                 modifier = Modifier.size(14.dp)
             )
             Text(
                 siteName,
-                color = if (focused) Color.White else TvText.Body,
+                color = when {
+                    focused -> Color.White
+                    onImage && AppColors.lightOn() -> Color.White
+                    else -> TvText.Body
+                },
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
@@ -620,12 +643,14 @@ private fun NfNavIconButton(
     loading: Boolean = false,
     /** 当前页指示（设置页时齿轮常亮）：未聚焦也留一层品牌淡底 + 品牌色图标 */
     selected: Boolean = false,
+    /** 悬浮在首页 Hero 上时为 true：图标钉白，不随颜色模式翻深 */
+    onImage: Boolean = false,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val bg = animateColorAsState(
         when {
-            focused -> Color.White.copy(alpha = 0.14f)
+            focused -> if (AppColors.lightOn()) AppColors.Brand else Color.White.copy(alpha = 0.14f)
             selected -> AppColors.Brand.copy(alpha = 0.18f)
             else -> Color.Transparent
         },
@@ -649,7 +674,7 @@ private fun NfNavIconButton(
         if (loading) {
             CircularProgressIndicator(
                 modifier = Modifier.size(20.dp),
-                color = if (focused) Color.White else AppColors.Brand,
+                color = if (focused) AppColors.Focus else AppColors.Brand,
                 strokeWidth = 2.dp
             )
         } else {
@@ -657,8 +682,10 @@ private fun NfNavIconButton(
                 imageVector = icon,
                 contentDescription = contentDescription,
                 tint = when {
-                    focused -> Color.White
+                    // 聚焦底在浅色下换成品牌实底，图标保持白色；暗色维持白 14% 淡底
+                    focused -> AppColors.Focus
                     selected -> AppColors.BrandSoft
+                    onImage && AppColors.lightOn() -> Color.White
                     else -> TvText.Body
                 },
                 modifier = Modifier.size(22.dp)
@@ -690,6 +717,8 @@ fun NfNavBar(
     belowFocusRequester: FocusRequester?,
     tabFocus: (NfTab) -> FocusRequester,
     scopeFocus: FocusRequester,
+    /** 悬浮装配（首页顶栏压在 Hero 上）时为 true：整条导航字/图标钉白 */
+    onImage: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val route = Modifier.nfFocusRoute(up = FocusRequester.Cancel, down = belowFocusRequester)
@@ -713,7 +742,8 @@ fun NfNavBar(
         ) {
             Text(
                 "DouDouTV",
-                color = Color.White,
+                // 浅色模式压图时钉白：品牌深字压在 Hero 画面上读不出来；暗色不动
+                color = if (onImage && AppColors.lightOn()) Color.White else AppColors.Focus,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1
@@ -727,6 +757,7 @@ fun NfNavBar(
                     tabs.forEachIndexed { index, tab ->
                         NfNavTab(
                             tab.label(), tab == current, { goTab(tab) }, tabBar, index,
+                            onImage = onImage,
                             modifier = route.nfBarFrameCoords(tabBar, index).focusRequester(tabFocus(tab))
                         )
                     }
@@ -737,6 +768,7 @@ fun NfNavBar(
                         icon = Icons.Filled.FilterList,
                         contentDescription = "管理顶栏",
                         onClick = onManageTabs,
+                        onImage = onImage,
                         modifier = route.padding(bottom = 5.dp + NfSelectedRuleHeight)
                     )
                 }
@@ -752,6 +784,7 @@ fun NfNavBar(
                 sourceName = sourceName,
                 siteName = siteName,
                 onClick = onScope,
+                onImage = onImage,
                 modifier = Modifier.weight(1f, fill = false).then(route).focusRequester(scopeFocus)
             )
             NfNavIconButton(
@@ -759,13 +792,15 @@ fun NfNavBar(
                 contentDescription = "刷新",
                 onClick = onRefresh,
                 modifier = route,
-                loading = scanning
+                loading = scanning,
+                onImage = onImage
             )
             NfNavIconButton(
                 icon = Icons.Filled.Tune,
                 contentDescription = "设置",
                 onClick = onSettings,
                 selected = current == NfTab.Settings,
+                onImage = onImage,
                 modifier = route.focusRequester(tabFocus(NfTab.Settings))
             )
         }
@@ -1010,9 +1045,10 @@ fun NfContinueCard(
                 .background(Brush.verticalGradient(0.42f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.92f)))
         )
         Column(Modifier.align(Alignment.BottomStart).padding(12.dp).fillMaxWidth()) {
+            // 文字压在图上的黑渐变里，两种颜色模式都恒白
             Text(
                 item.continueTitle,
-                color = TvText.Title,
+                color = Color.White,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
@@ -1022,7 +1058,7 @@ fun NfContinueCard(
             if (ep != null) {
                 Text(
                     ep,
-                    color = TvText.Body,
+                    color = Color.White.copy(alpha = 0.70f),
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis

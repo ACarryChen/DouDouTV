@@ -8,9 +8,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.remember
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.chen.doudoutv.core.Prefs
 import com.chen.doudoutv.ui.LibraryViewModel
 import com.chen.doudoutv.ui.phone.PhoneApp
 import com.chen.doudoutv.ui.settings.forceTvMode
+import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.DouDouTvTheme
 import com.chen.doudoutv.ui.theme.isTelevision
 import com.chen.doudoutv.ui.tv.TvApp
@@ -46,12 +48,20 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 诊断：savedInstanceState 非空 = 本 Activity 是重建出来的（爬虫壳 finish、系统配置变更都算）。
         Log.e("DouDouTvNav", "MainActivity.onCreate 重建恢复=${savedInstanceState != null} pid=${Process.myPid()}")
+        // 颜色模式：开机先落 Prefs 里存的那档 + 当前系统深浅，避免「跟随系统」档首帧闪暗色；
+        // 之后系统切换深浅色由 DouDouTvTheme 里的 SideEffect 随配置同步
+        AppColors.themeMode = Prefs.themeMode
+        AppColors.systemDark =
+            (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                android.content.res.Configuration.UI_MODE_NIGHT_YES
         setContent {
             // 判定只发生在最外层一次：系统 uiMode 为主，设置里的强制开关为辅，
             // 并对部分国产盒子 uiMode 上报不准的情况做了无触摸屏兜底。
             // 字号表也依赖它：电视端要换整套放大过的 typography，所以判定必须在主题外层。
             val isTv = remember { isTelevision() || forceTvMode() }
             DouDouTvTheme(isTv = isTv) {
+                // 状态栏 / 导航栏外观不跟应用颜色模式走：系统栏是手机自己的样式，
+                // 应用内切浅色/暗色不该改它（2026-11-24 反馈：应用内切浅色把状态栏图标改黑）。
                 // 进程级唯一实例：本 Activity 会被系统反复重建（进出播放器各一次），
                 // 用 viewModel() 挂在 Activity 上时每重建换一个，线路绑定与分页缓存全丢，详见 LibraryViewModel.shared
                 val vm = remember { LibraryViewModel.shared(application) }
@@ -63,6 +73,15 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // darkUi 是「当前窗口是否恒暗」的全局闸：只有播放器恒暗，浏览界面（手机/TV/强制 TV）
+        // 一律跟随颜色模式（TV 端设置里只有浅色/暗色两档）。
+        // 放 onResume 而不是组合里：从播放器（恒暗）回来时本页不一定重建，只有这里必然执行，
+        // 写快照状态即触发全局重组换肤（状态栏外观随组合里的 SideEffect 一起更新）。
+        AppColors.darkUi = false
     }
 
     /**

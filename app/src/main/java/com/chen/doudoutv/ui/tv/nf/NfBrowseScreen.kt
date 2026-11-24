@@ -40,6 +40,10 @@ import com.chen.doudoutv.data.model.SourceKind
 import com.chen.doudoutv.data.scrape.ScrapeEngine
 import com.chen.doudoutv.data.tvbox.CatVodResultParser
 import com.chen.doudoutv.ui.LibraryViewModel
+import com.chen.doudoutv.ui.KindLikeGenres
+import com.chen.doudoutv.ui.applyLocalFilters
+import com.chen.doudoutv.ui.genreTokens
+import com.chen.doudoutv.ui.localFilterGroups
 import com.chen.doudoutv.ui.PrecomposeWindow
 import com.chen.doudoutv.ui.ReturnSpot
 import com.chen.doudoutv.ui.StandTarget
@@ -123,7 +127,7 @@ fun NfBrowseScreen(
     // · TVBox —— 焦点在已选中的分类 chip 上再按一次 OK → 收起分类条，原位展开「组名行 + 取值行」两行 NfSubNav，
     //   与分类条同一套视觉与间距；选中值以 extend 传给 categoryContent 重新请求该分类第 1 页。
     // · Emby —— 组从本地库聚合（年份/类型/题材/排序），选中值直接对本地条目做谓词过滤，不发网络请求。
-    val localGroups = remember(localItems) { nfLocalFilterGroups(localItems) }
+    val localGroups = remember(localItems) { localFilterGroups(localItems) }
     val groups = if (isTvBox) vm.homeFilters[currentTypeId].orEmpty() else localGroups
     // 面板状态按「当前分类」重置：Emby 分支 currentTypeId 恒 null，改用分类名做 key，
     // 否则换题材 chip 时上一类的选中值会残留
@@ -171,7 +175,7 @@ fun NfBrowseScreen(
     val sitePicked = vm.homeSiteKey != null
     val onlineItems = if (isTvBox && sitePicked) vm.browseItems(currentTypeId.orEmpty(), extend) else emptyList()
     val localShown = if (!isTvBox) localCats.getOrNull(safeLocalIdx)?.let { cat ->
-        nfApplyLocalFilters(localItems.filter(cat.matches), extend)
+        applyLocalFilters(localItems.filter(cat.matches), extend)
     } ?: emptyList() else emptyList()
     // 批量刮削：已刮标记（网格角标）、确认弹窗、批次进度（与经典版分类页同一套组件）
     val scrapeUi = rememberBatchScrapeUiState(vm)
@@ -541,14 +545,6 @@ private fun NfSkeletonGrid() {
  */
 private data class NfLocalCategory(val name: String, val matches: (MediaEntity) -> Boolean)
 
-private val NfGenreSeparator = Regex("[,，、|/]+")
-
-/** 这些标签本身就是类型，已经做成「电影 / 剧集」两颗 chip，不再重复出现在题材列表里 */
-private val NfKindLikeGenres = setOf("电影", "剧集", "电视剧", "动漫", "综艺")
-
-private fun MediaEntity.genreTokens(): List<String> =
-    genres.split(NfGenreSeparator).map { it.trim() }.filter { it.isNotBlank() }
-
 private fun nfLocalCategories(
     items: List<MediaEntity>,
     serverGenres: List<String> = emptyList()
@@ -575,12 +571,12 @@ private fun nfLocalCategories(
 
     // 服务端题材优先（完整、跟库相关）；没有时回退本地频次前 14，保证接口失败也有分类可用
     val tags = if (serverGenres.isNotEmpty()) {
-        serverGenres.filter { it !in NfKindLikeGenres }
+        serverGenres.filter { it !in KindLikeGenres }
     } else {
         val counts = LinkedHashMap<String, Int>()
         items.forEach { item ->
             item.genreTokens().distinct().forEach { tag ->
-                if (tag !in NfKindLikeGenres) counts[tag] = (counts[tag] ?: 0) + 1
+                if (tag !in KindLikeGenres) counts[tag] = (counts[tag] ?: 0) + 1
             }
         }
         counts.entries.sortedByDescending { it.value }.take(14).map { it.key }
@@ -591,78 +587,3 @@ private fun nfLocalCategories(
     return out
 }
 
-/**
- * Emby 筛选面板的组：从本地库聚合「年份 / 类型 / 题材 / 排序」。
- *
- * 形状与 TVBox 源站下发的 homeContent filters 完全一致（首值一律「全部」，v 为空串不参与 extend），
- * 面板两行 NfSubNav、焦点路由、选中态显示全部共用一套，不为 Emby 另写第二份 UI。
- * 库里没有的维度不出组（比如全片单没有年份就不放年份行），排序组恒在。
- */
-private fun nfLocalFilterGroups(items: List<MediaEntity>): List<CatVodResultParser.FilterGroup> {
-    if (items.isEmpty()) return emptyList()
-    val out = mutableListOf<CatVodResultParser.FilterGroup>()
-    val years = items.map { it.year }.filter { it > 0 }.distinct().sortedDescending()
-    if (years.size > 1) {
-        out += CatVodResultParser.FilterGroup(
-            "year", "年份",
-            listOf(CatVodResultParser.FilterValue("全部", "")) +
-                years.map { CatVodResultParser.FilterValue(it.toString(), it.toString()) }
-        )
-    }
-    val movieCount = items.count { it.kind == MediaKind.MOVIE }
-    if (movieCount > 0 && movieCount < items.size) {
-        out += CatVodResultParser.FilterGroup(
-            "kind", "类型",
-            listOf(
-                CatVodResultParser.FilterValue("全部", ""),
-                CatVodResultParser.FilterValue("电影", "movie"),
-                CatVodResultParser.FilterValue("剧集", "series")
-            )
-        )
-    }
-    // 题材取频次前 20：和分类 chip 的兜底口径同源，「类型」chip 已表达的不重复列
-    val counts = LinkedHashMap<String, Int>()
-    items.forEach { item ->
-        item.genreTokens().distinct().forEach { tag ->
-            if (tag !in NfKindLikeGenres) counts[tag] = (counts[tag] ?: 0) + 1
-        }
-    }
-    val tags = counts.entries.sortedByDescending { it.value }.take(20).map { it.key }
-    if (tags.size > 1) {
-        out += CatVodResultParser.FilterGroup(
-            "genre", "题材",
-            listOf(CatVodResultParser.FilterValue("全部", "")) +
-                tags.map { CatVodResultParser.FilterValue(it, it) }
-        )
-    }
-    out += CatVodResultParser.FilterGroup(
-        "sort", "排序",
-        listOf(
-            CatVodResultParser.FilterValue("默认", ""),
-            CatVodResultParser.FilterValue("按年份", "year"),
-            CatVodResultParser.FilterValue("按评分", "rating"),
-            CatVodResultParser.FilterValue("按片名", "title")
-        )
-    )
-    return out
-}
-
-/** 把面板选中值作用到本地条目上：各维度是 AND 关系，排序最后统一施加 */
-private fun nfApplyLocalFilters(
-    items: List<MediaEntity>,
-    extend: Map<String, String>
-): List<MediaEntity> {
-    if (extend.isEmpty()) return items
-    var out = items
-    extend["year"]?.toIntOrNull()?.let { y -> out = out.filter { it.year == y } }
-    extend["genre"]?.let { g -> out = out.filter { it.genreTokens().contains(g) } }
-    extend["kind"]?.let { k ->
-        out = out.filter { if (k == "movie") it.kind == MediaKind.MOVIE else it.kind != MediaKind.MOVIE }
-    }
-    when (extend["sort"]) {
-        "year" -> out = out.sortedByDescending { it.year }
-        "rating" -> out = out.sortedByDescending { it.rating }
-        "title" -> out = out.sortedBy { it.title }
-    }
-    return out
-}

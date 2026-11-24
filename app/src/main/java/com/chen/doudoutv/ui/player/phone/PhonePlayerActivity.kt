@@ -232,6 +232,8 @@ class PhonePlayerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // 播放器恒暗：在组合发生前置位（Main 的 onResume 会写回手机档），避免首帧闪浅色控制层
+        AppColors.darkUi = true
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // 手机端默认进入横屏全屏，不用等用户点按钮
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE

@@ -91,6 +91,8 @@ import com.chen.doudoutv.ui.settings.APP_VERSION_LABEL
 import com.chen.doudoutv.ui.settings.SettingChoice
 import com.chen.doudoutv.ui.settings.forceTvMode
 import com.chen.doudoutv.ui.settings.label
+// dev 尚无多核：随内核帮手一并屏蔽
+// import com.chen.doudoutv.ui.settings.playerKernelLabel
 import com.chen.doudoutv.ui.settings.setForceTvMode
 import com.chen.doudoutv.ui.tv.nf.LocalNfShell
 import com.chen.doudoutv.ui.tv.nf.NfScaffold
@@ -112,21 +114,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 电视端设置页 —— 侧栏 master-detail 的十英尺版本。
+ * 电视端设置页 —— 侧栏 master-detail：左栏五组入口（状态/界面/缓存/刮削/关于），
+ * 上下移动切换右栏预览；OK/→ 进右栏，←/Back 回左栏。控件为十英尺形态：
+ * 可聚焦区至少 40dp 高、焦点态白边+放大，行内只留「标题+当前值」，档位收进
+ * 紧凑横排弹窗（[TvChoiceDialog]，选中即生效不关窗）。
  *
- * 左栏是五组入口（状态 / 界面 / 缓存 / 刮削 / 关于），右栏是当前组的详情。
- * 沿左栏上下移动即切换右栏预览；OK / → 进右栏操作，← / Back 回左栏。
- * 「数据来源」本就是一句声明，已并入「刮削」底部（开启 TMDB 时显示）。
- *
- * 控件全部换成十英尺形态：可聚焦区域至少 40dp 高、焦点态白边 + 放大，
- * 行内只留「标题 + 当前值」，档位收进紧凑横排弹窗（[TvChoiceDialog]，选中即生效不关窗）。
- *
- * 焦点路由（规范 R1-R8）：
- *  · 左栏五颗入口用显式 [tvFocusRoute] 上下相连，两端 Cancel 收口；
- *  · 左 ↔ 右是跨功能区，交棒一律延后一帧再 requestFocus（[enterPane] / [exitPane]）；
- *  · 右栏用 Column + verticalScroll 让所有行一开始就全部组合，组内上下走默认几何搜索（R8）；
- *  · 信息组（状态 / 关于）右栏没有可聚焦行，整块容器聚焦，上下键直接滚动；
- *  · 入口抢焦与「回到本页重抢」走 [tvClaimFocusOnEnter]（R7）。
+ * 焦点路由（规范 R1-R8）：左栏五颗显式 [tvFocusRoute] 相连、两端 Cancel 收口；
+ * 左↔右跨功能区交棒延后一帧（[enterPane]/[exitPane]）；右栏 Column+verticalScroll
+ * 全行先组合、组内走默认几何搜索（R8）；信息组无聚焦行、整块容器聚焦直接滚动；
+ * 入口抢焦与回页重抢走 [tvClaimFocusOnEnter]（R7）。
  */
 @Composable
 fun TvSettingsScreen(
@@ -155,6 +151,9 @@ fun TvSettingsScreen(
     var posterSize by remember { mutableStateOf(Prefs.posterSize) }
     // 焦点移动效果同理
     var cardMotion by remember { mutableStateOf(Prefs.tvCardMotion) }
+    // 播放内核：写 Prefs 不会触发重组，弹窗选中态得自己留一份。
+    // dev 尚无多核：Prefs.playerKernel 不存在，状态声明一并屏蔽
+    // var playerKernel by remember { mutableStateOf(Prefs.playerKernel) }
     var tmdbOn by remember { mutableStateOf(Prefs.tmdbEnabled) }
     var tmdbToken by remember { mutableStateOf(Prefs.tmdbReadToken) }
     var engineTick by remember { mutableStateOf(0) }
@@ -177,6 +176,7 @@ fun TvSettingsScreen(
     val posterFocus = remember { FocusRequester() }
     val motionFocus = remember { FocusRequester() }
     val themeFocus = remember { FocusRequester() }
+    val modeFocus = remember { FocusRequester() }
     val skipIntroFocus = remember { FocusRequester() }
 
     // 侧栏 master-detail：selected 是当前预览/展开的分组；railFocus 是左栏五颗入口；
@@ -305,7 +305,7 @@ fun TvSettingsScreen(
                     }
                 }
                 Text(
-                    "$APP_VERSION_LABEL · Media3 内核",
+                    "$APP_VERSION_LABEL · 我家有只喵子叫豆豆",
                     style = MaterialTheme.typography.labelSmall,
                     color = TvText.Muted,
                     modifier = Modifier.padding(top = 12.dp)
@@ -419,6 +419,13 @@ fun TvSettingsScreen(
                                     onClick = { choice = SettingChoice.Theme to themeFocus }
                                 )
                                 TvSettingRow(
+                                    title = "颜色模式",
+                                    hint = "浅色为亮底界面，暗色为暗底界面，选中即生效",
+                                    focusRequester = modeFocus,
+                                    value = if (AppColors.lightOn()) "浅色" else "暗色",
+                                    onClick = { choice = SettingChoice.ThemeMode to modeFocus }
+                                )
+                                TvSettingRow(
                                     title = "自动跳过片头",
                                     hint = "开启后剧集详情页与播放器显示「跳过片头」按钮；关闭则不显示、也不再自动跳过",
                                     focusRequester = skipIntroFocus,
@@ -429,6 +436,13 @@ fun TvSettingsScreen(
                                         Prefs.skipIntroEnabled = skipIntro
                                     }
                                 )
+                                // dev 尚无多核：内核行屏蔽（本行无独立焦点锚点，摘除不影响交棒链）
+                                // TvSettingRow(
+                                //     title = "播放内核",
+                                //     hint = "FongMi 档为实验内核，对齐 FongMi 官方播放栈；经典档为原自研 Exo 直连。改动在下次进播放器时生效。",
+                                //     value = playerKernelLabel(playerKernel),
+                                //     onClick = { choice = SettingChoice.PlayerKernel to skipIntroFocus }
+                                // )
                             }
 
                             2 -> {
@@ -553,21 +567,21 @@ fun TvSettingsScreen(
                                         "可选 TMDB 刮削补全海报与简介；手机与电视同一安装包，扫码即可维护数据源。"
                                 )
                                 TvAboutBlock(
-                                    "个人开发免责",
+                                    "个人开发声明",
                                     "本应用为个人业余项目，按「现状」提供，不作任何明示或暗示的担保。\n" +
                                         "不保证持续更新，也不保证在所有设备上完全兼容。\n" +
                                         "媒体库、观看进度与收藏均存储在本机，卸载应用即清除，请自行备份重要数据。"
                                 )
                                 TvAboutBlock(
                                     "内容版权",
-                                    "播放器为自研实现，本应用不内置、不存储、也不提供任何影视资源。\n" +
+                                    "本应用不内置、不存储、也不提供任何影视资源。\n" +
                                         "仅用于播放你自有或已获授权的内容，相关版权与合法性由内容来源及使用者负责。"
                                 )
                                 TvAboutBlock(
                                     "开源与致谢",
-                                    "代码为本项目原创，可自由使用、修改与分发。\n" +
-                                        "TVBox 侧仅参考 CatVod / TVBox 公开配置规范与 FongMi/TV 的行为约定，未复制其源码。\n" +
-                                        "感谢 Media3 / ExoPlayer、Jetpack Compose、Room、Coil、OkHttp、jsoup 等开源项目（Apache-2.0 / MIT）。"
+                                    "播放内核基于 Media3 / ExoPlayer（Apache-2.0）构建，电视端内核集成了 FongMi/TV（GPL-3.0）的开源代码。\n" +
+                                        "本应用遵循 GPL-3.0 许可证公开源代码，修改与分发同样适用该许可证。\n" +
+                                        "另向 Jetpack Compose、Room、Coil、OkHttp、jsoup，以及 TVBox / CatVod 公开配置规范的作者致谢。"
                                 )
                             }
                         }
@@ -650,6 +664,36 @@ fun TvSettingsScreen(
                     },
                     onDismiss = dismiss
                 )
+
+                // 颜色模式 TV 端只有浅色/暗色两档（不给跟随系统）；与手机共用同一个 Prefs 键
+                SettingChoice.ThemeMode -> TvChoiceDialog(
+                    title = "颜色模式",
+                    options = listOf(Prefs.ThemeMode.LIGHT, Prefs.ThemeMode.DARK),
+                    label = { if (it == Prefs.ThemeMode.LIGHT) "浅色" else "暗色" },
+                    selected = if (AppColors.themeMode == Prefs.ThemeMode.LIGHT)
+                        Prefs.ThemeMode.LIGHT else Prefs.ThemeMode.DARK,
+                    dot = null,
+                    hint = "浅色为亮底界面，暗色为暗底界面，选中即生效。",
+                    onPick = {
+                        Prefs.themeMode = it
+                        AppColors.themeMode = it
+                    },
+                    onDismiss = dismiss
+                )
+
+                // 播放内核：TV 端也接 fongmi 舱（TvPlayerActivity 与手机同一份 Prefs 键）。
+                // dev 尚无多核：弹窗屏蔽
+                // SettingChoice.PlayerKernel -> TvChoiceDialog(
+                //     title = "播放内核",
+                //     options = listOf(Prefs.KERNEL_FONGMI, Prefs.KERNEL_CLASSIC),
+                //     label = { playerKernelLabel(it) },
+                //     selected = playerKernel,
+                //     dot = null,
+                //     hint = "FongMi 档为实验内核，对齐 FongMi 官方播放栈；经典档为原自研 Exo 直连。改动在下次进播放器时生效。",
+                //     onPick = { Prefs.playerKernel = it; playerKernel = it },
+                //     onDismiss = dismiss
+                // )
+                SettingChoice.PlayerKernel -> Unit
             }
         }
         }

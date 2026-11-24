@@ -143,11 +143,11 @@ private fun GlassSurface(
                     }
             )
         } else {
-            Box(Modifier.fillMaxSize().background(Color(0xFF161618).copy(alpha = 0.62f)))
+            Box(Modifier.fillMaxSize().background(AppColors.GlassBase.copy(alpha = 0.62f)))
         }
 
         // ② 暗底只留薄薄一层，再叠一层磨砂白把玻璃「提亮」
-        Box(Modifier.fillMaxSize().background(Color(0xFF0B0B0D).copy(alpha = 0.20f)))
+        Box(Modifier.fillMaxSize().background(AppColors.GlassShade.copy(alpha = 0.20f)))
         Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = 0.09f)))
 
         // ③ 斜向扫光 + ④ 顶边高光
@@ -203,7 +203,7 @@ fun GlassIconButton(
                 icon,
                 contentDescription = contentDescription,
                 // 未选中用白（半透），选中用主题色 —— 与底栏完全一致
-                tint = if (selected) brandSoft else Color.White.copy(alpha = 0.78f),
+                tint = if (selected) brandSoft else AppColors.TextPrimary.copy(alpha = 0.78f),
                 modifier = Modifier.size(if (selected) 22.dp else iconSize)
             )
         }
@@ -286,7 +286,7 @@ fun GlassTabBar(
                         contentDescription = item.label,
                         // 未选中用白（半透），不用主题里的 TextTertiary ——
                         // 那是给纯色页面上的正文用的，压在玻璃上几乎看不见
-                        tint = if (selected) brandSoft else Color.White.copy(alpha = 0.78f),
+                        tint = if (selected) brandSoft else AppColors.TextPrimary.copy(alpha = 0.78f),
                         // 选中格放大一点：没有文字做区分，只能靠图标本身
                         modifier = Modifier.size(if (selected) 22.dp else 19.dp)
                     )

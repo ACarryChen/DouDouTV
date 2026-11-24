@@ -502,8 +502,9 @@ private fun NfSourceRow(
             .clip(Radius.Md)
             .background(
                 when {
-                    shown -> AppColors.Brand.copy(alpha = 0.5f)
-                    active -> Color.White.copy(alpha = 0.12f)
+                    // 光标停留 = 品牌底 + 白字；浅色下 50% 透明会把品牌色冲淡、白字读不出，落实底
+                    shown -> if (AppColors.lightOn()) AppColors.Brand else AppColors.Brand.copy(alpha = 0.5f)
+                    active -> if (AppColors.lightOn()) Color.Black.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.12f)
                     else -> AppColors.Surface.copy(alpha = 0.6f)
                 }
             )
@@ -523,7 +524,8 @@ private fun NfSourceRow(
             )
             Text(
                 label,
-                color = if (shown || active) TvText.Title else TvText.Section,
+                // 光标停留落在品牌底上恒白；其余跟着 TvText 随模式翻
+                color = if (shown) Color.White else if (active) TvText.Title else TvText.Section,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,

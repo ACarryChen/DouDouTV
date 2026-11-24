@@ -787,7 +787,8 @@ private fun NfRailRouteRow(
         }
         Text(
             label,
-            color = if (focused) Color.White else TvText.Title,
+            // 聚焦底是 SurfaceHi（跟随模式），文字跟着 TvText 走两种模式都落在同一档上
+            color = TvText.Title,
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 1,
@@ -911,13 +912,13 @@ private fun NfSourceHeader(
     ) {
         Text(
             if (expanded) "▾" else "▸",
-            color = if (focused) Color.White else TvText.Meta,
+            color = TvText.Meta,
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(end = 8.dp)
         )
         Text(
             label,
-            color = if (focused) Color.White else TvText.Title,
+            color = TvText.Title,
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
@@ -926,7 +927,7 @@ private fun NfSourceHeader(
         )
         Text(
             meta,
-            color = if (focused) Color.White.copy(alpha = 0.7f) else TvText.Meta,
+            color = TvText.Meta,
             style = MaterialTheme.typography.labelMedium
         )
     }

@@ -92,6 +92,8 @@ import com.chen.doudoutv.data.model.SourceKind
 import com.chen.doudoutv.data.tvbox.TvBoxClient.TvBoxSite
 import com.chen.doudoutv.data.scrape.ScrapeEngine
 import com.chen.doudoutv.ui.LibraryViewModel
+import com.chen.doudoutv.ui.applyLocalFilters
+import com.chen.doudoutv.ui.localFilterGroups
 import com.chen.doudoutv.ui.ReturnSpot
 import com.chen.doudoutv.ui.PrecomposeWindow
 import com.chen.doudoutv.ui.components.AppButton
@@ -104,6 +106,7 @@ import com.chen.doudoutv.ui.components.PhoneScrapeButton
 import com.chen.doudoutv.ui.components.PosterCard
 import com.chen.doudoutv.ui.components.SectionTitle
 import com.chen.doudoutv.ui.components.ShimmerCard
+import com.chen.doudoutv.ui.components.PhoneFilterBar
 import com.chen.doudoutv.ui.components.continueTitle
 import com.chen.doudoutv.ui.components.episodeLabel
 import com.chen.doudoutv.ui.components.rememberBatchScrapeUiState
@@ -1086,9 +1089,6 @@ fun GenreScreen(
     }
 
     // 已刮标记：条目集合或批次轮次变化时重查一次（批次跑完 scrapeEpoch 自增）
-    LaunchedEffect(items, vm.scrapeEpoch) {
-        scrapeUi.refresh(items)
-    }
 
     // 标签列表：Emby 有媒体库时按库分区（全部 + 各库）；否则预设类型 + 题材（Emby 走服务端清单，其余本地聚合）
     val tabs = remember(tags, libraries) {
@@ -1108,6 +1108,25 @@ fun GenreScreen(
         }
     }
     val currentTab = tabs.firstOrNull { it.kind == kind && it.genre == genre && it.library == library }
+
+    // ---------- 筛选（Emby：组从当前分类数据本地聚合，选中值直接对条目做谓词过滤，不发网络请求） ----------
+    // 选中态按 tab 重置：换 tab 不残留上一 tab 的选中值（与 TV 端 NfBrowseScreen 同口径）
+    var filterSel by remember(kind, genre, library) { mutableStateOf<Map<Int, Int>>(emptyMap()) }
+    val filterGroups = remember(items) { localFilterGroups(items) }
+    val extend = remember(filterSel, filterGroups) {
+        buildMap {
+            filterGroups.forEachIndexed { i, g ->
+                val vi = filterSel[i] ?: 0
+                if (vi > 0) put(g.key.ifBlank { i.toString() }, g.value[vi].v)
+            }
+        }
+    }
+    val shown = remember(items, extend) { applyLocalFilters(items, extend) }
+
+    // 已刮标记：条目集合或批次轮次变化时重查一次（批次跑完 scrapeEpoch 自增）
+    LaunchedEffect(shown, vm.scrapeEpoch) {
+        scrapeUi.refresh(shown)
+    }
 
     // 根容器不滚动（滚动的是下面的网格），所以统一背景直接挂在它上：
     // 原来这里写死了一条「Brand@0.09 → Bg」的顶部渐变，往下整屏纯黑，换主题色在这页读不出来
@@ -1144,7 +1163,7 @@ fun GenreScreen(
                     done = scrapeUi.done,
                     total = scrapeUi.total,
                     onClick = {
-                        if (scrapeUi.running) scrapeUi.cancel() else scrapeUi.request(items)
+                        if (scrapeUi.running) scrapeUi.cancel() else scrapeUi.request(shown)
                     }
                 )
             }
@@ -1187,6 +1206,16 @@ fun GenreScreen(
             }
         }
 
+        // ---------- 筛选条（常驻，本地聚合组为空时不出现） ----------
+        if (filterGroups.isNotEmpty()) {
+            PhoneFilterBar(
+                groups = filterGroups,
+                selected = filterSel,
+                onPick = { gi, vi -> filterSel = if (vi == 0) filterSel - gi else filterSel + (gi to vi) },
+                onReset = { filterSel = emptyMap() }
+            )
+        }
+
         // ---------- 网格 ----------
         when {
             loading -> Box(
@@ -1194,8 +1223,8 @@ fun GenreScreen(
                 contentAlignment = Alignment.Center
             ) { CircularProgressIndicator(strokeWidth = 2.dp, color = AppColors.Brand) }
 
-            items.isEmpty() -> Text(
-                "该分类下暂无内容",
+            shown.isEmpty() -> Text(
+                if (extend.isNotEmpty()) "没有符合筛选条件的内容" else "该分类下暂无内容",
                 style = MaterialTheme.typography.bodyMedium,
                 color = AppColors.TextTertiary,
                 modifier = Modifier.fillMaxWidth().padding(36.dp)
@@ -1207,7 +1236,7 @@ fun GenreScreen(
             ) {
                 item {
                     Text(
-                        "共 ${items.size} 条" + if (items.size >= GENRE_PAGE_SIZE) "（持续加载中）" else "",
+                        "共 ${shown.size} 条" + if (items.size >= GENRE_PAGE_SIZE) "（持续加载中）" else "",
                         style = MaterialTheme.typography.labelSmall,
                         color = AppColors.TextTertiary,
                         modifier = Modifier
@@ -1216,7 +1245,7 @@ fun GenreScreen(
                     )
                 }
                 itemsIndexed(
-                    items.chunked(columns),
+                    shown.chunked(columns),
                     // 带位置 + 行首 id：追加分页时已有行的 key 不变（不重新解码海报），
                     // 换筛选条件时同一位置的数据变了，key 也随之变化，不会复用上一批的卡片
                     key = { index, row -> "genre_row_${index}_${row.first().id}" },
@@ -1778,6 +1807,20 @@ fun TvBoxCategoryScreen(
     val categories = vm.homeCategories
     val currentName = categories.firstOrNull { it.typeId == currentTypeId }?.typeName ?: typeName
 
+    // ---------- 筛选（TVBox：源站 homeContent 下发的 filters，按当前分类取组） ----------
+    // 选中态按分类重置：换分类不残留上一类的选中值（与 TV 端 NfBrowseScreen 同口径）
+    val filterGroups = vm.homeFilters[currentTypeId].orEmpty()
+    var filterSel by remember(currentTypeId) { mutableStateOf<Map<Int, Int>>(emptyMap()) }
+    // 组下标 → 选中取值 v；「全部」（下标 0）不进 extend
+    val extend = remember(filterSel, filterGroups) {
+        buildMap {
+            filterGroups.forEachIndexed { i, g ->
+                val vi = filterSel[i] ?: 0
+                if (vi > 0) put(g.key.ifBlank { i.toString() }, g.value[vi].v)
+            }
+        }
+    }
+
     /**
      * 数据、页码、到底/失败状态全部住在 ViewModel 的分类缓存里（browseItems 那组接口），
      * 和电视端「查看全部」同一套。
@@ -1787,10 +1830,10 @@ fun TvBoxCategoryScreen(
      * 每个分类各记的滚动位置也就对不上了。改成缓存复用之后：只有第一次进入（以及刷新 /
      * 换线路）请求第 1 页，点「加载更多」请求下一页，返回上层一个请求都不发。
      */
-    val vods = vm.browseItems(currentTypeId)
-    val loadError = vm.browseItemsError(currentTypeId)
-    val exhausted = vm.browseItemsEnded(currentTypeId)
-    val loadingMore = vods.isNotEmpty() && vm.browseItemsLoading(currentTypeId)
+    val vods = vm.browseItems(currentTypeId, extend)
+    val loadError = vm.browseItemsError(currentTypeId, extend)
+    val exhausted = vm.browseItemsEnded(currentTypeId, extend)
+    val loadingMore = vods.isNotEmpty() && vm.browseItemsLoading(currentTypeId, extend)
     // 来源/线路还没选中（冷启动直接进这一页）时不该画骨架屏，否则永远转圈
     val browseReady = vm.homeSourceId != null && vm.homeSiteKey != null
     val loading = vods.isEmpty() && loadError == null && !exhausted && browseReady
@@ -1799,8 +1842,8 @@ fun TvBoxCategoryScreen(
     val gridState = ReturnSpot.listState("phone_cat_$currentTypeId", precompose = PrecomposeWindow.Phone)
     val scrapeUi = rememberBatchScrapeUiState(vm)
 
-    LaunchedEffect(currentTypeId, vm.homeRefreshEpoch) {
-        vm.ensureBrowsePage(currentTypeId)
+    LaunchedEffect(currentTypeId, extend, vm.homeRefreshEpoch) {
+        vm.ensureBrowsePage(currentTypeId, extend)
     }
 
     // 已刮标记：条目集合或批次轮次变化时重查一次（批次跑完 scrapeEpoch 自增）
@@ -1808,7 +1851,7 @@ fun TvBoxCategoryScreen(
         scrapeUi.refresh(vods)
     }
 
-    val loadMore: () -> Unit = { vm.loadMoreBrowsePage(currentTypeId) }
+    val loadMore: () -> Unit = { vm.loadMoreBrowsePage(currentTypeId, extend) }
 
     // 同 GenreScreen：根容器不滚动，统一背景直接挂在它上，替掉原来那条写死的顶部渐变
     Column(
@@ -1884,6 +1927,16 @@ fun TvBoxCategoryScreen(
             }
         }
 
+        // ---------- 筛选条（常驻，源站没下发 filters 时不出现） ----------
+        if (filterGroups.isNotEmpty()) {
+            PhoneFilterBar(
+                groups = filterGroups,
+                selected = filterSel,
+                onPick = { gi, vi -> filterSel = if (vi == 0) filterSel - gi else filterSel + (gi to vi) },
+                onReset = { filterSel = emptyMap() }
+            )
+        }
+
         // ---------- 网格 ----------
         when {
             loading -> LazyColumn(contentPadding = PaddingValues(top = 12.dp, bottom = 28.dp + GlassBarClearance)) {
@@ -1910,7 +1963,9 @@ fun TvBoxCategoryScreen(
                     .padding(36.dp)
             ) {
                 Text(
-                    text = if (loadError != null) "加载失败：$loadError" else "该分类下暂无内容",
+                    text = if (loadError != null) "加载失败：$loadError"
+                    else if (extend.isNotEmpty()) "没有符合筛选条件的内容"
+                    else "该分类下暂无内容",
                     style = MaterialTheme.typography.bodyMedium,
                     color = AppColors.TextTertiary
                 )
@@ -1918,7 +1973,7 @@ fun TvBoxCategoryScreen(
                     Spacer(Modifier.height(12.dp))
                     AppButton(
                         text = "重试",
-                        onClick = { vm.retryBrowsePage(currentTypeId) },
+                        onClick = { vm.retryBrowsePage(currentTypeId, extend) },
                         variant = AppButtonVariant.Neutral
                     )
                 }
@@ -1966,7 +2021,7 @@ fun TvBoxCategoryScreen(
 
                             loadError != null -> AppButton(
                                 text = "加载失败，点击重试",
-                                onClick = { vm.retryBrowsePage(currentTypeId) },
+                                onClick = { vm.retryBrowsePage(currentTypeId, extend) },
                                 variant = AppButtonVariant.Neutral
                             )
 

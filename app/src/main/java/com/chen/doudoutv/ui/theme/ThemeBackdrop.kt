@@ -52,7 +52,14 @@ import com.chen.doudoutv.ui.components.GradientBake
 fun Modifier.themeBackdrop(): Modifier {
     val brand = AppColors.Brand
     val isTv = LocalTvMode.current
-    val glowAlpha = if (isTv) 0.30f else 0.46f
+    // 浅色底吃色重：手机浅色 0.18 几乎看不见（2026-11-24 装机反馈），提到 0.34；暗色保持 0.46。
+    // TV 天光按 2026-11-24 反馈提到 0.50（α 档位），TV 暗浅两档同用。
+    val glowAlpha = when {
+        isTv -> 0.50f
+        AppColors.lightOn() -> 0.34f
+        else -> 0.46f
+    }
+    if (glowAlpha == 0f) return this.background(AppColors.Bg)
     val bake = remember { GradientBake() }
     return this
         .background(AppColors.Bg)
@@ -64,9 +71,10 @@ fun Modifier.themeBackdrop(): Modifier {
                 // 外圈收到「品牌色减 alpha」而不是 Color.Transparent：后者把 RGB 一起拖向纯黑，
                 // 淡出末尾会压出一条暗边；保持 RGB 不变只降 alpha，淡出才干净。
                 run {
-                    // ① 天光：亮心在顶边外，alpha 归零线在 0.384h，下面不画
+                    // ① 天光：亮心在顶边外；ry 提到 0.95h（2026-11-24 反馈「高度增加一些」），
+                    //    alpha 归零线到 0.545h，下面不画
                     val cy = -h * 0.12f
-                    val ry = h * 0.72f
+                    val ry = h * 0.95f
                     val shader = RadialGradient(
                         w * 0.5f, cy, ry,
                         intArrayOf(
@@ -77,7 +85,7 @@ fun Modifier.themeBackdrop(): Modifier {
                         floatArrayOf(0f, 0.34f, 0.70f),
                         Shader.TileMode.CLAMP
                     ).apply { setLocalMatrix(Matrix().apply { setScale(rx / ry, 1f, w * 0.5f, cy) }) }
-                    cv.drawRect(0f, 0f, w, h * 0.40f, Paint().apply { this.shader = shader })
+                    cv.drawRect(0f, 0f, w, h * 0.56f, Paint().apply { this.shader = shader })
                 }
                 if (!isTv) {
                     // ② 地火：同一枚椭圆翻到底部，归零线在 0.624h，上面不画

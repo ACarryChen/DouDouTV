@@ -34,10 +34,11 @@ import com.chen.doudoutv.ui.theme.Radius
  */
 object CardMaterial {
     /** 卡面渐层：上缘受光抬一档（L2→L3 之间），下缘沉回 L1 附近 */
-    val stops: List<Color> = listOf(
-        lerp(AppColors.SurfaceHi, AppColors.SurfaceRaise, 0.40f),
-        lerp(AppColors.Surface, AppColors.SurfaceHi, 0.12f)
-    )
+    val stops: List<Color>
+        get() = listOf(
+            lerp(AppColors.SurfaceHi, AppColors.SurfaceRaise, 0.40f),
+            lerp(AppColors.Surface, AppColors.SurfaceHi, 0.12f)
+        )
 
     /** 发丝描边：上缘略亮、下缘压到接近 Edge.Hairline，读成顶光勾边 */
     val edge: Brush = Brush.verticalGradient(
@@ -68,10 +69,11 @@ fun Modifier.appCardSurface(shape: Shape = Radius.Md): Modifier = this
  */
 object TvCardMaterial {
     /** 卡面渐层：比手机更亮更平，下缘抬到 L1/L2 之间，三米外整块读得出 */
-    val stops: List<Color> = listOf(
-        lerp(AppColors.SurfaceHi, AppColors.SurfaceRaise, 0.40f),
-        lerp(AppColors.Surface, AppColors.SurfaceHi, 0.25f)
-    )
+    val stops: List<Color>
+        get() = listOf(
+            lerp(AppColors.SurfaceHi, AppColors.SurfaceRaise, 0.40f),
+            lerp(AppColors.Surface, AppColors.SurfaceHi, 0.25f)
+        )
 
     /** 亮描边：两端都高于可辨阈值，上缘略亮保留顶光感 */
     val edge: Brush = Brush.verticalGradient(
@@ -100,7 +102,8 @@ fun Modifier.tvCardSurface(
         .clip(shape)
         .background(Brush.verticalGradient(TvCardMaterial.stops))
         .then(
-            if (focused) Modifier.border(borderWidth, Color.White, shape)
+            // 焦点白环是 TV 的落点语言；浅色下白边落在亮底上读不出，翻成近黑
+            if (focused) Modifier.border(borderWidth, AppColors.Focus, shape)
             else Modifier.border(borderWidth, TvCardMaterial.edge, shape)
         )
         .drawWithContent {

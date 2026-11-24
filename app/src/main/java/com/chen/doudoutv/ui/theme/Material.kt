@@ -34,8 +34,9 @@ object Radius {
  * 跟着底色亮度走才能在 L1/L2/L3 任意一层都刚好看得见。
  */
 object Edge {
-    val Hairline: Color = Color(0x14FFFFFF)
-    val HairlineStrong: Color = Color(0x2BFFFFFF)
+    // 白 / 黑低透明度按颜色模式反转：勾边的作用是「描出边缘」，跟着底色亮度走
+    val Hairline: Color get() = if (AppColors.lightOn()) Color(0x14000000) else Color(0x14FFFFFF)
+    val HairlineStrong: Color get() = if (AppColors.lightOn()) Color(0x2B000000) else Color(0x2BFFFFFF)
 }
 
 /**

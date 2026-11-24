@@ -41,6 +41,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
@@ -95,6 +96,8 @@ import com.chen.doudoutv.ui.detail.loadPosterBitmap
 import com.chen.doudoutv.ui.detail.pageTonesOf
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.Edge
+import com.chen.doudoutv.ui.theme.LocalTvPageDark
+import com.chen.doudoutv.ui.theme.TvPageText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -133,6 +136,18 @@ import com.chen.doudoutv.ui.theme.TvText
 import com.chen.doudoutv.ui.theme.Radius
 import com.chen.doudoutv.ui.theme.Motion
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
+/**
+ * 详情页是沉浸式恒暗页（pageTonesOf 把整页底色压成海报聚焦色的深色版本），
+ * 文字不随颜色模式翻深 —— 浅色模式下全局 TvText 会翻近黑、落在这层深底上读不出来，
+ * 所以本文件用这组恒亮档代替 TvText；唯一的例外是 TvSkipIntroDialog，
+ * 它的底是跟随颜色模式的 SurfaceHi，里面仍用 TvText。
+ */
+private val PageTitle get() = TvPageText.Title
+private val PageSection get() = TvPageText.Section
+private val PageBody get() = TvPageText.Body
+private val PageMeta get() = TvPageText.Meta
+private val PageMuted get() = TvPageText.Muted
 
 /**
  * 电视端简介页（独立实现，不复用手机端 DetailScreen）。
@@ -538,7 +553,9 @@ fun TvDetailScreen(
 
     val tones = remember(dominant) {
         if (dominant == Color.Unspecified) {
-            AppColors.Bg to lerp(AppColors.Bg, Color.Black, 0.55f)
+            // 详情页是海报基调的恒暗页（与手机端同一策略）：没拿到主色时兜底也钉死近黑。
+            // 不能回落 AppColors.Bg —— 浅色模式下那是亮底，整页白字全部打在亮底上读不出来。
+            Color(0xFF080808) to Color(0xFF040404)
         } else {
             pageTonesOf(dominant)
         }
@@ -786,11 +803,14 @@ private fun TvDetailScreenBody(
         recallEpisodeId = same?.id ?: 0L
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(bgBrush)
-    ) {
+    // 本页是恒暗页：页上共享组件（TvPillButton / TvIconButton / TvSectionTitle / TvMetaRow /
+    // TvEmptyState）都按暗页口径取色，不随颜色模式翻转。跳过片头弹窗是模式色面板，局部豁免。
+    CompositionLocalProvider(LocalTvPageDark provides true) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(bgBrush)
+        ) {
         // 背景横版图铺满整个页面，向下溶解到主色填充（画法见 [TvDetailBackdropScrim]）。
         TvDetailBackdropScrim(
             backdrop = backdrop,
@@ -1095,7 +1115,7 @@ private fun TvDetailScreenBody(
                             Spacer(Modifier.height(12.dp))
                             Text(
                                 "主演",
-                                color = TvText.Muted,
+                                color = PageMuted,
                                 style = MaterialTheme.typography.bodyMedium
                             )
                             Spacer(Modifier.height(6.dp))
@@ -1132,19 +1152,23 @@ private fun TvDetailScreenBody(
         if (showSkipDialog && skipShell != null && skipShell.kind == MediaKind.SERIES &&
             skipShell.seriesKey.isNotBlank()
         ) {
-            TvSkipIntroDialog(
-                currentMs = skipShell.introSkipMs,
-                onDismiss = { showSkipDialog = false },
-                onPick = { ms ->
-                    showSkipDialog = false
-                    scope.launch {
-                        // 写成功后重读壳行，胶囊文案立刻反映新值
-                        if (vm.setIntroSkip(skipShell.seriesKey, ms)) {
-                            media = vm.mediaOf(skipShell.id) ?: media
+            // 弹窗底是模式色 SurfaceHi（浅色=浅面板），里面用 TvText 取色：豁免暗页标记
+            CompositionLocalProvider(LocalTvPageDark provides false) {
+                TvSkipIntroDialog(
+                    currentMs = skipShell.introSkipMs,
+                    onDismiss = { showSkipDialog = false },
+                    onPick = { ms ->
+                        showSkipDialog = false
+                        scope.launch {
+                            // 写成功后重读壳行，胶囊文案立刻反映新值
+                            if (vm.setIntroSkip(skipShell.seriesKey, ms)) {
+                                media = vm.mediaOf(skipShell.id) ?: media
+                            }
                         }
                     }
-                }
-            )
+                )
+            }
+        }
         }
     }
 }
@@ -1661,7 +1685,7 @@ private fun TvDetailDescription(
         Spacer(Modifier.height(16.dp))
         Text(
             text = overview,
-            color = TvText.Body,
+            color = PageBody,
             style = MaterialTheme.typography.bodyLarge,
             // 4 行以内：保证简介 + 展开按钮 + 导演 + 主演能挤进同一屏
             maxLines = if (descExpanded) Int.MAX_VALUE else 4,
@@ -2068,10 +2092,10 @@ private fun TvSkipIntroDialog(
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         placeholder = { Text("自定义 分:秒，如 1:30", color = TvText.Muted) },
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = TvText.Title),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
+                            focusedTextColor = TvText.Title,
+                            unfocusedTextColor = TvText.Title,
                             focusedBorderColor = AppColors.Brand,
                             unfocusedBorderColor = Edge.HairlineStrong,
                             cursorColor = AppColors.Brand
@@ -2098,13 +2122,13 @@ private fun TvInfoLine(label: String, value: String) {
     Row(Modifier.padding(vertical = 2.dp), verticalAlignment = Alignment.Top) {
         Text(
             label,
-            color = TvText.Muted,
+            color = PageMuted,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.width(58.dp)
         )
         Text(
             value,
-            color = TvText.Body,
+            color = PageBody,
             style = MaterialTheme.typography.bodyMedium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
@@ -2286,7 +2310,8 @@ private fun TvCastRow(
                     Modifier
                         .size(56.dp)
                         .clip(avatarShape)
-                        .background(AppColors.SurfaceHi)
+                        // 恒暗页：头像占位底钉暗，浅色模式下不能翻成白圆压白字
+                        .background(TvPageText.SurfaceHi)
                         .tvFocusRing(focused, radius = 28.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -2301,7 +2326,7 @@ private fun TvCastRow(
                         // 个别演员没有 PrimaryImageTag：用姓名首字顶上，避免出现一串空灰圆
                         Text(
                             person.name.take(1),
-                            color = TvText.Meta,
+                            color = PageMeta,
                             style = MaterialTheme.typography.titleLarge
                         )
                     }
@@ -2309,7 +2334,7 @@ private fun TvCastRow(
                 Spacer(Modifier.height(6.dp))
                 Text(
                     person.name,
-                    color = TvText.Section,
+                    color = PageSection,
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -2317,7 +2342,7 @@ private fun TvCastRow(
                 if (person.role.isNotBlank()) {
                     Text(
                         person.role,
-                        color = TvText.Muted,
+                        color = PageMuted,
                         style = MaterialTheme.typography.labelSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -2405,29 +2430,46 @@ private fun TvEpisodeCard(
         Column(
             focusChain
                 .clip(Radius.Md)
-                .background(AppColors.Surface)
+                // 与手机端 Emby 卡同款白透明玻璃；剧照没加载出来时不至于是一块黑砖
+                .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.08f))))
                 .tvFocusRing(focused)
-                .then(if (focused) Modifier else Modifier.border(1.dp, AppColors.SurfaceHi, Radius.Md))
+                .then(
+                    if (focused) Modifier
+                    else Modifier.border(
+                        1.dp,
+                        Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.32f), Color.White.copy(alpha = 0.15f))),
+                        Radius.Md
+                    )
+                )
         ) {
             EpisodeStill(episode)
         }
         return
     }
 
+    // TVBox 来源：竖排卡（排版不动），底换成手机端 EpisodeCard 同款白透明玻璃
+    // —— 原来钉死的 0xFF131313 实底在暗底页上是一块黑砖，玻璃档才压得住海报基调底。
     Column(
         focusChain
             // 详情页不放大获焦的卡片：放大一改焦点矩形，verticalScroll 的
             // bring-into-view 每次都补一点滚动，左右切集时整屏跟着上下抖。
             // 焦点只用全局那圈白描边表示，尺寸一动都不动。
             .clip(Radius.Md)
-            .background(if (watched) AppColors.Brand.copy(alpha = 0.18f) else AppColors.Surface)
+            .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.08f))))
             .tvFocusRing(focused)
-            .then(if (focused) Modifier else Modifier.border(1.dp, AppColors.SurfaceHi, Radius.Md))
+            .then(
+                if (focused) Modifier
+                else Modifier.border(
+                    1.dp,
+                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.32f), Color.White.copy(alpha = 0.15f))),
+                    Radius.Md
+                )
+            )
             .padding(horizontal = 12.dp, vertical = 12.dp)
     ) {
         Text(
             label,
-            color = if (watched) AppColors.BrandSoft else TvText.Title,
+            color = if (watched) AppColors.BrandSoft else PageTitle,
             style = MaterialTheme.typography.titleSmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -2439,7 +2481,7 @@ private fun TvEpisodeCard(
                 .fillMaxWidth()
                 .height(3.dp)
                 .clip(Radius.Pill)
-                .background(AppColors.SurfaceHi)
+                .background(Color.White.copy(alpha = 0.2f))
         ) {
             if (progress > 0f) {
                 Box(
@@ -2574,13 +2616,13 @@ private fun TvEpisodeMediaInfoPanel(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "视频信息",
-                        color = TvText.Muted,
+                        color = PageMuted,
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
                         headSub,
-                        color = TvText.Meta,
+                        color = PageMeta,
                         fontSize = 13.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -2588,10 +2630,10 @@ private fun TvEpisodeMediaInfoPanel(
                     )
                     if (videoSub.isNotBlank()) {
                         Spacer(Modifier.width(12.dp))
-                        Text(videoSub, color = TvText.Meta, fontSize = 12.sp, maxLines = 1)
+                        Text(videoSub, color = PageMeta, fontSize = 12.sp, maxLines = 1)
                     }
                     Spacer(Modifier.width(12.dp))
-                    Text("来自 Emby 媒体流 · 无需播放", color = TvText.Muted, fontSize = 12.sp)
+                    Text("来自 Emby 媒体流 · 无需播放", color = PageMuted, fontSize = 12.sp)
                 }
                 Spacer(Modifier.height(10.dp))
 
@@ -2603,12 +2645,12 @@ private fun TvEpisodeMediaInfoPanel(
                 ) {
                     if (hasVideoLine) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("视频", color = TvText.Meta, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+                            Text("视频", color = PageMeta, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
                             if (info.resolution.isNotBlank()) {
-                                Text(info.resolution, color = TvText.Title, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+                                Text(info.resolution, color = PageTitle, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
                             }
                             if (info.width > 0 && info.height > 0) {
-                                Text("${info.width} × ${info.height}", color = TvText.Body, fontSize = 13.sp)
+                                Text("${info.width} × ${info.height}", color = PageBody, fontSize = 13.sp)
                             }
                             if (info.videoCodec.isNotBlank() || info.hdr.isNotBlank() || info.bitDepth > 0) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -2646,7 +2688,7 @@ private fun TvEpisodeMediaInfoPanel(
                     ) {
                         Text(
                             "音频 · ${info.audioTracks.size} 条",
-                            color = TvText.Meta,
+                            color = PageMeta,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             letterSpacing = 1.sp
@@ -2660,12 +2702,12 @@ private fun TvEpisodeMediaInfoPanel(
                             ) {
                                 Text(
                                     track.language.ifBlank { "音轨 ${idx + 1}" },
-                                    color = TvText.Section,
+                                    color = PageSection,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 if (track.isDefault) {
-                                    Text("默认", color = TvText.Muted, fontSize = 11.sp)
+                                    Text("默认", color = PageMuted, fontSize = 11.sp)
                                 }
                                 val spec = listOfNotNull(
                                     track.codec.takeIf { it.isNotBlank() },
@@ -2677,7 +2719,7 @@ private fun TvEpisodeMediaInfoPanel(
                                 if (spec.isNotBlank()) {
                                     Text(
                                         spec,
-                                        color = TvText.Meta,
+                                        color = PageMeta,
                                         fontSize = 12.sp,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
@@ -2700,7 +2742,7 @@ private fun TvEpisodeMediaInfoPanel(
                     ) {
                         Text(
                             "字幕 · ${info.subtitleTracks.size} 条",
-                            color = TvText.Meta,
+                            color = PageMeta,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             letterSpacing = 1.sp
@@ -2714,20 +2756,20 @@ private fun TvEpisodeMediaInfoPanel(
                             ) {
                                 Text(
                                     sub.language.ifBlank { "字幕 ${idx + 1}" },
-                                    color = TvText.Section,
+                                    color = PageSection,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 if (sub.isDefault) {
-                                    Text("默认", color = TvText.Muted, fontSize = 11.sp)
+                                    Text("默认", color = PageMuted, fontSize = 11.sp)
                                 }
                                 if (sub.forced) {
-                                    Text("强制", color = TvText.Muted, fontSize = 11.sp)
+                                    Text("强制", color = PageMuted, fontSize = 11.sp)
                                 }
                                 if (sub.codec.isNotBlank()) {
                                     Text(
                                         sub.codec,
-                                        color = TvText.Meta,
+                                        color = PageMeta,
                                         fontSize = 12.sp,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
@@ -2745,7 +2787,7 @@ private fun TvEpisodeMediaInfoPanel(
 private fun MediaInfoChip(text: String) {
     Text(
         text,
-        color = TvText.Section,
+        color = PageSection,
         fontSize = 12.sp,
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier
@@ -2759,8 +2801,8 @@ private fun MediaInfoChip(text: String) {
 @Composable
 private fun MediaInfoKv(label: String, value: String) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(label, color = TvText.Meta, fontSize = 12.sp, maxLines = 1)
-        Text(value, color = TvText.Section, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        Text(label, color = PageMeta, fontSize = 12.sp, maxLines = 1)
+        Text(value, color = PageSection, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
     }
 }
 

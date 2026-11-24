@@ -109,6 +109,16 @@ private val DetailGlassEdge: Brush = Brush.verticalGradient(
 )
 
 /**
+ * 详情页是沉浸式恒暗页：整页底色由海报聚焦色压深（pageTonesOf 明度 ≤0.34），
+ * 不随颜色模式翻浅。浅色模式下全局中性令牌会翻成近黑，落在这层深底上反而读不出来，
+ * 所以页面正文固定用暗色档的亮字；弹层（SkipIntroSheet）有自己的 Surface 底，仍跟随模式。
+ */
+private val PageTextPrimary = Color(0xFFF4F4F4)
+private val PageTextSecondary = Color(0xFFA3A3A3)
+private val PageTextTertiary = Color(0xFF747474)
+private val PageSurfaceHi = Color(0xFF1F1F1F)
+
+/**
  * 剧集/电影详情页（沉浸式头图形态）。
  *
  * 结构自上而下：
@@ -389,7 +399,8 @@ fun DetailScreen(
     val headerRatio = if (isTv) 0.52f else 0.58f
     val pageTones = remember(dominantColor) {
         if (dominantColor == Color.Unspecified) {
-            AppColors.Bg to lerp(AppColors.Bg, Color.Black, 0.55f)
+            // 兜底同样固定暗档：页面恒暗，浅色模式别让顶部落成亮灰
+            Color(0xFF080808) to Color(0xFF040404)
         } else {
             pageTonesOf(dominantColor)
         }
@@ -460,7 +471,7 @@ fun DetailScreen(
             }
         } else if (media == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("条目不存在", color = AppColors.TextSecondary)
+                Text("条目不存在", color = PageTextSecondary)
             }
         } else {
             val item = media!!
@@ -672,13 +683,13 @@ fun DetailScreen(
                             Text(
                                 "简介",
                                 style = MaterialTheme.typography.titleMedium,
-                                color = AppColors.TextPrimary
+                                color = PageTextPrimary
                             )
                             Spacer(Modifier.height(6.dp))
                             Text(
                                 effectiveOverview,
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = AppColors.TextSecondary,
+                                color = PageTextSecondary,
                                 maxLines = if (descExpanded) Int.MAX_VALUE else 4,
                                 overflow = if (descExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
                                 onTextLayout = { layout ->
@@ -726,7 +737,7 @@ fun DetailScreen(
                                     Text(
                                         "“$tagline”",
                                         style = MaterialTheme.typography.bodyMedium,
-                                        color = AppColors.TextSecondary,
+                                        color = PageTextSecondary,
                                         fontStyle = FontStyle.Italic
                                     )
                                 }
@@ -737,13 +748,13 @@ fun DetailScreen(
                                             Box(
                                                 Modifier
                                                     .clip(Radius.Sm)
-                                                    .background(AppColors.SurfaceHi)
+                                                    .background(PageSurfaceHi)
                                                     .padding(horizontal = 8.dp, vertical = 3.dp)
                                             ) {
                                                 Text(
                                                     label,
                                                     style = MaterialTheme.typography.labelSmall,
-                                                    color = AppColors.TextSecondary
+                                                    color = PageTextSecondary
                                                 )
                                             }
                                         }
@@ -754,7 +765,7 @@ fun DetailScreen(
                                     Text(
                                         "导演  " + directors.joinToString("  ") { it.name },
                                         style = MaterialTheme.typography.labelMedium,
-                                        color = AppColors.TextSecondary
+                                        color = PageTextSecondary
                                     )
                                 }
                             }
@@ -778,7 +789,7 @@ fun DetailScreen(
                                         selectedContainerColor = AppColors.Brand,
                                         selectedLabelColor = Color.White,
                                         containerColor = Color.White.copy(alpha = 0.10f),
-                                        labelColor = AppColors.TextSecondary
+                                        labelColor = PageTextSecondary
                                     ),
                                     border = FilterChipDefaults.filterChipBorder(
                                         enabled = true,
@@ -805,13 +816,13 @@ fun DetailScreen(
                             Text(
                                 "剧集",
                                 style = MaterialTheme.typography.titleLarge,
-                                color = AppColors.TextPrimary,
+                                color = PageTextPrimary,
                                 modifier = Modifier.weight(1f)
                             )
                             Text(
                                 "${visibleEpisodes.size} 集",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = AppColors.TextTertiary
+                                color = PageTextTertiary
                             )
                             // 「跳过片头」胶囊：剧集 + 全局开关开启才出现，点击弹预设面板。
                             // 配置写在剧集壳行上：全剧生效、每部剧只配一次。
@@ -822,7 +833,7 @@ fun DetailScreen(
                                     text = if (introMs > 0) "跳过片头 · ${fmtIntroMs(introMs)}"
                                     else "跳过片头 · 关",
                                     style = MaterialTheme.typography.labelMedium,
-                                    color = if (introMs > 0) brand else AppColors.TextSecondary,
+                                    color = if (introMs > 0) brand else PageTextSecondary,
                                     modifier = Modifier
                                         .padding(start = 10.dp)
                                         .clip(Radius.Pill)
@@ -896,7 +907,7 @@ fun DetailScreen(
                                             selectedContainerColor = AppColors.Brand,
                                             selectedLabelColor = Color.White,
                                             containerColor = Color.White.copy(alpha = 0.10f),
-                                            labelColor = AppColors.TextSecondary
+                                            labelColor = PageTextSecondary
                                         ),
                                         border = FilterChipDefaults.filterChipBorder(
                                             enabled = true,
@@ -915,7 +926,7 @@ fun DetailScreen(
                             Text(
                                 "暂无分集，可能是来源接口未返回播放地址",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = AppColors.TextTertiary,
+                                color = PageTextTertiary,
                                 modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
                             )
                         }
@@ -937,8 +948,8 @@ fun DetailScreen(
                                             colors = FilterChipDefaults.filterChipColors(
                                                 selectedContainerColor = AppColors.Brand,
                                                 selectedLabelColor = Color.White,
-                                                containerColor = AppColors.SurfaceHi,
-                                                labelColor = AppColors.TextSecondary
+                                                containerColor = PageSurfaceHi,
+                                                labelColor = PageTextSecondary
                                             )
                                         )
                                     }
@@ -1010,7 +1021,7 @@ fun DetailScreen(
                             Text(
                                 "主演",
                                 style = MaterialTheme.typography.titleMedium,
-                                color = AppColors.TextPrimary
+                                color = PageTextPrimary
                             )
                             LazyRow(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1200,7 +1211,7 @@ private fun CastCard(person: CastPerson) {
             Modifier
                 .size(56.dp)
                 .clip(CircleShape)
-                .background(AppColors.SurfaceHi),
+                .background(PageSurfaceHi),
             contentAlignment = Alignment.Center
         ) {
             if (person.imageUrl.isNotBlank()) {
@@ -1214,7 +1225,7 @@ private fun CastCard(person: CastPerson) {
                 Text(
                     person.name.take(1),
                     style = MaterialTheme.typography.titleMedium,
-                    color = AppColors.TextSecondary
+                    color = PageTextSecondary
                 )
             }
         }
@@ -1222,7 +1233,7 @@ private fun CastCard(person: CastPerson) {
         Text(
             person.name,
             style = MaterialTheme.typography.labelSmall,
-            color = AppColors.TextPrimary,
+            color = PageTextPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -1230,7 +1241,7 @@ private fun CastCard(person: CastPerson) {
             Text(
                 person.role,
                 style = MaterialTheme.typography.labelSmall,
-                color = AppColors.TextTertiary,
+                color = PageTextTertiary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -1285,13 +1296,13 @@ private fun EpisodeCard(
         Text(
             text = if (episode.episode > 0) "E%02d".format(episode.episode) else "•",
             style = MaterialTheme.typography.labelMedium,
-            color = if (playing) AppColors.Brand else AppColors.TextTertiary
+            color = if (playing) AppColors.Brand else PageTextTertiary
         )
         Column(Modifier.weight(1f)) {
             Text(
                 text = episode.title,
                 style = MaterialTheme.typography.bodyMedium,
-                color = AppColors.TextPrimary,
+                color = PageTextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -1319,7 +1330,7 @@ private fun EpisodeCard(
         Icon(
             Icons.Filled.PlayArrow,
             contentDescription = null,
-            tint = AppColors.TextTertiary,
+            tint = PageTextTertiary,
             modifier = Modifier.size(18.dp)
         )
     }

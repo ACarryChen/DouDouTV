@@ -503,6 +503,10 @@ class TvPlayerActivity : ComponentActivity() {
         subtitleBgAlpha = sp.getFloat(KEY_SUBTITLE_BG_ALPHA, DEFAULT_SUBTITLE_BG_ALPHA)
         subtitleTextSize = sp.getFloat(KEY_SUBTITLE_TEXT_SIZE, DEFAULT_SUBTITLE_TEXT_SIZE)
 
+        // 播放器恒暗：TV 端浏览界面现在跟随颜色模式（Main onResume 会写 false），
+        // 播放器界面自己压回暗档，返回时由 Main 的 onResume 写回浏览档
+        AppColors.darkUi = true
+
         setContent {
             DouDouTvTheme {
                 TvPlayerScreen()

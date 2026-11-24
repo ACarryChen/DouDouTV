@@ -62,9 +62,10 @@ object ButtonMaterial {
     fun dangerStops(color: Color): List<Color> =
         listOf(lerp(color, Color.White, 0.22f), color, lerp(color, Color.Black, 0.10f))
 
-    /** 玻璃底：上厚下薄，像一片有厚度的磨砂片 */
+    /** 玻璃底：上厚下薄，像一片有厚度的磨砂片。白透明只压在暗底上，浅色底翻成黑透明 */
     fun glassStops(): List<Color> =
-        listOf(Color.White.copy(alpha = 0.13f), Color.White.copy(alpha = 0.07f))
+        if (AppColors.lightOn()) listOf(Color.Black.copy(alpha = 0.08f), Color.Black.copy(alpha = 0.04f))
+        else listOf(Color.White.copy(alpha = 0.13f), Color.White.copy(alpha = 0.07f))
 
     /** 中性哑光面 */
     fun neutralStops(): List<Color> =
@@ -80,10 +81,13 @@ object ButtonMaterial {
         listOf(Color.White.copy(alpha = 0.34f), Color.White.copy(alpha = 0.04f))
     )
 
-    /** 玻璃档的发丝描边：上缘略亮，底边压到几乎看不见 */
-    val glassEdge: Brush = Brush.verticalGradient(
-        listOf(Color.White.copy(alpha = 0.26f), Color.White.copy(alpha = 0.13f))
-    )
+    /** 玻璃档的发丝描边：上缘略亮，底边压到几乎看不见。随颜色模式反转，浅色下翻黑透明 */
+    val glassEdge: Brush
+        get() = if (AppColors.lightOn()) Brush.verticalGradient(
+            listOf(Color.Black.copy(alpha = 0.26f), Color.Black.copy(alpha = 0.13f))
+        ) else Brush.verticalGradient(
+            listOf(Color.White.copy(alpha = 0.26f), Color.White.copy(alpha = 0.13f))
+        )
 
     /** 主按钮的品牌光晕高度 */
     val PrimaryGlow = 8.dp
@@ -100,6 +104,15 @@ object ButtonMaterial {
  */
 enum class AppButtonVariant { Primary, Secondary, Neutral, Danger }
 
+/** 压图玻璃档：按钮浮在海报/剧照上时用，白透明玻璃 + 白字，不随颜色模式翻转 */
+private val OnImageGlassStops = listOf(
+    Color.White.copy(alpha = 0.16f),
+    Color.White.copy(alpha = 0.08f)
+)
+private val OnImageGlassEdge: Brush = Brush.verticalGradient(
+    listOf(Color.White.copy(alpha = 0.32f), Color.White.copy(alpha = 0.15f))
+)
+
 @Composable
 fun AppButton(
     text: String,
@@ -108,6 +121,11 @@ fun AppButton(
     icon: ImageVector? = null,
     enabled: Boolean = true,
     variant: AppButtonVariant = AppButtonVariant.Primary,
+    /**
+     * 按钮直接压在图片（首页轮播 Hero 等）上时置 true：图片明暗不可控，
+     * 玻璃档钉成白透明 + 白字，浅色模式下不能翻成黑玻璃压深字。
+     */
+    onImage: Boolean = false,
     shape: Shape = Radius.Md,
     contentPadding: PaddingValues = PaddingValues(horizontal = 24.dp, vertical = 10.dp),
     textStyle: TextStyle = MaterialTheme.typography.labelLarge,
@@ -131,7 +149,7 @@ fun AppButton(
         // 禁用态退回哑光面：实底按钮变灰后不该还带着品牌渐变和光晕
         !enabled -> ButtonMaterial.neutralStops()
         variant == AppButtonVariant.Primary -> ButtonMaterial.primaryStops(brand, brandSoft)
-        variant == AppButtonVariant.Secondary -> ButtonMaterial.glassStops()
+        variant == AppButtonVariant.Secondary -> if (onImage) OnImageGlassStops else ButtonMaterial.glassStops()
         variant == AppButtonVariant.Neutral -> ButtonMaterial.neutralStops()
         else -> ButtonMaterial.dangerStops(AppColors.Danger)
     }
@@ -140,7 +158,9 @@ fun AppButton(
         // 实底档一律黑字。品牌色明度都在中档，黑字对比度比白字高一倍
         // （石墨蓝上黑字 6.6:1、白字只有 3.22:1），深字压亮底也是当下高端 UI 的通行做法。
         variant == AppButtonVariant.Primary || variant == AppButtonVariant.Danger -> Color.Black
-        variant == AppButtonVariant.Secondary -> Color.White
+        // Secondary 是玻璃底：浅色下玻璃翻成黑透明，文字也跟着翻深；压图档钉白
+        variant == AppButtonVariant.Secondary ->
+            if (onImage || !AppColors.lightOn()) Color.White else AppColors.TextPrimary
         else -> AppColors.TextPrimary
     }
 
@@ -171,7 +191,7 @@ fun AppButton(
                     variant == AppButtonVariant.Primary || variant == AppButtonVariant.Danger ->
                         Modifier.border(1.dp, ButtonMaterial.highlightEdge, shape)
                     variant == AppButtonVariant.Secondary ->
-                        Modifier.border(1.dp, ButtonMaterial.glassEdge, shape)
+                        Modifier.border(1.dp, if (onImage) OnImageGlassEdge else ButtonMaterial.glassEdge, shape)
                     else -> Modifier.border(1.dp, Edge.HairlineStrong, shape)
                 }
             )

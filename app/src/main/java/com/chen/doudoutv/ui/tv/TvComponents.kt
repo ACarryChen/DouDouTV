@@ -86,6 +86,8 @@ import com.chen.doudoutv.ui.components.ScrapedBadge
 import com.chen.doudoutv.ui.components.batchScrapeConfirmText
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.Edge
+import com.chen.doudoutv.ui.theme.LocalTvPageDark
+import com.chen.doudoutv.ui.theme.TvPageText
 import com.chen.doudoutv.ui.theme.TvText
 import com.chen.doudoutv.ui.theme.Radius
 import com.chen.doudoutv.ui.theme.Motion
@@ -242,14 +244,14 @@ internal fun DrawScope.tvDrawFocusRing(rect: Rect, radiusPx: Float) {
     if (rect.width <= w * 2f || rect.height <= w * 2f) return
     val maxR = minOf(rect.width, rect.height) / 2f
     drawRoundRect(
-        color = Color.White,
+        color = AppColors.Focus,
         topLeft = Offset(rect.left + w / 2f, rect.top + w / 2f),
         size = Size(rect.width - w, rect.height - w),
         cornerRadius = CornerRadius(minOf(radiusPx - w / 2f, maxR).coerceAtLeast(0f)),
         style = Stroke(w)
     )
     drawRoundRect(
-        color = Color.Black.copy(alpha = 0.4f),
+        color = if (AppColors.lightOn()) Color.White.copy(alpha = 0.4f) else Color.Black.copy(alpha = 0.4f),
         topLeft = Offset(rect.left + w + k / 2f, rect.top + w + k / 2f),
         size = Size(rect.width - 2f * w - k, rect.height - 2f * w - k),
         cornerRadius = CornerRadius(minOf(radiusPx - w - k / 2f, maxR).coerceAtLeast(0f)),
@@ -379,6 +381,17 @@ private fun tvButtonPadding(size: TvButtonSize): PaddingValues = when (size) {
  * 实底压黑字、玻璃压白字。焦点信号仍是白边 + 放大，不靠换填充色——
  * 十英尺下焦点是常态，整颗反白会把主题色在屏幕上唯一的大色块抹掉。
  */
+/**
+ * 恒暗页（TV 详情页）上的玻璃档：对齐暗色模式 [ButtonMaterial.glassStops]/glassEdge 的白透明口径。
+ * 浅色模式下 ButtonMaterial 会翻黑透明，落在详情页的暗底上就成了黑块压暗底。
+ */
+private fun pageGlassStops(): List<Color> =
+    listOf(Color.White.copy(alpha = 0.13f), Color.White.copy(alpha = 0.07f))
+
+private val pageGlassEdge = Brush.verticalGradient(
+    listOf(Color.White.copy(alpha = 0.26f), Color.White.copy(alpha = 0.13f))
+)
+
 @Composable
 fun TvPillButton(
     text: String,
@@ -407,6 +420,8 @@ fun TvPillButton(
     val focused by interaction.collectIsFocusedAsState()
     val brand = AppColors.Brand
     val brandSoft = AppColors.BrandSoft
+    // 恒暗页（TV 详情页）：玻璃档翻成白透明、次档文字钉白，浅色模式下不能翻成黑玻璃/深字
+    val onDark = LocalTvPageDark.current
 
     Box(
         modifier
@@ -426,7 +441,7 @@ fun TvPillButton(
             .background(
                 Brush.verticalGradient(
                     if (primary) ButtonMaterial.primaryStops(brand, brandSoft)
-                    else ButtonMaterial.glassStops()
+                    else if (onDark) pageGlassStops() else ButtonMaterial.glassStops()
                 )
             )
             .tvFocusRing(focused)
@@ -434,7 +449,9 @@ fun TvPillButton(
                 when {
                     focused -> Modifier
                     primary -> Modifier.border(1.dp, ButtonMaterial.highlightEdge, Radius.Md)
-                    else -> Modifier.border(1.dp, ButtonMaterial.glassEdge, Radius.Md)
+                    else -> Modifier.border(
+                        1.dp, if (onDark) pageGlassEdge else ButtonMaterial.glassEdge, Radius.Md
+                    )
                 }
             )
             .clickable(
@@ -448,8 +465,8 @@ fun TvPillButton(
         val textColor = when {
             // 实底压黑字：品牌色明度在中档，黑字比白字对比度高一倍
             primary -> Color.Black
-            size == TvButtonSize.Sm -> TvText.Body
-            else -> TvText.Title
+            size == TvButtonSize.Sm -> if (onDark) TvPageText.Body else TvText.Body
+            else -> if (onDark) TvPageText.Title else TvText.Title
         }
         val iconSize = when (size) {
             TvButtonSize.Sm -> 18.dp
@@ -551,6 +568,7 @@ fun TvIconButton(
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val shape = tvButtonShape()
+    val onDark = LocalTvPageDark.current
 
     Box(
         modifier
@@ -565,14 +583,18 @@ fun TvIconButton(
                     active -> Brush.verticalGradient(
                         ButtonMaterial.primaryStops(AppColors.Brand, AppColors.BrandSoft)
                     )
-                    else -> Brush.verticalGradient(ButtonMaterial.glassStops())
+                    else -> Brush.verticalGradient(
+                        if (onDark) pageGlassStops() else ButtonMaterial.glassStops()
+                    )
                 }
             )
             .tvFocusRing(focused)
             .then(
                 if (focused) Modifier
                 else if (active) Modifier.border(1.dp, ButtonMaterial.highlightEdge, shape)
-                else Modifier.border(1.dp, ButtonMaterial.glassEdge, shape)
+                else Modifier.border(
+                    1.dp, if (onDark) pageGlassEdge else ButtonMaterial.glassEdge, shape
+                )
             )
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .focusable(interactionSource = interaction),
@@ -584,7 +606,7 @@ fun TvIconButton(
             tint = when {
                 focused -> Color.Black
                 active -> Color.Black
-                else -> TvText.Title
+                else -> if (onDark) TvPageText.Title else TvText.Title
             },
             // 图标随按钮等比缩，收小后不会出现「大图标塞在小圆里」
             modifier = Modifier.size(sizeDp * 0.48f)
@@ -637,7 +659,7 @@ fun TvMediaTitle(
             Text(
                 text = title,
                 style = titleStyle,
-                color = TvText.Title,
+                color = Color.White,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
@@ -671,7 +693,7 @@ fun TvSectionTitle(
         Text(
             text,
             // 分区标题比 Hero 低一档：titleLarge + Section 级白，靠字号分层而不是靠粗体
-            color = TvText.Section,
+            color = if (LocalTvPageDark.current) TvPageText.Section else TvText.Section,
             style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.weight(1f)
         )
@@ -757,7 +779,7 @@ fun TvEmptyState(
     ) {
         Text(
             text,
-            color = TvText.Section,
+            color = if (LocalTvPageDark.current) TvPageText.Section else TvText.Section,
             style = MaterialTheme.typography.headlineSmall
         )
         if (hint != null) {
@@ -765,7 +787,7 @@ fun TvEmptyState(
             Text(
                 text = hint,
                 // hint 比主文低两档，别抢注意力
-                color = TvText.Meta,
+                color = if (LocalTvPageDark.current) TvPageText.Meta else TvText.Meta,
                 style = MaterialTheme.typography.bodyMedium
             )
         }
@@ -790,17 +812,18 @@ fun TvMetaRow(item: MediaEntity, modifier: Modifier = Modifier) {
     }.filter { it.isNotBlank() }
 
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        val onDark = LocalTvPageDark.current
         bits.forEachIndexed { index, s ->
             if (index > 0) {
                 Text(
                     text = "  ·  ",
-                    color = TvText.Hairline,
+                    color = if (onDark) TvPageText.Hairline else TvText.Hairline,
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
             Text(
                 text = s,
-                color = TvText.Meta,
+                color = if (onDark) TvPageText.Meta else TvText.Meta,
                 style = MaterialTheme.typography.bodyMedium
             )
         }
@@ -920,7 +943,8 @@ fun TvFilterChip(
             text,
             color = when {
                 focused -> Color.Black
-                selected -> TvText.Title
+                // 选中态落在品牌实底上：白字两种颜色模式下都成立（Title 在浅色下会翻近黑）
+                selected -> Color.White
                 else -> TvText.Body
             },
             // 徽章级：labelMedium，比正文轻一档

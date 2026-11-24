@@ -43,6 +43,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -89,6 +90,7 @@ import com.chen.doudoutv.ui.components.argbWithAlpha
 import com.chen.doudoutv.ui.components.continueTitle
 import com.chen.doudoutv.ui.components.episodeLabel
 import com.chen.doudoutv.ui.theme.AppColors
+import com.chen.doudoutv.ui.theme.LocalTvPageDark
 import com.chen.doudoutv.ui.theme.Motion
 import com.chen.doudoutv.ui.theme.Radius
 import com.chen.doudoutv.ui.theme.TvText
@@ -266,11 +268,14 @@ internal fun TvHero(
         }
     }
 
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(tvHeroHeight())
-    ) {
+    // Hero 整块压在底图上，等同恒暗面：玻璃按钮、元信息行按暗页口径取色，
+    // 浅色模式下不能翻成黑玻璃/深字压在画面上。
+    CompositionLocalProvider(LocalTvPageDark provides true) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(tvHeroHeight())
+        ) {
         // 背景层：放大后的图要裁在 Hero 里，不能溢出到下方内容区
         Box(
             Modifier
@@ -399,7 +404,8 @@ internal fun TvHero(
                     } else {
                         Text(
                             current.title,
-                            color = TvText.Title,
+                            // Hero 压在底图上：兜底标题钉白，不随颜色模式翻深
+                            color = Color.White,
                             style = MaterialTheme.typography.displayLarge,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
@@ -476,6 +482,7 @@ internal fun TvHero(
                         }
                 )
             }
+        }
         }
     }
 }
@@ -800,7 +807,7 @@ private fun TvManageLineChip(
                     else -> AppColors.Surface
                 }
             )
-            .then(if (focused) Modifier.border(2.dp, Color.White, Radius.Md) else Modifier)
+            .then(if (focused) Modifier.border(2.dp, AppColors.Focus, Radius.Md) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },

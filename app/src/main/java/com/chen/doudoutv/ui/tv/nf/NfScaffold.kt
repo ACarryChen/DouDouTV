@@ -374,8 +374,10 @@ fun NfShellNav(
                     )
             ) {
                 // 收色带只在悬浮装配（首页）时有意义：流内那三页顶栏下面就是内容，
-                // 压一层渐变反而把分类条压暗
-                if (config?.inFlow != true) {
+                // 压一层渐变反而把分类条压暗。
+                // 它压的是 Bg 实色：暗色下把顶栏接进近黑背景；浅色下就是盖在海报顶上的
+                // 一层白雾（2026-11-24 装机反馈的「顶部白光」），浅色模式不画。
+                if (config?.inFlow != true && !AppColors.lightOn()) {
                     Box(
                         Modifier
                             .align(Alignment.TopCenter)
@@ -404,6 +406,9 @@ fun NfShellNav(
                     belowFocusRequester = config?.below,
                     tabFocus = chrome::tabOf,
                     scopeFocus = chrome.scopeFocus,
+                    // 常驻顶栏服务所有页面：只有首页压在 Hero 上才钉白，
+                    // 分类/我的/搜索/设置回到页面底上的模式色（浅色=深字）
+                    onImage = current == NfTab.Home,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .onSizeChanged { shell.navHeight = with(density) { it.height.toDp() } }
@@ -499,8 +504,8 @@ fun NfScaffold(
     val scope = rememberNfScope(vm)
     val tabs = rememberVisibleNavTabs(chrome)
 
-    // 导航条在两种装配方式下共用同一份构造：悬浮（首页）与流内（分类/我的/搜索）
-    val navBar: @Composable (Modifier) -> Unit = { barModifier ->
+    // 导航条在两种装配方式下共用同一份构造：悬浮（首页，压 Hero）与流内（分类/我的/搜索，压页面底）
+    val navBar: @Composable (Modifier, Boolean) -> Unit = { barModifier, onImage ->
         NfNavBar(
             current = current,
             tabs = tabs,
@@ -515,6 +520,7 @@ fun NfScaffold(
             belowFocusRequester = belowFocusRequester,
             tabFocus = chrome::tabOf,
             scopeFocus = chrome.scopeFocus,
+            onImage = onImage,
             modifier = barModifier.onFocusEvent {
                 chrome.navFocused = it.hasFocus
                 if (it.hasFocus) onNavFocus?.invoke()
@@ -532,7 +538,7 @@ fun NfScaffold(
                 // 流内装配时导航条下面只留一条窄缝：它自己只有 top padding，
                 // 紧贴着排就会和第一行内容（搜索页的输入框）糊成一块；
                 // 12dp 时和分类条、网格上边距叠起来纵向太空，收到 4dp
-                navBar(Modifier.padding(bottom = 4.dp))
+                navBar(Modifier.padding(bottom = 4.dp), false)
                 Box(Modifier.fillMaxWidth().weight(1f)) { content() }
             }
         } else {
@@ -561,7 +567,7 @@ fun NfScaffold(
                                 )
                             )
                     )
-                    navBar(Modifier.align(Alignment.TopCenter))
+                    navBar(Modifier.align(Alignment.TopCenter), true)
                 }
             }
         }

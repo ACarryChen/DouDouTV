@@ -14,6 +14,7 @@ object Prefs {
     private const val KEY_TMDB_READ_TOKEN = "tmdb_read_token"
     private const val KEY_TMDB_ENABLED = "tmdb_enabled"
     private const val KEY_POSTER_SIZE = "poster_size"
+    private const val KEY_THEME_MODE = "theme_mode"
     private const val KEY_TV_CARD_MOTION = "tv_card_motion"
     private const val KEY_TONE_PREFIX = "detail_tone_"
     private const val KEY_HOME_SOURCE_ID = "home_source_id"
@@ -35,6 +36,18 @@ object Prefs {
     enum class PosterSize(val mobileDp: Int, val tvDp: Int) {
         SMALL(92, 132), MEDIUM(118, 162), LARGE(144, 192)
     }
+
+    /** 三档颜色模式：浅色（默认）/ 暗色 / 跟随系统。浅色只在手机端生效，TV 与播放器恒暗；枚举顺序即弹窗档位顺序 */
+    enum class ThemeMode { LIGHT, DARK, SYSTEM }
+
+    var themeMode: ThemeMode
+        get() {
+            val name = sp.getString(KEY_THEME_MODE, ThemeMode.LIGHT.name)
+            return runCatching { ThemeMode.valueOf(name.orEmpty()) }.getOrDefault(ThemeMode.LIGHT)
+        }
+        set(value) {
+            sp.edit().putString(KEY_THEME_MODE, value.name).apply()
+        }
 
     var posterSize: PosterSize
         get() {

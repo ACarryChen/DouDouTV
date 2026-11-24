@@ -368,6 +368,7 @@ fun HeroBanner(
                             text = "详情",
                             onClick = { onOpen(item) },
                             variant = AppButtonVariant.Secondary,
+                            onImage = true,
                             shape = Radius.Md,
                             contentPadding = PaddingValues(horizontal = 26.dp, vertical = 10.dp),
                             fontWeight = FontWeight.SemiBold
