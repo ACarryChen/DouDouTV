@@ -213,7 +213,6 @@ private fun qrBitmap(text: String, sizePx: Int = 512): Pair<Bitmap?, String?> {
                 bmp.setPixel(x, y, if (matrix.get(x, y)) 0xFF000000.toInt() else 0xFFFFFFFF.toInt())
             }
         }
-        Log.i(TAG, "二维码 成功 矩阵=$matrixW 耗时=${android.os.SystemClock.elapsedRealtime() - t0}ms")
         bmp to null
     } catch (t: Throwable) {
         // 之前这里是 runCatching{}.getOrNull()：异常被吞成 null，界面上就永远停在「正在生成…」，

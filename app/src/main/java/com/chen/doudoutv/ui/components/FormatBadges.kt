@@ -26,21 +26,14 @@ import com.chen.doudoutv.R
 import com.chen.doudoutv.ui.theme.Radius
 
 /**
- * 格式徽章：TMDB 图标（开启 TMDB 时）+ Emby / 文件名解析到的分辨率、HDR、编码、音轨，
- * 电视端还会追加源自己给的信息（更新状态、共 N 集、N 条线路）。
+ * 格式徽章：TMDB 图标（开启 TMDB 时）+ Emby/文件名解析到的分辨率、HDR、编码、音轨，
+ * 电视端还追加源信息（更新状态、共 N 集、N 条线路）。
  *
- * ## 这个文件为什么同时管「取色」和「画」
- *
- * 手机端（本文件的 [FormatBadgesRow]）和电视端（TvDetailScreen 的徽章行）的**排版**必须分开：
- * 手机是一行不换行的 Row、12sp；电视要 FlowRow 换行、14sp，十英尺外才读得出。
- * 但**取色和编排规则**必须只有一份 —— 之前两端各写了一遍相同的 when 分支，结果：
- *
- *   · Dolby Vision 手机端走 [DolbyVisionBadge] 特制图标，电视端却落进 else 分支的灰蓝兜底；
- *   · 音轨棕、编码灰蓝在两个文件里各写一次字面量，改一处漏一处；
- *   · TMDB 蓝在 [BadgeColors] 和 TmdbBranding 里各定义一次。
- *
- * 所以这里只导出三样东西给两端共用：[BadgeColors]（色相表）、[buildFormatBadges]（编排）、
- * [BadgeChip]（单枚渲染）。字号/内边距留给调用方分档，材质与取色一律不开放。
+ * 本文件同时管「取色」和「编排」，是故障档案换来的单一事实源：两端排版必须分开
+ * （手机一行 12sp，电视 FlowRow 换行 14sp），但取色/编排各写一份吃过亏 ——
+ * Dolby Vision 手机走特制图标、电视却落灰蓝兜底；音轨棕/编码灰蓝两处字面量改一漏一；
+ * TMDB 蓝定义两次。所以只导出 [BadgeColors]（色相表）、[buildFormatBadges]（编排）、
+ * [BadgeChip]（单枚渲染）三样共用，字号/内边距留给调用方分档。
  */
 
 /**

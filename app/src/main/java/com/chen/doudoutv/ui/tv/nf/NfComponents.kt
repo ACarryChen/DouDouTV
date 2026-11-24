@@ -329,28 +329,16 @@ private val NfRectConverter = TwoWayConverter<Rect, AnimationVector4D>(
 )
 
 /**
- * 一条 bar（导航 tab 条 / 分类 chip 条）内的移动焦点框。
+ * 一条 bar 内的移动焦点框：焦点换颗时从旧矩形平移+形变到新矩形，读起来「一个框在走」。
+ * 只在 bar 内飞；焦点离开 bar 这层不画，落点自己那圈 tvFocusRing 瞬时亮（跨层不飞：1.9
+ * 焦点是瞬时吸附，框飞行的 150ms 里用户已按下一键，读起来是「框跟不上」）。
+ * 矩形不走重组：布局回调直喂 Animatable，值只在绘制期读，每帧只重绘这一层。
  *
- * 框画在整条 bar 之上的一层：焦点换颗时它从旧矩形平移并形变到新矩形，
- * 读起来是「一个框在走」，而不是「一个灭了另一个亮」。
- *
- * 只在这条 bar 内飞。焦点离开 bar（下到网格、进弹窗）时这一层直接不画，落点自己那圈
- * [tvFocusRing] 瞬时亮起 —— 跨层不飞：1.9 的焦点是瞬时吸附，框飞过去的那 150ms 里
- * 用户已经按了下一个键，读起来就是「框跟不上」。
- *
- * 矩形不走重组：布局回调直接喂给 [Animatable]，值只在绘制期读，滚动和飞行每帧只重绘这一层。
- *
- * **焦点来源不用 `Modifier.onFocusEvent`，用元件自己那份 `collectIsFocusedAsState`。**
- * 两条理由，都是真机撞出来的：
- * ① 1.9 的 `FocusTargetNode.dispatchFocusCallbacks` 同步把子节点的新状态原样推给祖先的
- *    事件节点，切颗时先推一趟 Inactive 一路推到 bar 容器 —— 容器那下「失焦」是假的，
- *    夹在两颗之间，拿它清「当前落点」会把飞行起点抹掉，框永远瞬移。
- * ② 事件节点排在 `clickable` 外层时，那条 `visitSelfAndAncestors(untilType = FocusTarget)`
- *    走到 clickable 自带的焦点目标就停了，压根收不到 —— 框整个不画。
- * 元件那份 `focused` 是驱动文字变白的同一个值，它一直是准的，跟着它走就没有这两个坑。
- *
- * 另外每颗自带 [nfBarFrameFallback]：这一层没有矩形时它自己画一圈静态框。
- * 飞行层再怎么出问题，「点哪里框就在哪里」都不会丢。
+ * 焦点来源必须用元件自己的 collectIsFocusedAsState，不能用 Modifier.onFocusEvent——
+ * 两个真机撞出来的坑：① 1.9 切颗时 dispatchFocusCallbacks 会同步向祖先推一趟假 Inactive，
+ * 拿容器的假失焦清「当前落点」会抹掉飞行起点、框瞬移；② 事件节点排在 clickable 外层时
+ * visitSelfAndAncestors 走到 clickable 焦点目标就停，压根收不到事件、框整个不画。
+ * 每颗自带 nfBarFrameFallback 兜底：本层没矩形时自己画静态框，「点哪里框在哪里」不丢。
  */
 class NfBarFocus internal constructor(private val scope: CoroutineScope) {
     /** 当前持焦的那一颗。只在绘制期读，写它只重绘不重组 */

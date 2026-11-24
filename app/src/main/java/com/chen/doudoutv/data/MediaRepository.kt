@@ -27,7 +27,9 @@ import com.chen.doudoutv.data.tmdb.TmdbClient
 import com.chen.doudoutv.core.Prefs
 import com.chen.doudoutv.core.VideoCache
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -425,24 +427,14 @@ class MediaRepository(private val context: Context) {
     suspend fun countBySource(sourceId: Long): Int = mediaDao.countBySource(sourceId)
 
     /**
-     * 解析 TVBox 播放地址。
+     * 解析 TVBox 播放地址。云盘地址（scheme/分享页）与 http(s) 直链统一走 spider；
+     * 直链解析失败/超时由 [TvBoxClient.resolvePlayUrl] 内部回退原地址。
+     * 云盘额外处理令牌过期：分集 uri 里的分享令牌过期/源站重新分享后整剧 404，
+     * 先按需刷新详情换新令牌，仍失败再强刷一次重试。
      *
-     * 云盘地址（quark://、aliyundrive:// 等 scheme，以及 pan.quark.cn 这类分享页 http 链接）
-     * 不是视频直链，必须走 spider 解析；普通 http(s) 直链同样交给 spider 处理
-     * （可能补 Cookie/Referer，也可能识别出需要网页解析）。
-     * 直链解析失败/超时会由 [TvBoxClient.resolvePlayUrl] 内部回退原地址，不影响可播性。
-     *
-     * 云盘线路额外做一件事：分集 uri 里是带分享令牌的 id/分享页，令牌会过期、
-     * 源站重新分享后旧链接会整剧失效，拿去转存会被夸克回 HTTP 404。
-     * 所以先按需刷新详情换新令牌，解析仍失败时再强刷一次重试。
-     *
-     * @param episode 分集实体（需包含 sourceId、seriesKey、playSource、uri）
-     * @param forceRefresh true 表示播放端刚报了死链（404/403/412）：丢弃解析缓存，
-     *   并跳过云盘刷新防抖强制重拉详情 + 重新解析
-     * @return 解析结果（URL + headers）；非 TVBox 来源原样返回 uri
-     *
-     * 结果按「分集 id|uri」缓存 [RESOLVED_URL_TTL_MS]：播放器会在本集临近结束时预热下一集，
-     * 真到切集时命中缓存，省掉刷令牌 + 问 spider 要直链这两跳。
+     * @param forceRefresh true=播放端报了死链（404/403/412）：丢解析缓存 + 跳过刷新防抖强拉详情
+     * @return 解析结果（URL + headers）；非 TVBox 来源原样返回 uri。
+     *   按「分集 id|uri」缓存 [RESOLVED_URL_TTL_MS]，命中则切集时省掉刷令牌+问 spider 两跳。
      */
     suspend fun resolveTvBoxPlayUrl(
         episode: MediaEntity,
@@ -454,7 +446,6 @@ class MediaRepository(private val context: Context) {
             val cached = if (forceRefresh) null else RESOLVED_URLS[key]?.takeIf {
                 System.currentTimeMillis() - it.at < RESOLVED_URL_TTL_MS
             }?.let {
-                Log.w("SpiderProxy", "直链命中预热缓存，跳过解析 mediaId=${episode.id}")
                 it.value
             }
             val resolved = cached ?: run {
@@ -698,13 +689,11 @@ class MediaRepository(private val context: Context) {
             if (itemId.isBlank() || ':' in itemId) return@withContext null
             val cacheKey = "$sourceId:$remoteId"
             embyDetailCache[cacheKey]?.let {
-                Log.i("TvDetailFocus", "embyDetail 缓存命中 key=$cacheKey")
                 return@withContext it
             }
             runCatching {
                 EmbyClient(src.location, src.token, src.userId).fetchItemDetail(itemId)
             }.getOrNull()?.also {
-                Log.i("TvDetailFocus", "embyDetail 联网取 key=$cacheKey")
                 embyDetailCache[cacheKey] = it
             }
         }
@@ -983,26 +972,13 @@ class MediaRepository(private val context: Context) {
             .map { it.key }
 
     /**
-     * 按 remoteId 批量写入元数据（一批 = 一次查询 + 一次 insertAll + 一次 updateAll + 一次回填）。
-     *
-     * 语义与之前的逐条版本一致：
-     * 已存在时保留 id / 播放进度 / 收藏 / 添加时间，并刷新源同步来的字段。
-     *
-     * 关键语义：**源同步字段有值就用源的，源给空字符串就保留 DB 已有值**。
-     * 这样 Emby/TVBox 重同步时不会把 TMDB 补好的 logoUrl / posterUrl / overview
-     * 等字段冲成空。优先级：Emby 自带元数据 > TVBox 返回字段 > TMDB 补空。
-     *
-     * 不能用 upsert(REPLACE)：那会删行重插，进度和收藏都会丢。
-     * 调用方传入的条目需已补齐 pinyinInitials / sourceName。
+     * 按 remoteId 批量写入元数据（分批绕开 SQLite IN 占位符上限；一批 = 一次查询 +
+     * 一次 insertAll + 一次 updateAll + 一次回填）。
+     * 关键语义：源同步字段有值就用源的、源给空串保留 DB 已有值——重同步不把 TMDB 补好的
+     * 字段冲空。优先级：Emby 自带 > TVBox 返回 > TMDB 补空。
+     * 不能用 upsert(REPLACE)：删行重插会丢进度和收藏。[mergeUserState] 按手机端为准合并
+     * 用户状态（本地空白才采用服务端那份），冲突经 [onUserStateConflict] 由上层回写服务端。
      * @return 库里现在的这些条目（新行带上了自增 id）
-     */
-    /**
-     * 批量入库（分批是为了绕开 SQLite 的 IN 占位符上限）。
-     *
-     * [mergeUserState] 打开时按「手机端为准」合并用户状态：
-     * 本地已经有进度或收藏，就以本地为准（服务端的旧数据不许覆盖手机上的）；
-     * 本地空白时采用服务端那份，这样网页端看过的、收藏过的才能读回手机。
-     * 两边不一致且以本地为准的，通过 [onUserStateConflict] 回调出去，由上层回写服务端。
      */
     private suspend fun upsertMediaBatch(
         incoming: List<MediaEntity>,
@@ -1208,15 +1184,32 @@ class MediaRepository(private val context: Context) {
         source: SourceEntity,
         pushes: EmbyStatePushes
     ) {
-        val played = runCatching {
-            client.fetchUserItems("IsPlayed", "Movie,Episode", "DatePlayed", 60)
-        }.getOrDefault(emptyList())
-        val resumable = runCatching {
-            client.fetchUserItems("IsResumable", "Movie,Episode", "DatePlayed", 60)
-        }.getOrDefault(emptyList())
-        val favItems = runCatching {
-            client.fetchUserItems("IsFavorite", "Movie,Series,Episode", "SortName", 100)
-        }.getOrDefault(emptyList())
+        // 三路查询互不依赖，并行发（串行时同步时长=三跳之和，并行只等最慢一跳）
+        coroutineScope {
+            val played = async {
+                runCatching { client.fetchUserItems("IsPlayed", "Movie,Episode", "DatePlayed", 60) }
+                    .getOrDefault(emptyList())
+            }
+            val resumable = async {
+                runCatching { client.fetchUserItems("IsResumable", "Movie,Episode", "DatePlayed", 60) }
+                    .getOrDefault(emptyList())
+            }
+            val favItems = async {
+                runCatching { client.fetchUserItems("IsFavorite", "Movie,Series,Episode", "SortName", 100) }
+                    .getOrDefault(emptyList())
+            }
+            mergeUserState(client, source, pushes, played.await(), resumable.await(), favItems.await())
+        }
+    }
+
+    private suspend fun mergeUserState(
+        client: EmbyClient,
+        source: SourceEntity,
+        pushes: EmbyStatePushes,
+        played: List<EmbyClient.Item>,
+        resumable: List<EmbyClient.Item>,
+        favItems: List<EmbyClient.Item>,
+    ) {
 
         val watched = (played + resumable)
             .filter { it.userData.played || it.userData.positionTicks > 0L }
@@ -1816,7 +1809,6 @@ class MediaRepository(private val context: Context) {
             }
             embySessions[mediaId] = info
             client.reportPlaybackStart(itemId, positionMs * 10_000L, info.playSessionId, info.mediaSourceId)
-            Log.w("EmbyReport", "起播上报成功 item=$itemId pos=${positionMs}ms psid=${info.playSessionId}")
             true
         }.onFailure {
             Log.w("EmbyReport", "起播上报失败：${it.message}")
@@ -1832,7 +1824,6 @@ class MediaRepository(private val context: Context) {
         runCatching {
             client.reportPlaybackProgress(itemId, positionMs * 10_000L, paused, info.playSessionId, info.mediaSourceId)
         }
-            .onSuccess { Log.w("EmbyReport", "心跳上报成功 item=$itemId pos=${positionMs}ms paused=$paused") }
             .onFailure { Log.w("EmbyReport", "进度上报失败：${it.message}") }
     }
 
@@ -1853,7 +1844,6 @@ class MediaRepository(private val context: Context) {
         runCatching {
             client.reportPlaybackStopped(itemId, ticks, info?.playSessionId.orEmpty(), info?.mediaSourceId.orEmpty())
         }
-            .onSuccess { Log.w("EmbyReport", "停播上报成功 item=$itemId pos=${positionMs}ms watched=$watched") }
             .onFailure { Log.w("EmbyReport", "停播上报失败：${it.message}") }
         embySessions.remove(mediaId)
     }

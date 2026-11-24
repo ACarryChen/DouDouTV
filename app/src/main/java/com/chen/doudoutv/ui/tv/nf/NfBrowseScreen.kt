@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -420,7 +420,7 @@ fun NfBrowseScreen(
                         text = "TVBox 要先选定一条线路",
                         hint = "分类内容按线路请求，「全部站点」是聚合视图、没有分页入口",
                         actionLabel = "选择线路",
-                        actionIcon = Icons.Filled.List,
+                        actionIcon = Icons.AutoMirrored.Filled.List,
                         onAction = { chrome.openScopeDrawer = true },
                         focusRequester = emptyFocus
                     )

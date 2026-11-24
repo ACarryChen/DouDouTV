@@ -10,25 +10,17 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 网盘直链的磁盘缓存，直接用 Media3 官方的 [SimpleCache] + LRU 淘汰。
+ * 网盘直链的磁盘缓存，Media3 官方 SimpleCache + LRU 淘汰。
+ * 值得开：网盘 CDN 速率会被压到 ~100KB/s，落盘后往回 seek、重看、续看不再吃网络；
+ * 预读器（VideoCacheFiller）在播放器不缺数据时往前攒。
  *
- * 为什么值得开这一层：网盘 CDN 只有「带结尾的固定 Range 块」跑得满，速率还随时会被压到 ~100KB/s。
- * 播放器按 50/60 秒存粮边播边拉，拉到的字节丢掉就再也回不来；落盘之后往回 seek、
- * 重看同一集、看到一半退出后再进来，这些重复字节都不再吃网络。预读器（
- * [com.chen.doudoutv.player.VideoCacheFiller]）负责在播放器不缺数据时往前攒。
+ * 坐标系只有一套：流坐标（播放器视角、真实容器为 0，不含伪装图）。平移由
+ * StreamSpaceDataSource 在 DataSpec 层做，缓存区间/Media3 记账/seek 全同坐标系。
+ * （早先把平移留在 OkHttp 拦截器再套 CacheDataSource，两套坐标叠加 READ_POSITION_OUT_OF_RANGE，
+ * 是以前彻底禁用缓存的真因。）
  *
- * 坐标系是这里最容易出错的地方，只有一套：**流坐标**。
- * 流坐标 = 播放器眼里的资源，从真实容器开始算第 0 字节；网盘文件里前面那张伪装图不在内。
- * [com.chen.doudoutv.player.StreamSpaceDataSource] 负责在 DataSpec 层做流坐标 ⇄ 文件坐标的平移，
- * 所以缓存的区间、Media3 记账的总长、播放器的 seek 全在同一个坐标系里。
- * （早先试过把平移留在 OkHttp 拦截器里再套 CacheDataSource，两套坐标叠起来直接
- * READ_POSITION_OUT_OF_RANGE，这也是这个仓库以前彻底禁用缓存的原因。）
- *
- * 边界：
- *  - 只有被 [bind] 登记过的直链才走这条路。Emby 直链、m3u8 分片从不登记，
- *    播放链路和现在逐字节一致。
- *  - 容量档关闭时这里一切返回 null / 空，播放回落到纯网络路径。
- *  - 缓存相关的任何异常都只让缓存失效，不外抛给播放链路。
+ * 边界：只有 [bind] 登记过的直链走缓存（Emby 直链、m3u8 从不登记，播放链路逐字节一致）；
+ * 容量档关闭返回 null/空回落纯网络；缓存任何异常只让缓存失效，不外抛给播放链路。
  */
 object VideoCache {
 
@@ -140,7 +132,6 @@ object VideoCache {
     fun drop(key: String) {
         val target = cacheIfReady() ?: return
         runCatching { target.removeResource(key) }
-            .onSuccess { Log.w(TAG, "看完清除缓存 key=$key") }
             .onFailure { Log.w(TAG, "清除缓存失败 key=$key：${it.message}") }
     }
 

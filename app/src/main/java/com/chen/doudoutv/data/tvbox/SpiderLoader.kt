@@ -20,27 +20,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 /**
- * TVBox type 3 爬虫 JAR 运行时加载器（进程级单例）。
- *
- * 这类配置里的 csp_XxxGuard 是**加密壳**：
- *   spider JAR 内只有 39KB 的 classes.dex（壳类 + Init 引导类）、
- *   assets/wexguard_v7.so、assets/wexguard_v8.so（解密用的 native 库）、
- *   assets/wexshinidie.guard（约 1MB 的加密 dex）。
- *
- * 关键点：
- *  1. 必须把**整个 JAR（zip）**交给 DexClassLoader，不能只抽 classes.dex。
- *     因为 Init 通过 Class.getResourceAsStream("assets/wexguard_v8.so") 从自己的
- *     容器里读 so 和 guard；纯 dex 没有资源，读出来是 null，解密必然失败。
- *  2. Init.init(context) 会自己把 so 解出来写进 cacheDir、chmod、System.load，
- *     再用 native 把 .guard 解密成真正的 dex。
- *  3. 真正的 Guard 实现不在壳 dex 里，所以 Init 之后需要重新扫描 cacheDir
- *     找到解密出来的 dex，用「jar + 解密 dex」组成新的 classpath 再加载 Guard。
- *
- * 为什么是单例：TVBox 配置有多个站点（线路），每条线路都会 new 一个 TvBoxClient，
- * 如果缓存是实例级的，每次切线路就重复下载 JAR、重复跑壳 Init、重复起本地代理 ——
- * 这正是「每点一次都弹『正在初始化本地代理』」的根因。
- * 这里把 JAR 落盘、解密 dex、壳 Init、Guard 实例全部做成进程级共享：
- * 整个 App 进程对同一 spider 包只 Init 一次、只起一次本地代理，之后任意线路直接复用。
+ * TVBox type 3 爬虫 JAR 运行时加载器（进程级单例）。csp_XxxGuard 是加密壳：
+ * 壳 JAR 含壳 dex + 解密用 so + 加密 dex。三个硬约束：
+ *  1. 整个 JAR（zip）交 DexClassLoader——Init 要从自己容器里读 so/guard 资源，纯 dex 读出来是 null；
+ *  2. Init.init 会解 so + native 解密出真 dex，主 loader 必须用「jar + 扫描到的解密 dex」自己组；
+ *  3. 进程级单例——每条线路 new 一个 TvBoxClient，实例级缓存会导致重复下载/重复壳 Init/
+ *     重复起代理，正是「每点一次都弹『正在初始化本地代理』」的根因。
  */
 object SpiderLoader {
 
@@ -278,6 +263,16 @@ object SpiderLoader {
     private fun bindProxyInvoke(loader: ClassLoader) {
         val initClazz = runCatching { loader.loadClass("com.github.catvod.spider.Init") }.getOrNull() ?: return
         LocalProxyServer.bind { params -> invokeProxyInvoke(initClazz, params) }
+    }
+
+    /** 本地代理分发桥：遍历已加载的爬虫实例，谁认领这个请求（do=xx）谁处理；
+     *  全部返回 null 才回落壳 native invoker。对齐 FongMi JarLoader.tryOthers 语义。 */
+    fun proxyDispatch(params: Map<String, String>): Array<Any?>? {
+        for (proxy in instances.values) {
+            val result = proxy.proxy(params) ?: continue
+            if (result.isNotEmpty() && result[0] != null) return result
+        }
+        return null
     }
 
     /**
@@ -725,41 +720,17 @@ object SpiderLoader {
     }
 
     /**
-     * 非 Java 爬虫入口判定：.py（Python）/.js（QuickJS）/.md5（Node bundle）/node: 前缀。
-     * 去掉 query/fragment 再判后缀，兼容带令牌的地址（如 .../hgtv.py?token=x）；
-     * Java 入口只会是 csp_Xxx 或全限定类名，不会命中这些后缀，判定安全。
+     * 非 Java 爬虫入口判定：.py/.js/.md5/node: 前缀。去掉 query/fragment 再判后缀；
+     * Java 入口只会是 csp_Xxx 或全限定类名，不会误命中。
      *
-     * ── 故障档案：直播详情「转圈半天后空白」的真因（已止血，真支持 py 见下） ──
-     * 症状：选直播线路点详情，长时间加载后无内容。
-     * 两层真因：
-     *  1) 本 App 只实现了 Java csp_ 一条路，没有 Python/JS 引擎。py 站的 api（如 hgtv.py）
-     *     被 resolveClassName 盲拼成 com.github.catvod.spider.<url> → ClassNotFoundException
-     *     → getSpider 返回 null（旧逻辑还会先扫盘 + 重建 classloader，白白耗时）。
-     *  2) detail() 旧逻辑「精确匹配 + 其余所有站点兜底」：py 站落空后，仍对每个无关 Java 站
-     *     调 detailContent，各吃满 SpiderProxy 30s 超时 → 串行卡死。
-     *     日志实测：3×「爬虫方法调用超时（30s）」（17:06:11 / 17:06:41 / 17:07:22）。
-     * 已做（方案①·止血，仍不支持 py）：
-     *  - getSpider 对非 Java api 快速失败 + 准确 lastError（不再盲拼/扫盘）；
-     *  - detail() 带 siteKey 只查本站，砍掉全库串行兜底（空 siteKey 老路径保留）；
-     *  - 顺带修首页误报：py 排首位的混合配置以前被误判「加密壳未能解密」直接抛错。
+     * 故障档案（直播详情卡死，方案①已止血）：py 站曾因盲拼类名 + detail 全库串行兜底
+     * （每站吃满 30s 超时）而卡死，现 getSpider 快速失败、detail 只查本站。
      *
-     * ── 真支持 py 的路径（方案②·未做，后续修改照此即可，不必重新调研） ──
-     * FongMi/影视TV 三语言由站点 api 路由：Java(csp_·DexClassLoader) / Python(./x.py) /
-     * JS(./x.js·QuickJS-NG)；新版把 Python/JS 引擎做成单独安装的模块 APK（旧版内嵌 Chaquopy）。
-     * py 契约：class Spider(base.spider.Spider)，方法名与 Java 完全一致
-     * （init/homeContent/categoryContent/detailContent/searchContent/playerContent/liveContent/proxy/destroy），
-     * 返回 dict/list 由宿主序列化成与 Java 同一套 Result JSON（class/list/filters/pagecount/url/parse/header…）。
-     * 接入点（关键）：SpiderProxy 全是反射调 Java 方法、返回值一律 String(JSON)。
-     *  → 只需写一个暴露相同方法签名的「py 桥接类」（内部跑 Python、dict→JSON），
-     *    getSpider 把 .py 路由到它即可；SpiderProxy / CatVodResultParser / UI 全不用动。
-     * 引擎：Chaquopy（自 12.0.1 起免费且开源、发在 Maven Central，许可障碍已除；
-     *  网上「商业授权」是 ≤12.0.0 旧版说法）。需配 abiFilters(arm64-v8a + armeabi-v7a)，
-     *  否则 universal 包四 ABI 体积翻倍；估 +15–25MB（CPython 运行时 + stdlib，可裁）。
-     * 长尾（数周·逐源调试）：自研 base.spider 兼容层（self.net.req/json/get/post/session/
-     *  batch/download/openStream/stream/ws/cached… + self.local/page/proxyUrl/dialog），
-     *  以及 requests/lxml/pycryptodome 等 pip 依赖（C 扩展要 Chaquopy 预编译 wheel，有摩擦）。
-     * 红线：只参考 FongMi 行为/协议，禁止复制 GPL-3.0 源码；base 与桥接净室自写。
-     * 壳 jar 帮不上忙：TVBox 系加密壳基本不含 py runner，不能复用，须自带引擎。
+     * py 真支持路径（未做，重开时照此不必再调研）：FongMi 三语言按 api 路由，py 契约
+     * 方法名与 Java 完全一致、返回 dict 由宿主序列化成同一套 Result JSON；接入点就是
+     * 写一个同签名的 py 桥接类路由 .py 即可，SpiderProxy/UI 不用动。引擎 Chaquopy
+     * （12.0.1 起免费开源，需 abiFilters 双 arm，+15–25MB）；长尾是自研 base.spider
+     * 兼容层 + pip 依赖 wheel。红线：只参考 FongMi 行为，GPL 源码禁止复制、净室自写。
      */
     private fun isUnsupportedApi(api: String): Boolean {
         val a = api.trim().substringBefore('?').substringBefore('#').lowercase()
@@ -864,7 +835,6 @@ class SpiderProxy(private val clazz: Class<*>, private val instance: Any) {
         // 反射签名要的是 HashMap 本体：调用方传的多是 LinkedHashMap/Map 视图，
         // 直接 as? HashMap 会静默失败成空 map（筛选值永远传不进爬虫），必须显式拷贝一份
         val map = if (extend.isNullOrEmpty()) HashMap<String, String>() else HashMap(extend)
-        if (map.isNotEmpty()) Log.w(TAG, "categoryContent tid=$tid pg=$pg extend=$map")
         clazz.getMethod(
             "categoryContent",
             String::class.java, String::class.java,
@@ -884,5 +854,11 @@ class SpiderProxy(private val clazz: Class<*>, private val instance: Any) {
     fun searchContent(key: String, quick: Boolean = true): String? = timedCall {
         clazz.getMethod("searchContent", String::class.java, Boolean::class.javaPrimitiveType)
             .invoke(instance, key, quick) as String
+    }
+
+    /** 爬虫实例的 proxy(Map)：plain jar 爬虫（不经过壳 native）的本地代理请求只有实例方法能处理。
+     *  返回 Object[]（同壳 proxyInvoke 契约：body/headers/code）；无人认领或异常返回 null 由上层回落。 */
+    fun proxy(params: Map<String, String>): Array<Any?>? = timedCall {
+        clazz.getMethod("proxy", java.util.Map::class.java).invoke(instance, params) as? Array<Any?>
     }
 }

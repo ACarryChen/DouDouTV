@@ -71,6 +71,12 @@ internal object LocalProxyServer {
         return bound.isNotEmpty()
     }
 
+    /** 已监听的通告端口（优先 8964）：给 catvod Proxy.set 用。
+     *  catvod Proxy.port 是静态共享的（壳 dex 经 parent-first classloader 解析到同一个类），
+     *  plain jar 爬虫在壳 Init 之前就会拼 /proxy 地址，必须由宿主在启动时先通告真端口。 */
+    val proxyPort: Int
+        get() = serverSockets.firstOrNull()?.localPort ?: -1
+
     /** 绑定壳的 proxyInvoke。必须等 Init.init 返回后再绑定：Init 未完成时 loader 为 null，
      *  进入壳的 native proxyInvoke 会直接 JNI abort 整个进程（已实测）。 */
     fun bind(invoke: (Map<String, String>) -> Array<Any?>?) {
@@ -105,6 +111,17 @@ internal object LocalProxyServer {
                     client, 200, "OK", "ok".toByteArray(),
                     mapOf("Content-Type" to "text/plain; charset=utf-8")
                 )
+                return
+            }
+
+            // 分发桥：先问自家 SpiderLoader 里已加载的爬虫实例（plain jar 爬虫如韩小圈的
+            // do=hxq 只有实例 proxy() 能处理，壳 native 的 proxyInvoke 找不到它们）；
+            // 没人认领再回落壳 invoker（壳包的 do 两者都认）。
+            SpiderLoader.proxyDispatch(params)?.let { result ->
+                val body = toBytes(result.getOrNull(0))
+                val headers = toStringMap(result.getOrNull(1))
+                val code = (result.getOrNull(2) as? Number)?.toInt() ?: 200
+                respond(client, code, "OK", body, headers)
                 return
             }
 

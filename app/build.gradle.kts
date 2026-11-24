@@ -109,6 +109,9 @@ dependencies {
     // 不能用 aar 落仓 —— AGP 禁止本地 aar 依赖参与 bundleReleaseAar，项目依赖是唯一通路
     implementation(project(":fongmi"))
 
+    // catvod 的 Proxy（静态端口通告）在 :app 侧要用：:fongmi 对它是 implementation，不传递
+    implementation(project(":catvod"))
+
     // FongMi 私改版 media3（源码 E:/tmp/ref/FongMi-media，分支 release-1.11.0-fongmi，
     // 与 TV 锚点 773cae11b 配对）。官方 maven 没有这批改动，只能本地源码编 aar 进仓。
     // aar 在根级 libs/（与 :fongmi 模块共用）；aar 之间没有传递依赖信息，

@@ -661,7 +661,6 @@ class PhonePlayerActivity : ComponentActivity() {
         // 不标的话会掉进普通 extractor 管线报 UnrecognizedInputFormatException。
         // 文件名可能藏在分集名（网盘分集 title=文件名）或直链 query（filename=xxx.iso）里
         val looksIso = item.title.contains(".iso", ignoreCase = true) || url.contains(".iso", ignoreCase = true)
-        Log.i("PhonePlayer", "fongmi start: title=${item.title} playSource=${item.playSource} iso=$looksIso url=${url.take(150)}")
         if (looksIso) spec.setFormat(MimeTypes.VIDEO_ISO)
         m.start(spec, Constant.TIMEOUT_PLAY, if (startPosition > 3_000L) startPosition else 0L)
         m.setSpeed(speedState)

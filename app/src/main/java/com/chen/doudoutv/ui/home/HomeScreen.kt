@@ -33,7 +33,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.AltRoute
+import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
@@ -860,7 +860,7 @@ private fun HomeLineSelector(
     }
     Box {
         IconButton(onClick = { expanded = true }, modifier = Modifier.size(40.dp)) {
-            Icon(Icons.Filled.AltRoute, contentDescription = "选择线路", tint = Color.White)
+            Icon(Icons.AutoMirrored.Filled.AltRoute, contentDescription = "选择线路", tint = Color.White)
         }
         HomePickerMenu(
             expanded = expanded,

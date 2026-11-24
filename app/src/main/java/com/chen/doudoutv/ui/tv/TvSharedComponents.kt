@@ -109,23 +109,11 @@ import kotlin.math.roundToInt
 internal const val HERO_DWELL_SECONDS = 9f
 
 /**
- * Hero 与页面背景之间的收色带：把两者共用的那条接缝挪进渐变中段。
- * 画法与手机端首页的轮播同款，见 [themeSeamFade]。
- *
- * 高度就是 Hero 与下面第一行之间的额外空白：这条带子底下并没有内容，40dp 时它和标题行的
- * 上间距叠起来，把轮播和分类推得很开，先收到 20dp、这一版再收到 10dp。
- *
- * 顶边取的和 [TvHero] 渐隐终点同一个 [heroLandingColor]，所以发界仍然隐形，但带过去的是
- * 这张底图自己的色相，不再是纯 Bg —— 「海报下缘一条死黑」就是这块在起的作用。
- *
- * 淡出走的距离比布局占的距离长：10dp 内从实色降到 0，观感就是「颜色戛然而止」，
- * 所以 drawBehind 画到带子外头去（[SEAM_FADE_DEPTH]），标题和海报是后画的、盖在它上面，
- * 颜色于是从折痕一路化到「继续观看」那一排背后，而不是在折痕下面 10dp 处断掉。
- * 带子本身仍只占 10dp：多要空白等于把这一版刚收掉的间隔又还回去。
- *
- * 没有复用 [themeSeamFade]：那条带子的 Brush 在组合期算好，而换页时着陆色要跟着底图一起
- * 淡 600ms，必须逐帧重画。走 drawBehind 只重画这一条带子，不重组整屏。
- * 收尾用实色减 alpha 而不是 Color.Transparent：后者会把 RGB 一起拖向纯黑，淡出末尾反而压出暗边。
+ * Hero 与页面背景间的收色带（画法同手机端轮播 seamFade）。高度=Hero 与首行的额外空白，
+ * 已从 40dp 收到 10dp。顶边取 heroLandingColor，「海报下缘一条死黑」就是这块在治。
+ * 淡出走 drawBehind 画到带外（[SEAM_FADE_DEPTH]）：10dp 内降 0 观感是「戛然而止」，
+ * 画得长颜色才化得开；不复用 themeSeamFade——着陆色要跟底图逐帧淡 600ms，必须重画不重组。
+ * 收尾用实色减 alpha 而非 Color.Transparent：后者把 RGB 拖向纯黑，淡出末尾压出暗边。
  */
 @Composable
 internal fun TvHeroSeamFade(ambient: Color, modifier: Modifier = Modifier) {

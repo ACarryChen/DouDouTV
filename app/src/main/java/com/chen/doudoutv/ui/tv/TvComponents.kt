@@ -61,7 +61,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.LocalPinnableContainer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -93,22 +93,16 @@ import com.chen.doudoutv.ui.theme.Radius
 import com.chen.doudoutv.ui.theme.Motion
 
 /**
- * 电视端专用组件（十英尺界面）。
+ * 电视端专用组件（十英尺界面），与手机端完全分开实现：
+ * 电视没触摸，可交互元素必须是「可聚焦 + 明显焦点态」，尺寸按观看距离放大；
+ * 手机的涟漪/阴影三米外看不见，这里用白边和放大表达状态。
  *
- * 与手机端组件完全分开实现，理由很实在：
- *   · 电视没有触摸，所有可交互元素必须是「可聚焦 + 有明显焦点态」，尺寸要按观看距离放大；
- *   · 手机端组件靠涟漪和阴影表达状态，这些在电视上隔着三米根本看不见，必须用白边和放大。
+ * 字号取 MaterialTheme.typography（实际大小由 TvTypography 定），颜色取 TvText 层级
+ * （整屏只用白→灰一条轴，品牌色只留给按钮/进度条这类「可操作/进行中」元素）。
  *
- * 字号与文字颜色都不在这里写死：
- *   · 字号取 MaterialTheme.typography 的档位，电视端实际大小由 Theme 的 TvTypography 决定；
- *   · 文字颜色取 TvText 的层级（Title / Section / Body / Meta / Muted / Hairline），
- *     整屏只用白→灰一条轴拉开层级，品牌色只留给按钮和进度条这类「可操作 / 进行中」的元素。
- *
- * 聚焦的元件一律先 .zIndex(1f) 再 .graphicsLayer 放大：
- * 抬高绘制层级，放大后的白边才不会被同排的兄弟节点压住。
- *
- * 焦点路由的硬约束见本文件下面的「焦点路由规范 R1-R8」；
- * 新增可聚焦元件一律走 tvFocusRoute / tvMoveFocus / tvClaimFocusOnEnter，不要手拼。
+ * 聚焦的元件一律先 .zIndex(1f) 再放大：抬高绘制层级，白边才不会被同排兄弟节点压住。
+ * 焦点路由硬约束见下方「焦点路由规范 R1-R8」；新增可聚焦元件一律走
+ * tvFocusRoute / tvMoveFocus / tvClaimFocusOnEnter，不要手拼。
  */
 
 /* ========================================================
@@ -143,20 +137,13 @@ import com.chen.doudoutv.ui.theme.Motion
    ======================================================== */
 
 /**
- * Compose 1.9：把「当前有焦点的那一项」钉在 Lazy 容器里，焦点就不会被清空。
+ * Compose 1.9 焦点档案：1.9 改了焦点目标的析构语义 —— 焦点所在项被 Lazy 容器回收时，
+ * [FocusTargetNode.onReset] 会在 owner 级直接 clearFocus，焦点当场消失；网格里往下移几行、
+ * 容器回收旧项时焦点就掉，再按方向键会从根节点重找、跳回第一列第一张卡。
  *
- * 为什么需要它：
- * 1.9 改了焦点目标的析构语义 —— 焦点所在的那一项一旦被 Lazy 容器回收，
- * [FocusTargetNode.onReset] 会直接在 owner 级 clearFocus，焦点当场消失。
- * 于是在网格里往下移几行、容器滚动把旧项回收掉时，焦点就掉了；
- * 用户再按方向键，框架从根节点重新找焦点，找回来的就是第一列第一张卡。
- *
- * 1.9 同时给了 [LocalPinnableContainer]：被 pin 的项即使滚出视口也不会被回收。
- * 这里在卡片拿到焦点时 pin 住自己所在的那一项、失焦时 release，
- * 焦点所在的那一项从此不会被回收，焦点也就不会被清空 ——
- * 「往下移几行后焦点消失、再移动跳回第一列」这条链子从根上断掉。
- *
- * 不在 Lazy 容器里（[LocalPinnableContainer] 为 null）时什么都不做。
+ * 1.9 的 [LocalPinnableContainer] 能让被 pin 的项滚出视口也不回收：这里在拿到焦点时 pin
+ * 所在项、失焦时 release，焦点所在项从此不被回收 —— 「移几行后焦点消失、再动跳回第一列」
+ * 从根上断掉。不在 Lazy 容器里（LocalPinnableContainer 为 null）时什么都不做。
  */
 @Composable
 fun tvKeepFocusedItemAlive(focused: Boolean) {
@@ -857,21 +844,9 @@ internal val TvPosterMinCellWidth = 96.dp
 internal val TvSourceMinCellWidth = 280.dp
 
 /**
- * 电视端网格列数：屏宽定自然列数，档位定上限，小屏给下限。
- *
- * 以前是各写各的：
- *   · 海报网格只认「缩略图大小」档位（8/6/4），完全不看屏宽 ——
- *     720p 机器上也排 8 列，每格只剩 56dp 宽，海报根本认不出内容；
- *   · 来源页只看屏宽（290dp 一列），不认档位 —— 同一块屏上两页的列宽对不上。
- * 现在统一走这个函数：按最小格宽算出屏宽能排几列（自然列数），
- * 再被档位封顶、被下限兜底，最后两边夹一次。
- *
- * @param screenWidth 可用屏宽。
- * @param minCellWidth 单格最小宽度，窄于此就认不出内容。
- * @param maxColumns 列数上限（海报取缩略图档位）。
- * @param minColumns 列数下限，小屏上不让卡片摊成一条。
- * @param horizontalPadding 网格左右内边距合计。
- * @param gap 列间距。
+ * 电视端网格列数统一入口。以前各写各的：海报网格只认档位不看屏宽（720p 也排 8 列、
+ * 每格 56dp 认不出内容），来源页只看屏宽不认档位（两页列宽对不上）。
+ * 现在统一为：按最小格宽算屏宽能排几列（自然列数），再被档位封顶、被下限兜底。
  */
 fun tvGridColumns(
     screenWidth: Dp,

@@ -136,7 +136,6 @@ internal object SourcePairServer {
         port = 0
         token = ""
         handler = null
-        Log.i(TAG, "手机维护服务已停止")
     }
 
     private fun handle(client: Socket) {

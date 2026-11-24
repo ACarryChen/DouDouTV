@@ -18,34 +18,21 @@ import okhttp3.Request
 import java.io.IOException
 
 /**
- * 网盘直链的取数层，管三件事：流坐标、磁盘缓存、让路。
+ * 网盘直链的取数层：流坐标、磁盘缓存、让路，三件事收口在这一个类。
  *
- * ── 为什么需要「流坐标」 ──
- * 防和谐的网盘会在视频前面塞一张诱饵图（几十字节到几百 KB），播放器看到的第 0 字节
- * 其实是网盘文件里的第 prefix 字节。以前这个平移放在 OkHttp 拦截器里（改 Range 头），
- * 缓存的区间却是按 DataSpec 坐标记的，两套坐标一叠，CacheDataSource.open() 直接抛
- * READ_POSITION_OUT_OF_RANGE —— 这就是这个仓库以前彻底禁用缓存的原因。
- * 现在平移收口在 [StreamSpaceDataSource]：上层（含 Media3 的缓存记账）只用流坐标，
- * 文件坐标只在这一个类里出现，外面看不到第二套。
+ * 流坐标：防和谐网盘在视频前塞诱饵图，第 0 字节实为文件第 prefix 字节。平移曾在 OkHttp
+ * 拦截器里做，与缓存按 DataSpec 的坐标一叠就 READ_POSITION_OUT_OF_RANGE（以前禁用缓存的
+ * 真因）。现在平移只在本类发生，上层（含缓存记账）只见流坐标。
  *
- * ── 分块 ──
- * 夸克这类 CDN 只有「带结尾的定长 Range 块」跑得满，而且按连接累计限速，
- * 所以每块仍然是 32MB 闭区间 + 每块换新连接（Connection: close 由拦截器加）。
- * 块边界对上层不可见：本类内部续开下一个闭区间，表现成一条连续流。
- * 这点是硬要求 —— 只要提前返回一次 END_OF_INPUT，CacheDataSource 就把它当成
- * 「资源到此为止」，把缓存元数据的总长记成半截，之后整集都被截断。
+ * 分块：夸克 CDN 只有带结尾的定长 Range 闭区间跑得满、且按连接累计限速，故每块 32MB +
+ * 每块换新连接。块边界对上层不可见；硬要求：绝不能提前返回 END_OF_INPUT，否则缓存元数据
+ * 总长记成半截、整集截断。
  *
- * ── 缓存挂载点 ──
- * [VideoCacheDataSource] 是唯一决定「这条直链走不走缓存」的地方，判据只有 URL 登记没有：
- * Emby 直链、m3u8 分片、容量档关闭时都不会被登记，于是拿到的就是裸 OkHttpDataSource，
- * 与今天逐字节一致。
+ * 缓存挂载：[VideoCacheDataSource] 是唯一决定走不走缓存的地方（判据=URL 是否登记）；
+ * Emby 直链、m3u8、容量档关闭都拿裸 OkHttpDataSource，行为与无缓存版逐字节一致。
  *
- * ══════════════════════════════════════════════════════════════════
- *
- * [StreamSpaceProbe]：探测一条直链的流坐标原点 —— 伪装前缀长度 + 网盘文件总长。
- *
- * 用一次 16KB 的闭区间请求同时拿到两样东西（Content-Range 里有总长），
- * 头部像诱饵图时再逐级放大窗口找真实容器起点 —— 和以前拦截器里的探测同一套判据。
+ * [StreamSpaceProbe]：一次 16KB 闭区间请求同时拿前缀长与总长（Content-Range），
+ * 头部像诱饵图时逐级放大窗口找真实容器起点。
  */
 /** C.LENGTH_UNSET 在 Java 侧是 int，而 DataSpec.length / 缓存记的总长是 long，Kotlin 比不了；值一致 */
 private const val UNSET_LENGTH = -1L

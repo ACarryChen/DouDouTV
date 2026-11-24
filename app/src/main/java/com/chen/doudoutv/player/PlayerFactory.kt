@@ -49,28 +49,14 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * 播放器工厂 —— 手机端与电视端各自一套参数。
  *
- * 「播一下就转圈」的真正原因不是带宽不够，而是**起播门槛太低**：
- * 旧配置 bufferForPlaybackMs = 1s，意思是只要缓冲到 1 秒数据就立刻开播。
- * 而一部 1080p 影片每秒要吃掉约 1~2MB，网络实际下载速率只要略低于码率，
- * 这 1 秒的余量会在几秒内被吃干，于是立刻 underrun → 转圈 → 再缓冲 → 再播。
- * 用户看到的就是「播一下就转圈」的循环。
+ * 「播一下就转圈」的真因是起播门槛太低（旧 1s 缓冲即开播，下载速率略低于码率时余量秒穿）。
+ * 关键档位：起播 2s（5s 在夸克限速时要等超久，实测后回调）、rebuffer 后 3s、
+ * minBuffer 50s/60s（网盘按连接累计限速，一次限速窗口实测能到 66 秒，存粮薄必穿）。
  *
- * 因此这里的关键改动是**抬高起播与重缓冲门槛**，让播放器先攒够余量再出画面：
- *   1. bufferForPlaybackMs 1s → 2s：首帧稍晚一点，但换来连续播放；再往 5s 抬过，
- *      夸克 CDN 限速时要等超久，所以最终停在 2s；
- *   2. bufferForPlaybackAfterRebufferMs 2.5s → 3s：卡顿后必须重新攒够 3s 才恢复，
- *      避免「恢复 0.5 秒又卡」的抖动；
- *   3. minBufferMs 20s/30s → 50s/60s：网络抖动时靠本地缓冲兜住（网盘是按连接累计限速，
- *      一次限速窗口实测能到 66 秒，存粮薄就必穿）；
- *   4. maxBufferMs 与 targetBufferBytes 同步放大，防止缓冲到顶后主动停止预读。
- *
- * 磁盘缓存只对被 [com.chen.doudoutv.core.VideoCache.bind] 登记过的网盘直链生效
- * （TVBox 网盘直链），判据见 [VideoCacheDataSource]；Emby 直链、HLS/DASH 分片、容量档关闭时
- * 拿到的都是裸 OkHttpDataSource，取数路径与不缓存时逐字节一致。
- * 缓存这一层的任何异常都只让缓存失效，不把正在播的一集拖下水。
- * 设置页的「视频缓存」卡片读写这一层，图片缓存另见 [com.chen.doudoutv.core.AppCache]。
- * 失效状态码（404 / 403 / 412）在 HTTP 层的每个响应出口统一转成带中文提示的 IOException，
- * 让「分享链接过期 / Cookie 失效」显示成一句能读懂的话，而不是无限转圈。
+ * 磁盘缓存只对 VideoCache.bind 登记过的网盘直链生效（判据见 VideoCacheDataSource）；
+ * Emby 直链、HLS/DASH、容量档关闭都是裸 OkHttpDataSource，取数路径逐字节一致。
+ * 缓存层异常只让缓存失效，不拖垮正在播的一集；失效状态码（404/403/412）在 HTTP 层
+ * 统一转成中文提示 IOException（分享链接过期/Cookie 失效），不再无限转圈。
  */
 @UnstableApi
 object PlayerFactory {

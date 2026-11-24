@@ -614,25 +614,18 @@ class TvBoxClient(
     )
 
     /**
-     * 解析播放地址（对应 CatVod 的 playerContent）。
+     * 解析播放地址（对应 CatVod 的 playerContent）：直链与网盘地址统一先问 spider
+     * （补 Cookie/Referer 头、识别网页解析线路），与 FongMi 行为一致。三点保护：
+     *  1. 真直链 + 本进程未加载过 spider（如「继续观看」冷启动）→ 直接返回原地址，
+     *     不为本来能播的链接下载/解密 JAR、起代理；
+     *  2. 真直链解析超时/异常/空 → 回退原地址；
+     *  3. 网盘 scheme 与分享页 URL 必须解析成功，失败保留原始错误（这两类原地址播不了，
+     *     回退只会掩盖失败，对齐 FongMi 不做兜底）。
+     * 「直链」按 http 前缀判定，网盘分享页除外（是 http 但播不了，必须走完整解析）。
      *
-     * 与 FongMi 等成熟实现一致：**直链与网盘地址统一先问 spider**。
-     * spider 能补上 Cookie/Referer 等请求头，也能识别出需要网页解析的线路。
-     *
-     * 为不影响现有可播链路，额外做三点保护：
-     *  1. 真直链 + 本进程从未加载过 spider（如「继续观看」冷启动）→ 直接返回原地址，
-     *     不为一个本来就能播的链接去下载/解密 JAR、起本地代理；
-     *  2. 真直链解析超时（[DIRECT_RESOLVE_TIMEOUT_MS]）、异常或返回空 → 回退原地址；
-     *  3. 网盘 scheme（quark:// 等）与网盘分享页 URL 必须解析成功，失败时保留原始错误
-     *     （这两类原地址本身播不了，回退只会掩盖失败，对齐 FongMi 不做兜底）。
-     *
-     * 「直链」按 http 前缀判定，但网盘分享页（pan.quark.cn 等）除外：它们也是 http，
-     * 地址本身却播不了，必须走完整解析（对齐 FongMi：type=3 站点每次都调 playerContent）。
-     *
-     * @param siteKey    站点 key（用于定位 spider 站点）
-     * @param playSource 播放源名称（即 vod_play_from，如「夸克网盘」），作为 playerContent 的 flag
-     * @param rawUrl     线路原始地址（云盘 scheme 或 http(s) 直链），作为 playerContent 的 id
-     * @return 解析结果（URL + headers + parse 标记）；云盘解析失败或需要网页解析时抛异常
+     * @param playSource 播放源名称（vod_play_from，作 playerContent 的 flag）
+     * @param rawUrl     线路原始地址（云盘 scheme 或 http(s) 直链，作 id）
+     * @return 解析结果（URL + headers + parse 标记）；云盘解析失败或需网页解析时抛异常
      */
     suspend fun resolvePlayUrl(
         siteKey: String,

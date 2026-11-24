@@ -41,7 +41,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
@@ -150,39 +149,12 @@ private val PageMeta get() = TvPageText.Meta
 private val PageMuted get() = TvPageText.Muted
 
 /**
- * 电视端简介页（独立实现，不复用手机端 DetailScreen）。
- *
- * 交互模型：**单页滚动 + 焦点分区**，参考 Netflix 的电视端详情页。
- *   · 信息不再按层级显隐 —— 标题、简介、导演、主演、选集从进页起就在组合树里，
- *     方向键只负责在焦点锚点之间移动，视口跟着焦点滚动；
- *   · 因此不存在「按下键解锁剧情」「按上键把选集收掉」这两种模态行为：
- *     上键永远只回上一个区域，内容不会消失；
- *   · 只读区块（简介、导演、署名）不接收焦点，下键会直接跳过它们；
- *     主演行是例外：头像（照片或姓名首字占位）本身是可聚焦的一站 ——
- *     电视上没有滚轮，焦点走不到的内容就等于看不到，尤其电影没有分集可落；
- *   · 主演排在选集之后（整页最后一层）：进详情先看剧情与选集，
- *     选集末行按下即落到主演头像行；导演与 TMDB 署名仍留在选集之前，
- *     署名必须在焦点滚得到的区域才有效；
- *   · 首屏仍保留「大图优先」：55% 顶部占位把标题与操作区压到屏幕下半部，
- *     下键进入第一集时，简介与选集首行同屏可见。
- *
- * 版式与观看距离：
- *   · 左侧大海报 + 右侧文案的两栏布局，替代手机端「上下堆叠」；
- *   · 操作按钮 2~3 个大按钮横排，遥控器左右即可选中，不做长列表；
- *   · 分集改为网格卡片（10 列 × 4 行），可按季切换、可翻页：
- *     几百集的剧横排滚动要按几百次右键，网格既能方向键跳着走，
- *     又能一屏看到已看进度，找「看到哪了」比手机端还快。
- *
- * 背景沿用「封面聚焦色填充 + 封面到填充色的长距离溶解过渡」。
- *
- * 焦点锚点链（本页只认这一条链，全部显式声明，规范 R1/R4）：
- *   收藏 ⇅ 播放/从头开始 ⇅（简介展开）⇅ 选集控制条（源 · 季 · 翻页）⇅ 选集网格 ⇅ 主演头像
- *   · 下键逐层走，一层都没有才跳过只读区块；
- *   · 有分集时仍按「控制条优先」，头像行不插进这条快捷路径，只能左右几键走到；
- *   · 在控制条上完成的切换（换源、换季、翻页）焦点留在控制条，主动按下才进网格；
- *   · 主演在选集网格之后，是整页最后一层，末行按下才落得到；
- *   · ↑ 走到收藏即停，并把滚动位置送回首屏构图（海报 + 标题大图态），
- *     不能只靠 bring-into-view 的最小滚动 —— 那样标题会顶在屏幕顶上回不去。
+ * 电视端简介页（独立实现，不复用手机端 DetailScreen）。单页滚动 + 焦点分区（Netflix 式）：
+ * 信息全部常驻组合树，方向键只在焦点锚点间移动、视口跟随；只读区块不接焦点。
+ * 焦点锚点链（唯一，全显式）：收藏 ⇅ 播放 ⇅ 选集控制条 ⇅ 选集网格 ⇅ 主演头像。
+ * 关键取舍：主演排在选集之后作整页最后一层（电视上焦点走不到=看不到，电影无分集必须可落）；
+ * ↑ 回到收藏时滚动送回首屏构图（海报+标题大图态），不能只靠 bring-into-view 最小滚动。
+ * 版式：左侧海报 + 右侧文案两栏；分集 10 列网格（几百集按右键滚不动，网格一屏可见进度）。
  */
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
 @Composable

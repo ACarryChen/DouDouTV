@@ -65,21 +65,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
- * 首页顶部大图轮播（Netflix 的「精选」区）。
+ * 首页顶部大图轮播（Netflix「精选」区）。16:9 剧照铺满、渐变压暗沉入页面底色；
+ * 标题优先用刮削艺术字（ClearLogo），没有才回落文字；只留播放/详情两个按钮，不放简介。
  *
- * 视觉要点：
- * · 16:9 背景剧照铺满，渐变压暗后沉入页面底色，消除硬边界
- * · 标题优先用刮削到的艺术字（ClearLogo，透明 PNG）；没有才回落到文字
- * · 只保留「播放 / 详情」两个按钮，不再堆影片简介，画面更干净
- * · 遮罩透明度整体调低，让剧照本身的色彩透出来，营造艺术氛围
- *
- * 分层结构（本次调整的重点）：
- *   第 1 层 — HorizontalPager：只有背景图和压暗遮罩，跟着手指/自动播放一起滑动。
- *   第 2 层 — 文字层：标题、年份评分、两个按钮。挂在 Pager 外面，
- *            按 pagerState.currentPage 用 AnimatedContent 做淡入淡出，
- *            所以切换时是「旧页信息淡出 → 新页信息淡入」，不会整块横移。
- *   第 3 层 — 分页指示器：同样挂在 Pager 外面、固定在图片上层同一位置，
- *            圆点只切换“哪一个高亮”，本身不随轮播位移。
+ * 分层：第 1 层 HorizontalPager（背景图+遮罩，跟着滑动）；第 2 层文字（标题/年份评分/
+ * 按钮）挂在 Pager 外，按 currentPage 用 AnimatedContent 淡出→淡入，不整块横移；
+ * 第 3 层分页圆点同样挂在 Pager 外固定位置，只切高亮不位移。
  */
 @Composable
 fun HeroBanner(

@@ -1,6 +1,7 @@
 package com.chen.doudoutv.ui
 
 import android.app.Application
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -278,7 +279,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         // 从未手动选择过首页来源时，默认按第一个配置的来源加载（选择后才写入 Prefs）
         viewModelScope.launch {
-            if (Prefs.homeSourceId < 0) {
+            // 记忆的首页来源可能已被禁用/删除（停用与删除入口不回写 Prefs，历史数据也钉在旧 id 上）：
+            // 失效就落到第一个启用来源，否则 warmUpTvBoxSpider 的 enabled 守卫直接空跑，壳永远不会启动，
+            // 而 UI 显示层回退到第一个启用来源、VM 请求仍打向禁用源，两边劈叉。
+            val remembered = Prefs.homeSourceId.takeIf { it >= 0 }?.let { repo.getSource(it) }
+            if (remembered == null || !remembered.enabled) {
                 repo.enabledSources().firstOrNull()?.let { selectHomeSource(it.id) }
             }
             // spider 预热只跑当前这一条链路：加密壳 Init 在电视上要二十多秒纯本地计算，而且和首页刷新
@@ -390,8 +395,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun selectHomeSite(siteKey: String?, site: TvBoxSite? = null) {
         homeSiteKey = siteKey
         Prefs.homeSiteKey = siteKey.orEmpty()
-        // 记到来源名下：切到别的来源再切回来，恢复这条线路
-        homeSourceId?.let { Prefs.setHomeSiteKeyOf(it, siteKey.orEmpty()) }
+        // 记到来源名下：切到别的来源再切回来，恢复这条线路。
+        // 只有 TVBox 来源允许持久化线路记忆：历史上 UI 显示源与 VM 生效源短暂劈叉时点线路，
+        // 会把 TVBox 线路名写进 Emby 来源名下，之后每次切回该来源，首页被
+        // 「tvbox:源id:线路:」前缀过滤成 0 条（实测 Emby 来源挂着「木偶/花卷真彩」）。
+        homeSourceId?.let { sid ->
+            viewModelScope.launch {
+                val kind = repo.getSource(sid)?.kind
+                if (kind == SourceKind.TVBOX) Prefs.setHomeSiteKeyOf(sid, siteKey.orEmpty())
+                else Prefs.setHomeSiteKeyOf(sid, "")
+            }
+        }
         homeSitesError = null
         // 切线路后重置分类状态
         homeCategories = emptyList()
@@ -671,6 +685,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             homeSitesLoading = true
             homeSitesError = null
             val src = repo.getSource(sourceId)
+            if (src != null && src.kind != SourceKind.TVBOX) {
+                // 非 TVBox 来源名下不该有线路记忆：清掉历史污染（Emby 源挂着 TVBox 线路名，
+                // 恢复时首页被「tvbox:源id:线路:」前缀过滤成 0 条），当前正站在该来源上也同步清内存
+                Prefs.setHomeSiteKeyOf(sourceId, "")
+                if (homeSourceId == sourceId && homeSiteKey != null) {
+                    homeSiteKey = null
+                    Prefs.homeSiteKey = ""
+                }
+            }
             val sites = if (src?.kind == SourceKind.TVBOX) {
                 runCatching { repo.tvBoxSites(src) }.getOrElse {
                     homeSitesError = "获取「${src.name}」线路列表失败：${it.message ?: "网络或接口异常"}"
@@ -690,10 +713,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun filterForHome(list: List<MediaEntity>): List<MediaEntity> {
         val sourceId = effectiveHomeSourceId() ?: return list
         val siteKey = homeSiteKey
-        return list.filter { item ->
+        val filtered = list.filter { item ->
             item.sourceId == sourceId &&
                 (siteKey == null || homeSiteMatches(item, sourceId, siteKey))
         }
+        return filtered
     }
 
     /**
@@ -949,7 +973,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         // 取证锚点：同步条数只进界面状态、不落 logcat，排查「拉全没」时无据可查；这里补一行（不改逻辑）
-        android.util.Log.i("MediaSync", "${source.name} [$mode${if (force) "/强制" else ""}] 同步 $count 条")
+        Log.i("MediaSync", "${source.name} [$mode${if (force) "/强制" else ""}] 同步 $count 条")
         // 同步成功才记录时间戳：失败时不该把「最近同步」刷新成刚刚
         markSynced(source.id)
         // 题材清单跟着内容一起更新：分类页与首页的动态分类都要跟着这次同步走
@@ -960,6 +984,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun removeSource(source: SourceEntity) {
         viewModelScope.launch {
             repo.deleteSource(source)
+            // 删的正好是首页来源：落到第一个启用来源，避免 homeSourceId 钉在已删除的源上
+            if (homeSourceId == source.id) {
+                repo.enabledSources().firstOrNull()?.let {
+                    selectHomeSource(it.id)
+                    // selectHomeSource 本身不碰壳（TVBox 内容要等选中线路才走 ensureLoaded）；
+                    // 这里是被动的意外切换，用户不会马上去点内容，得自己把壳预热起来
+                    repo.warmUpTvBoxSpider(Prefs.homeSourceId)
+                }
+            }
             message = "已删除：${source.name}"
         }
     }
@@ -996,6 +1029,15 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleSourceEnabled(source: SourceEntity) {
         viewModelScope.launch {
             repo.setSourceEnabled(source.id, !source.enabled)
+            // 停用的正好是首页来源：立即落到第一个启用来源。否则 homeSourceId 钉在禁用源上，
+            // 壳预热被 enabled 守卫拦成空跑（壳永不启动），VM 的分类/内容请求也全部打向禁用源，
+            // UI 显示层回退到另一个来源、实际状态停在旧源，两边劈叉。
+            if (!source.enabled && homeSourceId == source.id) {
+                repo.enabledSources().firstOrNull()?.let {
+                    selectHomeSource(it.id)
+                    repo.warmUpTvBoxSpider(Prefs.homeSourceId)
+                }
+            }
             message = if (source.enabled) "已停用：${source.name}" else "已启用：${source.name}"
         }
     }
