@@ -1,5 +1,7 @@
 package com.fongmi.android.tv.setting;
 
+import com.fongmi.android.tv.utils.Util;
+
 import androidx.media3.common.audio.AudioChannelMode;
 
 import com.fongmi.android.tv.player.effect.audio.AudioEffectBands;
@@ -82,35 +84,35 @@ public class AudioSetting {
     }
 
     public static int getStability() {
-        return Math.clamp(Prefers.getInt("audio_stability"), MIN_STABILITY, MAX_STABILITY);
+        return Util.clamp(Prefers.getInt("audio_stability"), MIN_STABILITY, MAX_STABILITY);
     }
 
     public static void putStability(int stability) {
-        Prefers.put("audio_stability", Math.clamp(stability, MIN_STABILITY, MAX_STABILITY));
+        Prefers.put("audio_stability", Util.clamp(stability, MIN_STABILITY, MAX_STABILITY));
     }
 
     public static int getDialogue() {
-        return Math.clamp(Prefers.getInt("audio_dialogue"), MIN_DIALOGUE, MAX_DIALOGUE);
+        return Util.clamp(Prefers.getInt("audio_dialogue"), MIN_DIALOGUE, MAX_DIALOGUE);
     }
 
     public static void putDialogue(int dialogue) {
-        Prefers.put("audio_dialogue", Math.clamp(dialogue, MIN_DIALOGUE, MAX_DIALOGUE));
+        Prefers.put("audio_dialogue", Util.clamp(dialogue, MIN_DIALOGUE, MAX_DIALOGUE));
     }
 
     public static int getBoost() {
-        return Math.clamp(Prefers.getInt("audio_boost"), MIN_BOOST, MAX_BOOST);
+        return Util.clamp(Prefers.getInt("audio_boost"), MIN_BOOST, MAX_BOOST);
     }
 
     public static void putBoost(int boost) {
-        Prefers.put("audio_boost", Math.clamp(boost, MIN_BOOST, MAX_BOOST));
+        Prefers.put("audio_boost", Util.clamp(boost, MIN_BOOST, MAX_BOOST));
     }
 
     public static int getPreamp() {
-        return Math.clamp(Prefers.getInt("audio_preamp"), MIN_PREAMP, MAX_PREAMP);
+        return Util.clamp(Prefers.getInt("audio_preamp"), MIN_PREAMP, MAX_PREAMP);
     }
 
     public static void putPreamp(int preamp) {
-        Prefers.put("audio_preamp", Math.clamp(preamp, MIN_PREAMP, MAX_PREAMP));
+        Prefers.put("audio_preamp", Util.clamp(preamp, MIN_PREAMP, MAX_PREAMP));
     }
 
     public static boolean isLoudnessEnabled() {
@@ -122,19 +124,19 @@ public class AudioSetting {
     }
 
     public static int getCenterGain() {
-        return Math.clamp(Prefers.getInt("audio_center_gain"), MIN_CENTER_GAIN, MAX_CENTER_GAIN);
+        return Util.clamp(Prefers.getInt("audio_center_gain"), MIN_CENTER_GAIN, MAX_CENTER_GAIN);
     }
 
     public static void putCenterGain(int gain) {
-        Prefers.put("audio_center_gain", Math.clamp(gain, MIN_CENTER_GAIN, MAX_CENTER_GAIN));
+        Prefers.put("audio_center_gain", Util.clamp(gain, MIN_CENTER_GAIN, MAX_CENTER_GAIN));
     }
 
     public static int getBalance() {
-        return Math.clamp(Prefers.getInt("audio_balance"), MIN_BALANCE, MAX_BALANCE);
+        return Util.clamp(Prefers.getInt("audio_balance"), MIN_BALANCE, MAX_BALANCE);
     }
 
     public static void putBalance(int balance) {
-        Prefers.put("audio_balance", Math.clamp(balance, MIN_BALANCE, MAX_BALANCE));
+        Prefers.put("audio_balance", Util.clamp(balance, MIN_BALANCE, MAX_BALANCE));
     }
 
     public static int getChannelMode() {

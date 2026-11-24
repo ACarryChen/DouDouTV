@@ -279,7 +279,7 @@ public class PlayerManager implements ParseCallback {
     }
 
     public String getPositionTime(long delta) {
-        return Util.timeMs(Math.clamp(getPosition() + delta, 0, Math.max(0, getDuration())));
+        return Util.timeMs(Util.clamp(getPosition() + delta, 0, Math.max(0, getDuration())));
     }
 
     public long getDuration() {

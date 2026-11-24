@@ -21,12 +21,19 @@ class DouDouTvApp : com.fongmi.android.tv.App(), ImageLoaderFactory {
         // 都在它的构造与 attachBaseContext 里就位，PlayerManager 全家桶直接可用。
         instance = this
         Prefs.init(this)
-        // FongMi 本地在配置解析时启动 Nano 代理（9978 起）。爬虫返回的播放地址里
-        // 会带自己的代理转发（如韩小圈 http://127.0.0.1:<port>/proxy?do=hxq&...），
-        // 端口取 Proxy.getPort()；Server 不启动时恒为 -1，喂给播放器就是 Malformed URL。
+        // 端口顺序是承重链（顺序反了 Nano 抢走 9978，壳代理请求全打到它拿 500）：
+        // ① 先占 8964+9978（壳探测起点+兜底端口）；
+        // ② 再启动 FongMi Nano（9978 被占自动退 9979），plain jar 爬虫地址由它处理；
+        // ③ 通告 catvod 静态端口：Proxy.port 进程级共享（壳 dex 经 parent-first 解析到同一个类），
+        //    爬虫拼 http://127.0.0.1:<port>/proxy?do=xx 时端口必须已就位，否则恒 -1 → Malformed URL。
+        com.chen.doudoutv.data.tvbox.LocalProxyServer.start()
         com.fongmi.android.tv.server.Server.get().start()
+        com.github.catvod.Proxy.set(com.chen.doudoutv.data.tvbox.LocalProxyServer.proxyPort)
         // 网盘直链的磁盘缓存只记一个 applicationContext，真正的 SimpleCache 到首次取数才建
         VideoCache.init(this)
+        // fongmi 档的网速计量：舱内数据源把真实网络字节回调到全局 DownloadMeter（classic 走自己的拦截器，两档同口径）
+        com.fongmi.android.tv.player.exo.ExoMediaSourceFactory.networkTransferListener =
+            com.chen.doudoutv.player.FongMiNetworkMeter
 
         // 记录未捕获异常：MIUI 有时会吞掉 crash 缓冲区日志，
         // 这里额外写一份到应用私有目录，方便排查"闪退但没有崩溃日志"的问题。

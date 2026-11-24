@@ -1,5 +1,6 @@
 package com.fongmi.android.tv.utils;
 
+
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -33,6 +34,24 @@ import java.util.regex.Pattern;
 public class Util {
 
     private static final Pattern EPISODE = Pattern.compile("(?i)(?:ep|第|e|[\\-\\.\\s])\\s?(\\d{1,4})");
+
+    // Math.clamp 是 API 35 才进 android.jar 的（Java 21），Android 15 以下设备上运行时
+    // 直接 NoSuchMethodError。全套本地实现语义与 Math.clamp 一致，调用点全部改走这里。
+    public static int clamp(long value, int min, int max) {
+        return (int) Math.max(min, Math.min(max, value));
+    }
+
+    public static long clamp(long value, long min, long max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    public static float clamp(float value, float min, float max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    public static double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
+    }
 
     public static void toggleFullscreen(Activity activity, boolean fullscreen) {
         if (fullscreen) hideSystemUI(activity);

@@ -1,5 +1,7 @@
 package com.fongmi.android.tv.player.effect.audio;
 
+import com.fongmi.android.tv.utils.Util;
+
 import androidx.media3.common.audio.AudioChannelMode;
 import androidx.media3.common.audio.AudioEffectParameters;
 
@@ -18,11 +20,11 @@ public final class AudioEffectConfig {
         int preamp = getEffectivePreamp(levels);
         int[] frequencies = IntStream.range(0, levels.length).map(i -> bands.getCenterFrequency(i) / 1000).toArray();
         return new AudioEffectParameters.Builder().setEqualizerBands(frequencies, levels)
-                .setStability(Math.clamp(AudioSetting.getStability(), AudioSetting.MIN_STABILITY, AudioSetting.MAX_STABILITY) / (float) AudioSetting.MAX_STABILITY)
-                .setBoostMillibels(Math.clamp(AudioSetting.getBoost(), AudioSetting.MIN_BOOST, AudioSetting.MAX_BOOST))
+                .setStability(Util.clamp(AudioSetting.getStability(), AudioSetting.MIN_STABILITY, AudioSetting.MAX_STABILITY) / (float) AudioSetting.MAX_STABILITY)
+                .setBoostMillibels(Util.clamp(AudioSetting.getBoost(), AudioSetting.MIN_BOOST, AudioSetting.MAX_BOOST))
                 .setPreampMillibels(preamp)
-                .setCenterGainMillibels(Math.clamp(centerGain, AudioSetting.MIN_CENTER_GAIN, AudioSetting.MAX_CENTER_GAIN))
-                .setBalance(Math.clamp(balance, AudioSetting.MIN_BALANCE, AudioSetting.MAX_BALANCE) / 100.0f)
+                .setCenterGainMillibels(Util.clamp(centerGain, AudioSetting.MIN_CENTER_GAIN, AudioSetting.MAX_CENTER_GAIN))
+                .setBalance(Util.clamp(balance, AudioSetting.MIN_BALANCE, AudioSetting.MAX_BALANCE) / 100.0f)
                 .setChannelMode(channelMode).setLoudnessEnabled(AudioSetting.isLoudnessEnabled()).build();
     }
 
@@ -31,7 +33,7 @@ public final class AudioEffectConfig {
     }
 
     private static int getEffectivePreamp(short[] levels) {
-        int preamp = Math.clamp(AudioSetting.getPreamp(), AudioSetting.MIN_PREAMP, AudioSetting.MAX_PREAMP);
+        int preamp = Util.clamp(AudioSetting.getPreamp(), AudioSetting.MIN_PREAMP, AudioSetting.MAX_PREAMP);
         int maxLevel = 0;
         for (short level : levels) maxLevel = Math.max(maxLevel, level);
         return preamp - maxLevel;

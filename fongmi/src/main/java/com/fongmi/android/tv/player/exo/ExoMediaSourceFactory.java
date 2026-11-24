@@ -7,6 +7,7 @@ import androidx.media3.database.StandaloneDatabaseProvider;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.HttpDataSource;
+import androidx.media3.datasource.TransferListener;
 import androidx.media3.datasource.cache.Cache;
 import androidx.media3.datasource.cache.CacheDataSource;
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor;
@@ -40,6 +41,13 @@ public class ExoMediaSourceFactory implements MediaSource.Factory {
     private HttpDataSource.Factory httpDataSourceFactory;
     private DataSource.Factory dataSourceFactory;
     private ExtractorsFactory extractorsFactory;
+
+    /**
+     * App 侧注入的网络字节计量监听（:app 不被 :fongmi 依赖，只能回调注入）。
+     * 挂在上游 DefaultDataSource 上（CacheDataSource 外侧）：只有真实网络读取进账，
+     * 缓存命中根本不发起上游请求，天然不进账。经典档的 DownloadMeter 走 OkHttp 拦截器，两档同口径。
+     */
+    public static volatile TransferListener networkTransferListener;
 
     public ExoMediaSourceFactory() {
         defaultMediaSourceFactory = new DefaultMediaSourceFactory(getDataSourceFactory(), getExtractorsFactory());
@@ -121,7 +129,12 @@ public class ExoMediaSourceFactory implements MediaSource.Factory {
     }
 
     private DataSource.Factory getDataSourceFactory() {
-        if (dataSourceFactory == null) dataSourceFactory = () -> getCacheDataSource(new DefaultDataSource.Factory(App.get(), getHttpDataSourceFactory())).createDataSource();
+        if (dataSourceFactory == null) dataSourceFactory = () -> {
+            DataSource source = new DefaultDataSource.Factory(App.get(), getHttpDataSourceFactory()).createDataSource();
+            TransferListener listener = networkTransferListener;
+            if (listener != null) source.addTransferListener(listener);
+            return getCacheDataSource(() -> source).createDataSource();
+        };
         return dataSourceFactory;
     }
 
