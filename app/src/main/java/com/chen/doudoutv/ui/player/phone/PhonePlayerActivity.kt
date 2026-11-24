@@ -81,6 +81,7 @@ import com.chen.doudoutv.data.tvbox.TvBoxClient
 import com.chen.doudoutv.player.PlayerFactory
 import com.fongmi.android.tv.Constant
 import com.fongmi.android.tv.player.PlayerManager
+import com.fongmi.android.tv.player.engine.PlayerEngine
 import com.fongmi.android.tv.player.media.PlaySpec
 import com.chen.doudoutv.ui.components.AppButton
 import com.chen.doudoutv.ui.components.AppButtonVariant
@@ -224,6 +225,7 @@ class PhonePlayerActivity : ComponentActivity() {
     private var titleView: TextView? = null
     private var speedView: TextView? = null
     private var aspectView: TextView? = null
+    private var decodeView: TextView? = null
     private var orientationView: ImageView? = null
     private var prevEpisodeView: TextView? = null
     private var nextEpisodeView: TextView? = null
@@ -381,6 +383,7 @@ class PhonePlayerActivity : ComponentActivity() {
         titleView = view.findViewById(R.id.doudou_title)
         speedView = view.findViewById(R.id.doudou_speed)
         aspectView = view.findViewById(R.id.doudou_aspect)
+        decodeView = view.findViewById(R.id.doudou_decode)
         orientationView = view.findViewById(R.id.doudou_orientation)
         prevEpisodeView = view.findViewById(R.id.doudou_prev_episode)
         nextEpisodeView = view.findViewById(R.id.doudou_next_episode)
@@ -483,6 +486,18 @@ class PhonePlayerActivity : ComponentActivity() {
         val p = player ?: return
         playPauseView?.setImageResource(
             if (p.isPlaying) R.drawable.doudou_ic_pause else R.drawable.doudou_ic_play
+        )
+    }
+
+    /** 更新硬解/软解标签（FongMi 内核用） */
+    private fun updateDecodeLabel(mgr: PlayerManager?) {
+        val v = decodeView ?: return
+        if (mgr == null || mgr.isReleased) return
+        val decode = mgr.decode
+        val label = if (decode == PlayerEngine.HARD) "硬解" else "软解"
+        v.text = label
+        v.setTextColor(
+            if (decode == PlayerEngine.HARD) 0xFFBFFFFFF.toInt() else 0xFFF5B800.toInt()
         )
     }
 
@@ -677,6 +692,9 @@ class PhonePlayerActivity : ComponentActivity() {
         player = p as ExoPlayer
         playerView?.player = p
         playerView?.controllerAutoShow = false
+        // 显示解码方式标签（FongMi 内核专属）
+        decodeView?.visibility = View.VISIBLE
+        updateDecodeLabel(m)
         // PlayerManager 自带装载超时与错误恢复（decode/IO 自动重试），这里只挂它
         // 不覆盖的三件事：播完连播、首帧撤黑幕、播放按钮状态
         p.addListener(object : Player.Listener {
@@ -716,6 +734,7 @@ class PhonePlayerActivity : ComponentActivity() {
         }
 
         override fun onDecodeChanged() {
+            updateDecodeLabel(manager)
         }
 
         override fun onMediaOptionsChanged() {

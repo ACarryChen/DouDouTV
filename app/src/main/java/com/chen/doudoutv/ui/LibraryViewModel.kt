@@ -1309,6 +1309,27 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------- 聚合网盘分类列表 ----------
+
+    /** 聚合网盘源的 categoryContent 拉取，返回影片列表 + 总条数 */
+    suspend fun tvBoxCategory(
+        sourceId: Long,
+        siteKey: String,
+        typeId: String,
+        page: Int = 1
+    ): Pair<List<TvBoxClient.Vod>, Int> {
+        val src = repo.getSource(sourceId) ?: return Pair(emptyList(), 0)
+        return try {
+            repo.loadTvBoxCategory(src, siteKey, typeId, page)
+        } catch (e: Exception) {
+            message = "分类列表获取失败：${e.message ?: "网络或接口异常"}"
+            Pair(emptyList(), 0)
+        }
+    }
+
+    /** 聚合网盘分类条目转临时浏览实体（负 ID），进详情页时 materializeRemote 落库 */
+    suspend fun insertBrowseVod(sourceId: Long, vod: TvBoxClient.Vod) = repo.insertTvboxBrowseVod(sourceId, vod)
+
     // ---------- 详情 ----------
 
     /** TVBox 详情按需拉取分集 */

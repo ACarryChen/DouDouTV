@@ -211,6 +211,14 @@
                     style="@style/PlayerPill"
                     android:text="适应" />
 
+                <!-- 硬解/软解状态标签：FongMi 内核时显示，经典内核隐藏 -->
+                <TextView
+                    android:id="@+id/doudou_decode"
+                    style="@style/PlayerPill"
+                    android:text="硬解"
+                    android:textColor="#BFFFFFFF"
+                    android:visibility="gone" />
+
                 <!-- 最右：全屏切换，方框图标 -->
                 <ImageView
                     android:id="@+id/doudou_orientation"

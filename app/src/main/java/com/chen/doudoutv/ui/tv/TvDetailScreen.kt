@@ -41,6 +41,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
@@ -162,7 +163,8 @@ fun TvDetailScreen(
     vm: LibraryViewModel,
     mediaId: Long,
     onBack: () -> Unit,
-    onPlay: (Long) -> Unit
+    onPlay: (Long) -> Unit,
+    onCategoryVodId: ((sourceId: Long, siteKey: String, typeId: String, typeName: String) -> Unit)? = null
 ) {
     // 加载链（TvDetailLoadChain）要回写的状态全部建成显式 MutableState 再委托出去：
     // 容器随组合新建、拿到的是当下这批状态对象（记住容器反而会攥着旧状态）。
@@ -320,6 +322,25 @@ fun TvDetailScreen(
     }
 
     LaunchedEffect(mediaId) {
+        // 聚合网盘分类入口检测：某些聚合源（觅盘/盘搜）searchContent 返回
+        // vodId=quark/xunlei 这类网盘类型短字符串，detailContent 查不到内容。
+        // 检测到后跳 CategoryList 页面，不再走正常详情渲染。
+        val probe = vm.mediaOf(mediaId)
+        if (probe != null) {
+            val parts = probe.remoteId.removePrefix("tvbox:").split(":")
+            if (parts.size >= 3) {
+                val sourceId = parts.getOrNull(0)?.toLongOrNull()
+                val siteKey = parts.getOrNull(1).orEmpty()
+                val cleanVodId = parts.last()
+                val isCategory = cleanVodId.length <= 20 &&
+                    !cleanVodId.contains("://") && !cleanVodId.contains("/") &&
+                    sourceId != null && onCategoryVodId != null
+                if (isCategory) {
+                    onCategoryVodId(sourceId, siteKey, cleanVodId, cleanVodId.uppercase())
+                    return@LaunchedEffect
+                }
+            }
+        }
         // 加载链本体在文件下方的 [tvDetailLoadChain]：原来内联在这里，
         // Compose 编译器会把这段并回宿主方法，是 TvDetailScreen 方法超限的头号来源。
         tvDetailLoadChain(

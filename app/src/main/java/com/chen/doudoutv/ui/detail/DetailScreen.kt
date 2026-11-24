@@ -136,7 +136,8 @@ fun DetailScreen(
     vm: LibraryViewModel,
     mediaId: Long,
     isTv: Boolean,
-    onPlay: (Long) -> Unit
+    onPlay: (Long) -> Unit,
+    onCategoryVodId: ((sourceId: Long, siteKey: String, typeId: String, typeName: String) -> Unit)? = null
 ) {
     var media by remember { mutableStateOf<MediaEntity?>(null) }
     var episodes by remember { mutableStateOf<List<MediaEntity>>(emptyList()) }
@@ -237,6 +238,27 @@ fun DetailScreen(
         }
         media = m
         if (m != null) {
+            // 聚合网盘分类入口检测：某些聚合源（觅盘/盘搜）searchContent 返回
+            // vodId=quark/xunlei 这类网盘类型短字符串，detailContent 查不到内容。
+            // 这里检测到后调 categoryContent 拉真实影片列表，跳到 CategoryList 页面。
+            val parts = m.remoteId.removePrefix("tvbox:").split(":")
+            if (parts.size >= 3) {
+                val sourceId = parts.getOrNull(0)?.toLongOrNull()
+                val siteKey = parts.getOrNull(1).orEmpty()
+                val vodId = parts.drop(2).joinToString(":")  // vodId 本身不含冒号，取最后一段
+                val cleanVodId = parts.last()
+                val isCategory = cleanVodId.length <= 20 &&
+                    !cleanVodId.contains("://") && !cleanVodId.contains("/") &&
+                    sourceId != null && onCategoryVodId != null
+                if (isCategory) {
+                    // 用 media.title 作为 typeName（比如 "夸克网盘" 可能从 title 里取）
+                    // 或者直接用 cleanVodId + "网盘" 拼一下
+                    val typeName = cleanVodId.uppercase()
+                    onCategoryVodId(sourceId, siteKey, cleanVodId, typeName)
+                    return@LaunchedEffect  // 不再走正常详情渲染
+                }
+            }
+
             // Emby 源：加载刮削信息（电影/剧集都支持）
             isEmbySource = vm.sourceOf(m.sourceId)?.kind == SourceKind.EMBY
             if (isEmbySource) {

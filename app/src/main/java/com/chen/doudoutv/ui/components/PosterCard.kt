@@ -56,7 +56,8 @@ private val PosterBottomScrim = Brush.verticalGradient(
  * 2) 静止态勾一道 1dp [Edge.Hairline] 亮边 —— 近黑底上投影读不出来，
  *    卡片和背景的分离只能靠描边和填充明度差，不挂投影也就不多一层 graphicsLayer
  * 3) 聚焦时轻微放大（1.09x）+ 品牌色描边 + 抬起投影 —— TV 遥控器可用性核心
- * 4) 底部渐变叠层压住标题，不单独占一块，保持海报主体完整
+ * 4) 标题默认叠在海报底部渐变上（overlay 模式）；[titleBelow]=true 时标题移到海报下方，
+ *    颜色跟随当前颜色模式（分类页网格用，对齐 TV 端口径）
  */
 @Composable
 fun PosterCard(
@@ -65,14 +66,13 @@ fun PosterCard(
     modifier: Modifier = Modifier,
     showProgress: Boolean = true,
     /** 已经刮过：左上角挂 TMDB 官方图标 + 评分（透明底，不衬黑块）；null = 没刮过 */
-    scrapedRating: Double? = null
+    scrapedRating: Double? = null,
+    /** true = 标题放在海报下方（颜色跟随模式）；false = 标题叠在海报底部渐变上（默认） */
+    titleBelow: Boolean = false
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
 
-    // TV 遥控器聚焦：带过冲的弹性放大，弹一下让用户明确"选中了"
-    // 缩放读在 graphicsLayer 的绘制块里（与 TV 端口径一致）：
-    // Modifier.scale(scale) 是在组合期读值，动画每一帧都要重组合整张卡
     val scale by animateFloatAsState(
         targetValue = if (focused) 1.09f else 1f,
         animationSpec = spring(
@@ -82,75 +82,106 @@ fun PosterCard(
         label = "poster_scale"
     )
 
-    Box(
-        modifier = modifier
-            .aspectRatio(2f / 3f)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            // 投影只挂在焦点卡上：一屏七十张卡各挂一层就是七十多个图层，弱盒子吃不消
-            // Compose 1.9 的 shadow 多了 ambient/spot 两色：投影染成主题色，
-            // 焦点卡片在近黑底上会带一层很淡的品牌色光晕，而不是一片死灰
-            .then(
-                if (focused) {
-                    Modifier.shadow(
-                        elevation = Lift.Focus,
-                        shape = PosterShape,
-                        clip = false,
-                        ambientColor = AppColors.Brand.copy(alpha = 0.35f),
-                        spotColor = AppColors.Brand.copy(alpha = 0.55f)
-                    )
-                } else Modifier
-            )
-            .clip(PosterShape)
-            .background(if (focused) AppColors.SurfaceRaise else AppColors.Surface)
-            .then(
-                if (focused) Modifier.border(2.5.dp, AppColors.Brand, PosterShape)
-                else Modifier.border(1.dp, Edge.Hairline, PosterShape)
-            )
-            .clickable(
-                interactionSource = interaction,
-                indication = null,
-                onClick = onClick
-            )
-            .focusable()
-    ) {
-        // 无图、或者图是 404 死链时露出按片名哈希的兜底封面，不再是一块空灰矩形。
-        // 这张卡底部渐变上已经有片名了，所以占位只排首字水印，避免同屏两处重复。
-        PosterArt(model = item.posterUrl, contentDescription = item.title) {
-            PosterFallback(title = item.title, showTitle = false, titleFontSize = 30.sp)
-        }
-
-        // 已刮削标记：左上角深磨砂微章（蓝字 TMDB + 白色评分），只包内容宽
-        if (scrapedRating != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(3.dp)
-            ) {
-                ScrapedBadge(rating = scrapedRating, compact = true)
-            }
-        }
-
+    // 海报本体的公共 BoxModifier（titleBelow=false 时连标题一起包；true 时只包海报图）
+    val posterBox: @Composable () -> Unit = {
         Box(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(PosterBottomScrim)
-                .padding(horizontal = 8.dp, vertical = 7.dp)
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color.White,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                .aspectRatio(2f / 3f)
+                .graphicsLayer { scaleX = scale; scaleY = scale }
+                .then(
+                    if (focused) {
+                        Modifier.shadow(
+                            elevation = Lift.Focus,
+                            shape = PosterShape,
+                            clip = false,
+                            ambientColor = AppColors.Brand.copy(alpha = 0.35f),
+                            spotColor = AppColors.Brand.copy(alpha = 0.55f)
+                        )
+                    } else Modifier
                 )
+                .clip(PosterShape)
+                .background(if (focused) AppColors.SurfaceRaise else AppColors.Surface)
+                .then(
+                    if (focused) Modifier.border(2.5.dp, AppColors.Brand, PosterShape)
+                    else Modifier.border(1.dp, Edge.Hairline, PosterShape)
+                )
+                .clickable(
+                    interactionSource = interaction,
+                    indication = null,
+                    onClick = onClick
+                )
+                .focusable()
+        ) {
+            PosterArt(model = item.posterUrl, contentDescription = item.title) {
+                PosterFallback(title = item.title, showTitle = false, titleFontSize = 30.sp)
+            }
 
+            if (scrapedRating != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(3.dp)
+                ) {
+                    ScrapedBadge(rating = scrapedRating, compact = true)
+                }
+            }
+
+            // titleBelow=true：标题移走，海报底部只留进度线（进度线贴海报底边）
+            if (titleBelow) {
                 if (showProgress && item.positionMs > 0 && item.durationMs > 0) {
-                    ProgressLine(item.positionMs.toFloat() / item.durationMs.toFloat())
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                    ) {
+                        ProgressLine(item.positionMs.toFloat() / item.durationMs.toFloat())
+                    }
+                }
+            } else {
+                // 默认 overlay：底部渐变 + 白字标题 + 进度线
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(PosterBottomScrim)
+                        .padding(horizontal = 8.dp, vertical = 7.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            text = item.title,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        if (showProgress && item.positionMs > 0 && item.durationMs > 0) {
+                            ProgressLine(item.positionMs.toFloat() / item.durationMs.toFloat())
+                        }
+                    }
                 }
             }
         }
+    }
+
+    if (titleBelow) {
+        Column(
+            modifier = modifier,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            posterBox()
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.bodySmall,
+                color = AppColors.TextPrimary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 2.dp)
+            )
+        }
+    } else {
+        Box(modifier = modifier) { posterBox() }
     }
 }
 

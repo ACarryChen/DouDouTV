@@ -118,11 +118,10 @@ internal fun Prefs.ThemeMode.modeLabel(): String = when (this) {
     Prefs.ThemeMode.SYSTEM -> "跟随系统"
 }
 
-// dev 尚无多核：内核档位名帮手一并屏蔽（多核合入后恢复）
-// internal fun playerKernelLabel(kernel: String): String = when (kernel) {
-//     Prefs.KERNEL_FONGMI -> "FongMi（实验）"
-//     else -> "经典"
-// }
+internal fun playerKernelLabel(kernel: String): String = when (kernel) {
+    Prefs.KERNEL_FONGMI -> "FongMi（实验）"
+    else -> "经典"
+}
 
 internal fun Prefs.PosterSize.label(): String = when (this) {
     Prefs.PosterSize.SMALL -> "小"
@@ -172,8 +171,7 @@ fun SettingsScreen(vm: LibraryViewModel) {
     var posterSize by remember { mutableStateOf(Prefs.posterSize) }
     var videoTier by remember { mutableStateOf(Prefs.videoCacheTier) }
     var skipIntro by remember { mutableStateOf(Prefs.skipIntroEnabled) }
-    // dev 尚无多核：Prefs.playerKernel 不存在，状态声明一并屏蔽
-    // var playerKernel by remember { mutableStateOf(Prefs.playerKernel) }
+    var playerKernel by remember { mutableStateOf(Prefs.playerKernel) }
     var videoCacheBytes by remember { mutableStateOf(0L) }
     var imageCacheBytes by remember { mutableStateOf(0L) }
     val scope = rememberCoroutineScope()
@@ -198,8 +196,6 @@ fun SettingsScreen(vm: LibraryViewModel) {
                 favoriteCount = favoriteCount.size,
                 resumeCount = resumeCount.size,
                 themeLabel = AppPalette.current.label,
-                // dev 尚无多核：内核入口整组屏蔽，多核合入后连 PlayCircle 播放行一起恢复
-                // kernelLabel = playerKernelLabel(playerKernel),
                 tmdbOn = tmdbOn,
                 cacheSummary = "视频 ${PlayerFactory.formatBytes(videoCacheBytes)} · " +
                     "图片 ${PlayerFactory.formatBytes(imageCacheBytes)}",
@@ -255,22 +251,20 @@ fun SettingsScreen(vm: LibraryViewModel) {
                         onChange = { skipIntro = it; Prefs.skipIntroEnabled = it }
                     )
                 }
+                GroupHead("播放")
+                GroupCard {
+                    NavRow(
+                        icon = Icons.Filled.PlayCircle,
+                        title = "播放内核",
+                        value = playerKernelLabel(playerKernel),
+                        valueAccent = true,
+                        onClick = { choice = SettingChoice.PlayerKernel }
+                    )
+                }
+                GroupFoot("FongMi 档为实验内核，对齐 FongMi 官方播放栈；经典档为原 Exo 直连。改动在下次进播放器时生效。")
             }
 
-            // dev 尚无多核：播放子页只有内核一组，整页屏蔽
-            // SettingsPage.PLAYBACK -> SubPage("播放", onBack = { page = SettingsPage.ROOT }) {
-            //     GroupHead("内核")
-            //     GroupCard {
-            //         NavRow(
-            //             icon = Icons.Filled.PlayCircle,
-            //             title = "播放内核",
-            //             value = playerKernelLabel(playerKernel),
-            //             valueAccent = true,
-            //             onClick = { choice = SettingChoice.PlayerKernel }
-            //         )
-            //     }
-            //     GroupFoot("FongMi 档为实验内核，对齐 FongMi 官方播放栈；经典档为原 Exo 直连。改动在下次进播放器时生效。")
-            // }
+            // 播放内核已并入「功能」子页，这里留空
             SettingsPage.PLAYBACK -> Unit
 
             SettingsPage.SCRAPE -> SubPage("刮削", onBack = { page = SettingsPage.ROOT }) {
@@ -457,17 +451,15 @@ fun SettingsScreen(vm: LibraryViewModel) {
             // 这一组只挂在 TV 设置页：手机端没有对应开关，落到这里就是空转
             SettingChoice.CardMotion -> Unit
 
-            // dev 尚无多核：内核弹窗屏蔽
-            // SettingChoice.PlayerKernel -> ChoiceDialog(
-            //     title = "播放内核",
-            //     options = listOf(Prefs.KERNEL_FONGMI, Prefs.KERNEL_CLASSIC),
-            //     label = { playerKernelLabel(it) },
-            //     selected = playerKernel,
-            //     hint = "FongMi 档为实验内核，对齐 FongMi 官方播放栈；经典档为原自研 Exo 直连。改动在下次进播放器时生效。",
-            //     onPick = { Prefs.playerKernel = it; playerKernel = it },
-            //     onDismiss = { choice = null }
-            // )
-            SettingChoice.PlayerKernel -> Unit
+            SettingChoice.PlayerKernel -> ChoiceDialog(
+                title = "播放内核",
+                options = listOf(Prefs.KERNEL_FONGMI, Prefs.KERNEL_CLASSIC),
+                label = { playerKernelLabel(it) },
+                selected = playerKernel,
+                hint = "FongMi 档为实验内核，对齐 FongMi 官方播放栈；经典档为原自研 Exo 直连。改动在下次进播放器时生效。",
+                onPick = { Prefs.playerKernel = it; playerKernel = it },
+                onDismiss = { choice = null }
+            )
 
             null -> Unit
         }
@@ -487,8 +479,6 @@ private fun RootPanel(
     favoriteCount: Int,
     resumeCount: Int,
     themeLabel: String,
-    // dev 尚无多核：随播放入口一并屏蔽
-    // kernelLabel: String,
     tmdbOn: Boolean,
     cacheSummary: String,
     onOpen: (SettingsPage) -> Unit
@@ -532,18 +522,9 @@ private fun RootPanel(
                 icon = Icons.Filled.Tune,
                 divider = true,
                 title = "功能",
-                sub = "强制 TV 模式 · 自动跳过片头",
+                sub = "强制 TV 模式 · 自动跳过片头 · 播放内核",
                 onClick = { onOpen(SettingsPage.FEATURE) }
             )
-            // dev 尚无多核：播放入口行屏蔽（子页只剩内核一组）
-            // NavRow(
-            //     icon = Icons.Filled.PlayCircle,
-            //     divider = true,
-            //     title = "播放",
-            //     sub = "内核 · 跳过片头",
-            //     value = kernelLabel,
-            //     onClick = { onOpen(SettingsPage.PLAYBACK) }
-            // )
             NavRow(
                 icon = Icons.Filled.AutoAwesome,
                 divider = true,

@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,6 +63,7 @@ import com.chen.doudoutv.ui.theme.TvText
 import com.chen.doudoutv.ui.theme.Radius
 import com.chen.doudoutv.ui.theme.Motion
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 电视端外壳（完全独立于手机端 PhoneApp）。
@@ -82,6 +84,8 @@ internal sealed interface TvRoute {
     data class Detail(val mediaId: Long) : TvRoute
     data object Sources : TvRoute
     data object Settings : TvRoute
+    /** 聚合网盘源的分类入口（vodId 是 quark/xunlei 这类网盘类型短字符串，而非真实 URL） */
+    data class CategoryList(val sourceId: Long, val siteKey: String, val typeId: String, val typeName: String) : TvRoute
 }
 
 /**
@@ -164,6 +168,7 @@ internal object TvNavHistory {
 @Composable
 fun TvApp(vm: LibraryViewModel) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var navStack by remember { mutableStateOf(restorableStack(TvNavHistory.stack)) }
     LaunchedEffect(navStack) { TvNavHistory.stack = navStack }
     // 搜索页状态放在导航层：从搜索页进详情再退回来结果不丢（pop 出的是 Detail，不触发清理）；
@@ -329,7 +334,26 @@ fun TvApp(vm: LibraryViewModel) {
                         onBack = pop,
                         onPlay = { id ->
                             context.startActivity(TvPlayerActivity.intent(context, id))
+                        },
+                        onCategoryVodId = { sourceId, siteKey, typeId, typeName ->
+                            navStack = navStack.dropLast(1)
+                            push(TvRoute.CategoryList(sourceId, siteKey, typeId, typeName))
                         }
+                    )
+
+                    is TvRoute.CategoryList -> TvCategoryListScreen(
+                        sourceId = target.sourceId,
+                        siteKey = target.siteKey,
+                        typeId = target.typeId,
+                        typeName = target.typeName,
+                        onBack = pop,
+                        onOpenDetail = { vod ->
+                            scope.launch {
+                                val entity = vm.insertBrowseVod(target.sourceId, vod)
+                                if (entity != null) push(TvRoute.Detail(entity.id))
+                            }
+                        },
+                        vm = vm
                     )
 
                     is TvRoute.Sources -> TvSourcesScreen(vm = vm)

@@ -63,18 +63,32 @@ public class PlayerManager implements ParseCallback {
     private boolean danmakuEnabled;
     private boolean initTrack;
     private int retry;
-    private int decode;
+    public int decode;
 
     public PlayerManager(Callback callback) {
         this.callback = callback;
-        this.decode = PlayerEngine.HARD;
         this.runnable = this::onPlayTimeout;
         this.pendingStartPositionMs = C.TIME_UNSET;
-        this.engine = PlayerEngineFactory.create(decode, listener);
         this.effects = new PlayerEffectManager(() -> engine);
         this.danmakuConfig = DanmakuSetting.getConfig();
         this.danmakuEnabled = DanmakuSetting.isShow();
-        this.player = engine.getPlayer();
+        // 硬解初始化在老设备上可能直接崩（Amlogic S905X4 等 MediaCodec 原生崩溃），
+        // 包 try-catch：默认硬解 → 崩了降级软解，再崩就直接 ERROR 让外层知道
+        try {
+            this.decode = PlayerEngine.HARD;
+            this.engine = PlayerEngineFactory.create(decode, listener);
+        } catch (Throwable t) {
+            android.util.Log.w("PlayerManager", "硬解初始化失败，降级软解：" + t.getMessage());
+            try {
+                this.decode = PlayerEngine.SOFT;
+                this.engine = PlayerEngineFactory.create(decode, listener);
+            } catch (Throwable t2) {
+                android.util.Log.e("PlayerManager", "软解也崩了：" + t2.getMessage());
+                this.decode = PlayerEngine.HARD; // 回原值，让后续 start 再走一遍以触发正常 ERROR 回调
+                this.engine = null;
+            }
+        }
+        if (engine != null) this.player = engine.getPlayer();
     }
 
     public void release() {

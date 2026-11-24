@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -85,6 +86,7 @@ import com.chen.doudoutv.player.DownloadMeter
 import com.chen.doudoutv.player.PlayerFactory
 import com.fongmi.android.tv.Constant
 import com.fongmi.android.tv.player.PlayerManager
+import com.fongmi.android.tv.player.engine.PlayerEngine
 import com.fongmi.android.tv.player.media.PlaySpec
 import com.chen.doudoutv.ui.components.episodeLabel
 import com.chen.doudoutv.ui.components.usesSourceEpisodeName
@@ -209,6 +211,8 @@ class TvPlayerActivity : ComponentActivity() {
      * 把此刻的实际下载速率和这条流需要的码率摊出来，用户才能分辨是网速不够还是片子坏了。
      */
     private var bufferHint by mutableStateOf<String?>(null)
+    /** FongMi 内核当前硬解/软解状态：null 表示非 FongMi 内核 */
+    private var decodeState by mutableStateOf<Int?>(null)
 
     /**
      * 实测下载速率（字节/秒）；-1 = 还没攒满第一个 1 秒窗口。
@@ -536,6 +540,7 @@ class TvPlayerActivity : ComponentActivity() {
         val m = PlayerManager(TvFongMiCallback())
         manager = m
         bindKernelPlayer(m.player as ExoPlayer)
+        decodeState = m.decode
         return m
     }
 
@@ -587,6 +592,7 @@ class TvPlayerActivity : ComponentActivity() {
         }
 
         override fun onDecodeChanged() {
+            decodeState = manager?.decode
         }
 
         override fun onMediaOptionsChanged() {
@@ -1012,6 +1018,12 @@ class TvPlayerActivity : ComponentActivity() {
             )
         )
         sv.setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, subtitleTextSize)
+    }
+
+    /** FongMi 内核当前解码方式标签（经典内核返回 null 不显示） */
+    private fun decodeLabel(): String? {
+        val d = decodeState ?: return null
+        return if (d == PlayerEngine.HARD) "硬解" else "软解"
     }
 
     /** 当前播放分集在列表里的下标；-1 = 电影、或列表还没加载出来 */
@@ -1442,6 +1454,7 @@ class TvPlayerActivity : ComponentActivity() {
                                 it.seriesKey.isNotBlank()
                         } == true),
                     introMs = introSkipMs,
+                    decodeLabel = decodeLabel(),
                     onIntroClick = { onIntroClick() },
                     // 一级按钮：按确定展开/收起它的二级选项（同一个按钮再按一次收起）
                     onTabChange = {
@@ -1637,6 +1650,8 @@ private fun TvFunctionPanel(
     introVisible: Boolean,
     /** 当前已配置的片头时长（毫秒），决定按钮文案 */
     introMs: Long,
+    /** FongMi 内核当前解码方式标签（经典内核传 null 不显示） */
+    decodeLabel: String? = null,
     /** 「设片头」点击：直接执行 / 弹确认小面板，不是二级标签 */
     onIntroClick: () -> Unit,
     onTabChange: (TvPanelTab) -> Unit,
@@ -1702,6 +1717,22 @@ private fun TvFunctionPanel(
                     modifier = focusModifier,
                     onClick = { onTabChange(t) }
                 )
+            }
+            // 软硬解标签：FongMi 内核才显示，推到最右边
+            decodeLabel?.let { label ->
+                Spacer(Modifier.weight(1f))
+                Box(
+                    Modifier
+                        .background(Color.White.copy(alpha = 0.14f), Radius.Pill)
+                        .padding(horizontal = 12.dp, vertical = 5.dp)
+                ) {
+                    Text(
+                        label,
+                        color = if (label.startsWith("硬")) Color.White.copy(alpha = 0.75f) else Color(0xFFF5B800),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
             }
         }
 

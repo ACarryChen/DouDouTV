@@ -78,7 +78,9 @@ object CatVodResultParser {
         return out
     }
 
-    /** 解析 list 数组 → TvBoxClient.Vod 列表（不含 playSources） */
+    /** 解析 list 数组 → TvBoxClient.Vod 列表（含 playSources）。
+     * 某些 spider 的 searchContent / homeContent 也会返回 vod_play_from / vod_play_url，
+     * 尤其是直播频道列表和网盘搜索结果，这里一并解析，避免详情页 detailContent 为空时无回退数据。 */
     fun parseVodList(json: String, siteKey: String, siteName: String): List<TvBoxClient.Vod> {
         val root = runCatching { JSONObject(json) }.getOrNull() ?: return emptyList()
         val list = root.optJSONArray("list") ?: return emptyList()
@@ -88,7 +90,7 @@ object CatVodResultParser {
             val vodId = o.optString("vod_id").ifBlank { o.optString("vodId") }
             if (vodId.isBlank()) continue
             val picRaw = o.optString("vod_pic").ifBlank { o.optString("vodPic") }
-            out += TvBoxClient.Vod(
+            val vod = TvBoxClient.Vod(
                 vodId = vodId,
                 name = o.optString("vod_name").ifBlank { o.optString("vodName") },
                 pic = TvBoxClient.AbsoluteUrl(picRaw),
@@ -103,8 +105,49 @@ object CatVodResultParser {
                 siteKey = siteKey,
                 siteName = siteName
             )
+            vod.playSources = parsePlaySources(o)
+            out += vod
         }
         return out
+    }
+
+    /**
+     * 从一个 CatVod Vod JSON 对象里解析 vod_play_from / vod_play_url → playSources。
+     * parseDetail 和 parseVodList 共用同一份解析逻辑，避免重复实现。
+     *
+     * 返回空列表的三种情况：
+     *  1. 对象里没有 vod_play_from / vod_play_url 字段（绝大多数点播站点的 searchContent 不返回）
+     *  2. 字段有但值为空串
+     *  3. 有值但解析后没有效 URL
+     */
+    private fun parsePlaySources(obj: JSONObject): List<TvBoxClient.PlaySource> {
+        val from = obj.optString("vod_play_from")
+        val urlStr = obj.optString("vod_play_url")
+        if (urlStr.isBlank()) return emptyList()
+        val fromNames = from.split("$$$").map { it.trim() }
+        val groups = urlStr.split("$$$")
+        return groups.mapIndexedNotNull { gi, group ->
+            val episodes = group.split('#').mapIndexedNotNull { idx, piece ->
+                if (piece.isBlank()) return@mapIndexedNotNull null
+                val sep = piece.indexOf('$')
+                val (epName, epUrl) = if (sep < 0) {
+                    "正片" to piece.trim()
+                } else {
+                    val n = piece.substring(0, sep).trim().ifBlank { "第${idx + 1}集" }
+                    val u = piece.substring(sep + 1).trim()
+                    n to u
+                }
+                // 保留所有 URL，包括云盘 scheme（quark://、aliyundrive://、uc:// 等）。
+                // 注意不能按 http(s) 过滤，否则网盘线路的分集会全部丢失。
+                // 云盘地址的真实播放地址由 playerContent 在播放时按需解析。
+                val absolute = TvBoxClient.AbsoluteUrl(epUrl)
+                TvBoxClient.Episode(epName, absolute)
+            }
+            if (episodes.isEmpty()) null else {
+                val name = fromNames.getOrNull(gi)?.takeIf { it.isNotBlank() } ?: "线路${gi + 1}"
+                TvBoxClient.PlaySource(name, episodes)
+            }
+        }
     }
 
     /**
@@ -137,37 +180,7 @@ object CatVodResultParser {
             siteName = siteName
         )
 
-        // 手动解析 play_from / play_url 到 playSources
-        val from = obj.optString("vod_play_from")
-        val urlStr = obj.optString("vod_play_url")
-        if (urlStr.isNotBlank()) {
-            val fromNames = from.split("$$$").map { it.trim() }
-            val groups = urlStr.split("$$$")
-            val sources = groups.mapIndexedNotNull { gi, group ->
-                val episodes = group.split('#').mapIndexedNotNull { idx, piece ->
-                    if (piece.isBlank()) return@mapIndexedNotNull null
-                    val sep = piece.indexOf('$')
-                    val (epName, epUrl) = if (sep < 0) {
-                        "正片" to piece.trim()
-                    } else {
-                        val n = piece.substring(0, sep).trim().ifBlank { "第${idx + 1}集" }
-                        val u = piece.substring(sep + 1).trim()
-                        n to u
-                    }
-                    // 保留所有 URL，包括云盘 scheme（quark://、aliyundrive://、uc:// 等）。
-                    // 注意不能按 http(s) 过滤，否则网盘线路的分集会全部丢失。
-                    // 云盘地址的真实播放地址由 playerContent 在播放时按需解析。
-                    val absolute = TvBoxClient.AbsoluteUrl(epUrl)
-                    TvBoxClient.Episode(epName, absolute)
-                }
-                if (episodes.isEmpty()) null else {
-                    val name = fromNames.getOrNull(gi)?.takeIf { it.isNotBlank() } ?: "线路${gi + 1}"
-                    TvBoxClient.PlaySource(name, episodes)
-                }
-            }
-            vod.playSources = sources
-        }
-
+        vod.playSources = parsePlaySources(obj)
         return vod
     }
 

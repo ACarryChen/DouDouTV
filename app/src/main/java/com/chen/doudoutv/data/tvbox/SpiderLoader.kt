@@ -593,20 +593,29 @@ object SpiderLoader {
      */
     private fun scanDecryptedDex(after: Long): List<String> {
         val out = ArrayList<String>()
+        // 诊断：扫所有落盘文件（不过滤大小/时间/魔数），看壳 Init 后到底产了什么
+        val allFiles = ArrayList<String>()
         fun walk(dir: File, depth: Int) {
             if (depth > 5) return
             dir.listFiles()?.forEach { f ->
                 if (f.isDirectory) walk(f, depth + 1)
-                else if (f.length() > 4096 && f.lastModified() >= after && hasDexMagic(f) &&
-                    !f.name.endsWith(".odex") && !f.name.endsWith(".vdex")
-                ) {
-                    out += f.absolutePath
+                else {
+                    allFiles += "${f.absolutePath} size=${f.length()} mtime=${f.lastModified()} name=${f.name}"
+                    if (f.length() > 4096 && f.lastModified() >= after && hasDexMagic(f) &&
+                        !f.name.endsWith(".odex") && !f.name.endsWith(".vdex")
+                    ) {
+                        out += f.absolutePath
+                    }
                 }
             }
         }
         val ctx = ctx()
         listOf(ctx.cacheDir, ctx.filesDir, ctx.codeCacheDir, ctx.noBackupFilesDir)
             .forEach { walk(it, 0) }
+        if (out.isEmpty()) {
+            Log.w(TAG, "解密 dex 扫描为空，所有落盘文件如下：")
+            allFiles.forEach { Log.w(TAG, "  $it") }
+        }
         return out
     }
 

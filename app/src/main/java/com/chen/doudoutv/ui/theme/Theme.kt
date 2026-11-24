@@ -62,8 +62,8 @@ object AppColors {
      */
     val Bg: Color get() = if (lightOn()) Color(0xFFF5F5F7) else Color(0xFF080808)
 
-    /** L1 —— 分区容器、分组面板、图片占位 */
-    val Surface: Color get() = if (lightOn()) Color(0xFFFFFFFF) else Color(0xFF131313)
+    /** L1 —— 分区容器、分组面板、图片占位；苹果钛白（冷调奶白），不刺眼显高级 */
+    val Surface: Color get() = if (lightOn()) Color(0xFFF2F3F5) else Color(0xFF131313)
 
     /** L2 —— 卡片、列表行、输入控件 */
     val SurfaceHi: Color get() = if (lightOn()) Color(0xFFE9E9EE) else Color(0xFF1F1F1F)
@@ -96,6 +96,9 @@ object AppColors {
 
     /** 已停用这类中性弱状态（原先散落在各处的灰色字面量） */
     val Disabled: Color get() = if (lightOn()) Color(0xFF98989D) else Color(0xFF747474)
+
+    /** 细分割线（hairline）：浅反黑 6%，深反白 6%，全局统一避免魔法数字散落 */
+    val Hairline: Color get() = if (lightOn()) Color.Black.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.06f)
 
     /**
      * 焦点态指示色：焦点环 / 焦点描边。TV 的焦点语言是「反白高亮」，

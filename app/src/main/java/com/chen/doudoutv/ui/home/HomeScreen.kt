@@ -58,6 +58,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -268,7 +269,7 @@ fun HomeScreen(
                     ) {
                         items(favorites, key = { "fav_${it.id}" }) { item ->
                             Box(Modifier.width(cardWidth)) {
-                                PosterCard(item = item, onClick = { onOpenDetail(item.id) })
+                                PosterCard(item = item, onClick = { onOpenDetail(item.id) }, titleBelow = true)
                             }
                         }
                     }
@@ -315,7 +316,7 @@ fun HomeScreen(
                                 catItems.isNotEmpty() -> {
                                     items(catItems.take(LAZY_TAKE), key = { "cat_${cat.typeId}_${it.id}" }) { item ->
                                         Box(Modifier.width(cardWidth)) {
-                                            PosterCard(item = item, onClick = { onOpenDetail(item.id) })
+                                            PosterCard(item = item, onClick = { onOpenDetail(item.id) }, titleBelow = true)
                                         }
                                     }
                                 }
@@ -701,7 +702,7 @@ private fun LazyListScope.GallerySection(
         ) {
             items(items, key = { "${title}_${it.id}" }) { item ->
                 Box(Modifier.width(cardWidth)) {
-                    PosterCard(item = item, onClick = { onOpenDetail(item.id) })
+                    PosterCard(item = item, onClick = { onOpenDetail(item.id) }, titleBelow = true)
                 }
             }
         }
@@ -1262,7 +1263,8 @@ fun GenreScreen(
                                 PosterCard(
                                     item = item,
                                     onClick = { onOpenDetail(item.id) },
-                                    scrapedRating = scrapeUi.scrapedRatings[item.id]
+                                    scrapedRating = scrapeUi.scrapedRatings[item.id],
+                                    titleBelow = true
                                 )
                             }
                         }
@@ -1325,7 +1327,50 @@ fun GenreScreen(
 class SearchUiState {
     var query by mutableStateOf("")
     var results by mutableStateOf<List<MediaEntity>>(emptyList())
-    var grouped by mutableStateOf<Map<String, List<MediaEntity>>>(emptyMap())
+
+    /** 从 results 派生，保证同帧原子更新 */
+    val grouped: Map<String, List<MediaEntity>> by derivedStateOf {
+        results.groupBy { it.sourceName.ifBlank { "未知来源" } }
+    }
+
+    /**
+     * 搜索页 LazyColumn 的稳定 item 清单（derivedStateOf 同帧原子更新）。
+     * 直接把所有 section/header/row 扁平化成 item 列表，避免 composition 到 measure 之间
+     * grouped 结构变化（如单线路→多线路导致 item 类型变了）→ interval 越界 → IndexOutOfBounds。
+     * 每个 item 都带稳定 key，LazyColumn 只根据这个 list 发射 items，不动态 forEach grouped。
+     */
+    sealed interface SearchSection {
+        val key: String
+        data class Summary(val total: Int, val srcCount: Int) : SearchSection { override val key = "srch_sum" }
+        data class SourceHeader(val srcName: String, val count: Int) : SearchSection { override val key = "srch_src_$srcName" }
+        data class LineHeader(val srcName: String, val lineName: String, val count: Int) : SearchSection { override val key = "srch_line_${srcName}||$lineName" }
+        data class Row(val srcName: String, val lineName: String, val items: List<MediaEntity>, val isCollapsedSource: Boolean, val isCollapsedLine: Boolean) : SearchSection {
+            override val key = "srch_row_${srcName}||$lineName"
+        }
+    }
+
+    val sections: List<SearchSection> by derivedStateOf {
+        val out = ArrayList<SearchSection>(16)
+        out += SearchSection.Summary(results.size, grouped.size)
+        grouped.forEach { (srcName, itemsOfSource) ->
+            val srcCollapsed = srcName in collapsedSources
+            out += SearchSection.SourceHeader(srcName, itemsOfSource.size)
+            if (srcCollapsed) return@forEach
+            val lines = itemsOfSource.groupBy { it.playSource.ifBlank { "默认线路" } }
+            if (lines.size == 1) {
+                val (lineName, items) = lines.entries.first()
+                out += SearchSection.Row(srcName, lineName, items, false, false)
+            } else {
+                lines.forEach { (lineName, items) ->
+                    val expanded = "$srcName||$lineName" in expandedLines
+                    out += SearchSection.LineHeader(srcName, lineName, items.size)
+                    if (expanded) out += SearchSection.Row(srcName, lineName, items, false, false)
+                }
+            }
+        }
+        out
+    }
+
     var searching by mutableStateOf(false)
     var suggestions by mutableStateOf<List<String>>(emptyList())
     var submittedKeyword by mutableStateOf("")
@@ -1364,7 +1409,6 @@ class SearchUiState {
     fun clear() {
         query = ""
         results = emptyList()
-        grouped = emptyMap()
         searching = false
         suggestions = emptyList()
         submittedKeyword = ""
@@ -1475,7 +1519,6 @@ fun SearchScreen(
         state.searching = true
         val local = runCatching { vm.searchMedia(q) }.getOrDefault(emptyList())
         state.results = local
-        state.grouped = local.groupBy { it.sourceName.ifBlank { "未知来源" } }
         state.searchedKeyword = q
 
         /** 把一批远程结果并进当前列表（按 remoteId 去重） */
@@ -1483,7 +1526,6 @@ fun SearchScreen(
             val seen = state.results.map { it.remoteId }.toSet()
             val merged = state.results + batch.filter { it.remoteId !in seen }
             state.results = merged
-            state.grouped = merged.groupBy { it.sourceName.ifBlank { "未知来源" } }
         }
 
         val remote = vm.searchRemote(q) { partial ->
@@ -1542,7 +1584,6 @@ fun SearchScreen(
                         state.submittedKeyword = ""
                         state.searchedKeyword = ""
                         state.results = emptyList()
-                        state.grouped = emptyMap()
                     }
                 },
                 placeholder = {
@@ -1646,59 +1687,40 @@ fun SearchScreen(
             state.submittedKeyword.isNotEmpty() && state.results.isEmpty() ->
                 HintText("没有找到「${state.submittedKeyword}」相关内容")
 
-            // 有结果：来源 → 线路两级分组，来源可整体折叠，线路为可展开面板
+            // 有结果：来源 → 线路两级分组，用预先拍平的 sections 稳定列表发射 item
             else -> {
+                val sections = state.sections
                 LazyColumn(
                     state = resultsListState,
                     contentPadding = PaddingValues(bottom = 28.dp + GlassBarClearance)
                 ) {
-                    item { SectionTitle("搜索结果 ${state.results.size} 条 · ${state.grouped.size} 个来源") }
-                    state.grouped.forEach { (srcName, itemsOfSource) ->
-                        val srcCollapsed = srcName in state.collapsedSources
-                        // 直接从当前 grouped 实时算线路分组，不 remember —— 流式追加时 grouped 换了新 map，
-                        // remember 会基于旧 map 派生，导致 lineGroups 里还有已不存在的来源 → getValue 崩
-                        val lines = itemsOfSource.groupBy { it.playSource.ifBlank { "默认线路" } }
-                        item(key = "srch_src_$srcName") {
-                            SectionTitle(
-                                srcName,
-                                modifier = Modifier.clickable { state.toggleSource(srcName) },
-                                trailing = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        CountBadge(itemsOfSource.size)
-                                        Spacer(Modifier.width(4.dp))
-                                        Icon(
-                                            Icons.Filled.ExpandMore,
-                                            contentDescription = null,
-                                            tint = AppColors.TextTertiary,
-                                            modifier = Modifier
-                                                .size(20.dp)
-                                                .graphicsLayer { rotationZ = if (srcCollapsed) -90f else 0f }
-                                        )
+                    items(sections, key = { it.key }) { sec ->
+                        when (sec) {
+                            is SearchUiState.SearchSection.Summary -> SectionTitle("搜索结果 ${sec.total} 条 · ${sec.srcCount} 个来源")
+                            is SearchUiState.SearchSection.SourceHeader -> {
+                                val srcCollapsed = sec.srcName in state.collapsedSources
+                                SectionTitle(
+                                    sec.srcName,
+                                    modifier = Modifier.clickable { state.toggleSource(sec.srcName) },
+                                    trailing = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            CountBadge(sec.count)
+                                            Spacer(Modifier.width(4.dp))
+                                            Icon(
+                                                Icons.Filled.ExpandMore,
+                                                contentDescription = null,
+                                                tint = AppColors.TextTertiary,
+                                                modifier = Modifier.size(20.dp).graphicsLayer { rotationZ = if (srcCollapsed) -90f else 0f }
+                                            )
+                                        }
                                     }
-                                }
-                            )
-                        }
-                        if (srcCollapsed) return@forEach
-                        if (lines.size == 1) {
-                            // 单线路来源直接上海报，不让用户为一次展开多点一下
-                            val entry = lines.entries.first()
-                            item(key = "srch_row_${srcName}_${entry.key}") {
-                                SearchPosterRow(srcName, entry.key, entry.value, isTv, hSpacing, onOpenDetail)
+                                )
                             }
-                        } else {
-                            lines.entries.forEach { (lineName, items) ->
-                                val key = "$srcName||$lineName"
-                                val expanded = key in state.expandedLines
-                                item(key = "srch_line_$key") {
-                                    SearchLineHeader(lineName, items.size, expanded) { state.toggleLine(key) }
-                                }
-                                // 折叠时不发 body item：让 interval 计数和实际发出的 item 严格一致。
-                                // AnimatedVisibility 在 LazyColumn 里会让 invisible 的 content 挂在 composition 但不计 interval，
-                                // 远程流式追加同时换 grouped 结构时就会出现 intervals 计数和实际 item index 不一致 → IndexOutOfBounds。
-                                if (expanded) item(key = "srch_body_$key") {
-                                    SearchPosterRow(srcName, lineName, items, isTv, hSpacing, onOpenDetail)
-                                }
+                            is SearchUiState.SearchSection.LineHeader -> {
+                                val expanded = "${sec.srcName}||${sec.lineName}" in state.expandedLines
+                                SearchLineHeader(sec.lineName, sec.count, expanded) { state.toggleLine("${sec.srcName}||${sec.lineName}") }
                             }
+                            is SearchUiState.SearchSection.Row -> SearchPosterRow(sec.srcName, sec.lineName, sec.items, isTv, hSpacing, onOpenDetail)
                         }
                     }
                 }
@@ -1757,7 +1779,8 @@ private fun SearchPosterRow(
             Box(Modifier.width(cardWidthOf(isTv))) {
                 PosterCard(
                     item = item,
-                    onClick = { onOpenDetail(item.id) }
+                    onClick = { onOpenDetail(item.id) },
+                    titleBelow = true
                 )
             }
         }
@@ -1999,7 +2022,8 @@ fun TvBoxCategoryScreen(
                                 PosterCard(
                                     item = item,
                                     onClick = { onOpenDetail(item.id) },
-                                    scrapedRating = scrapeUi.scrapedRatings[item.id]
+                                    scrapedRating = scrapeUi.scrapedRatings[item.id],
+                                    titleBelow = true
                                 )
                             }
                         }

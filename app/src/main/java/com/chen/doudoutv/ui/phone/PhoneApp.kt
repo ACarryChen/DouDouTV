@@ -28,7 +28,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -76,6 +78,8 @@ internal sealed interface PhoneRoute {
     data class Detail(val mediaId: Long) : PhoneRoute
     data class Genre(val kind: String?, val genre: String?, val library: String? = null) : PhoneRoute
     data class Category(val typeId: String, val typeName: String) : PhoneRoute
+    /** 聚合网盘源的分类入口（vodId 是 quark/xunlei 这类网盘类型短字符串，而非真实 URL） */
+    data class CategoryList(val sourceId: Long, val siteKey: String, val typeId: String, val typeName: String) : PhoneRoute
 }
 
 internal enum class PhoneTab(val label: String, val icon: ImageVector) {
@@ -87,6 +91,7 @@ internal enum class PhoneTab(val label: String, val icon: ImageVector) {
 @Composable
 fun PhoneApp(vm: LibraryViewModel) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     // 导航栈：初始在 Home；底栏切换会重置栈，详情/搜索/分类会入栈
     var navStack by remember { mutableStateOf<List<PhoneRoute>>(listOf(PhoneRoute.Home)) }
     // 搜索页状态放在导航层：进详情再返回时结果不丢，真正退出搜索页才清空
@@ -125,7 +130,7 @@ fun PhoneApp(vm: LibraryViewModel) {
     }
 
     val currentTab = when (navStack.last()) {
-        is PhoneRoute.Home, is PhoneRoute.Detail, is PhoneRoute.Search, is PhoneRoute.Genre, is PhoneRoute.Category -> PhoneTab.HOME
+        is PhoneRoute.Home, is PhoneRoute.Detail, is PhoneRoute.Search, is PhoneRoute.Genre, is PhoneRoute.Category, is PhoneRoute.CategoryList -> PhoneTab.HOME
         is PhoneRoute.Sources -> PhoneTab.SOURCES
         is PhoneRoute.Settings -> PhoneTab.SETTINGS
     }
@@ -154,12 +159,12 @@ fun PhoneApp(vm: LibraryViewModel) {
                         targetState = navStack.last(),
                         transitionSpec = {
                             when {
-                                targetState is PhoneRoute.Detail || targetState is PhoneRoute.Genre ->
+                                targetState is PhoneRoute.Detail || targetState is PhoneRoute.Genre || targetState is PhoneRoute.CategoryList ->
                                     (slideInHorizontally(animationSpec = tween(Motion.SLOW)) { it / 6 } +
                                         fadeIn(tween(Motion.SLOW)))
                                         .togetherWith(fadeOut(tween(Motion.FAST)))
 
-                                (initialState is PhoneRoute.Detail || initialState is PhoneRoute.Genre) &&
+                                (initialState is PhoneRoute.Detail || initialState is PhoneRoute.Genre || initialState is PhoneRoute.CategoryList) &&
                                     targetState is PhoneRoute.Home ->
                                     (fadeIn(tween(Motion.SLOW)) +
                                         slideInHorizontally(animationSpec = tween(Motion.SLOW)) { -it / 12 })
@@ -210,12 +215,33 @@ fun PhoneApp(vm: LibraryViewModel) {
                                 onOpenDetail = { id -> push(PhoneRoute.Detail(id)) }
                             )
 
+                            is PhoneRoute.CategoryList -> CategoryListScreen(
+                                sourceId = target.sourceId,
+                                siteKey = target.siteKey,
+                                typeId = target.typeId,
+                                typeName = target.typeName,
+                                onBack = goBack,
+                                onOpenDetail = { vod ->
+                                    scope.launch {
+                                        val entity = vm.insertBrowseVod(target.sourceId, vod)
+                                        if (entity != null) push(PhoneRoute.Detail(entity.id))
+                                    }
+                                },
+                                vm = vm
+                            )
+
                             is PhoneRoute.Detail -> DetailScreen(
                                 vm = vm,
                                 mediaId = target.mediaId,
                                 isTv = false,
                                 onPlay = { id ->
                                     context.startActivity(PhonePlayerActivity.intent(context, id))
+                                },
+                                onCategoryVodId = { sourceId, siteKey, typeId, typeName ->
+                                    // 检测到聚合网盘分类入口 → 先 pop 掉当前空壳 Detail，再跳资源列表页
+                                    // 不然从 CategoryList 返回会重新落到 Detail 空壳，又触发分类检测 → 死循环
+                                    navStack = navStack.dropLast(1)
+                                    push(PhoneRoute.CategoryList(sourceId, siteKey, typeId, typeName))
                                 }
                             )
 

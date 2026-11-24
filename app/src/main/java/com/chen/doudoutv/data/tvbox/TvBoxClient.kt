@@ -157,13 +157,20 @@ class TvBoxClient(
         private val directCallScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         /**
-         * 网盘分享页域名：这类 http 地址不是直链，必须交给 spider playerContent 解析，
-         * 且源站重新分享后旧链接会整剧失效，播放前要刷新详情拿新分享链接（对齐 FongMi：
-         * type=3 站点每次播放都走 playerContent，进播放页必重新拉 detail）。
+         * 网盘分享页 + CDN 直链域名：
+         * - 分享页（pan.quark.cn / alipan.com / pan.baidu.com 等）：必须 spider 解析拿真实播放地址
+         * - CDN 直链（quarkcdn.com / baidupcs.com 等）：源站有时直接返回解析后的直链，
+         *   但网盘直链有效期极短（夸克几小时、阿里 48h），过期就是 404，
+         *   所以也要当成「非永久直链」处理：每次播放前走 refreshCloudShareUris 重新拉详情
+         *   拿新分享页 → spider 重新解析出新直链。
          */
         private val CLOUD_SHARE_HOSTS = listOf(
+            // 分享页域名
             "pan.quark.cn", "my.quark.cn", "drive.uc.cn",
-            "alipan.com", "pan.baidu.com", "yun.baidu.com", "pan.xunlei.com"
+            "alipan.com", "pan.baidu.com", "yun.baidu.com", "pan.xunlei.com",
+            // CDN 直链域名（解析后返回的 mp4 托管域名）
+            "quarkcdn.com", "alipanfs.net", "baidupcs.com",
+            "bcebos.com", "xunleivip.com", "uculive.com"
         )
 
         /** 是否网盘分享页 URL（http(s) 且 host 命中网盘域名）：是 http 但不是直链 */
@@ -419,6 +426,29 @@ class TvBoxClient(
         }
 
     /**
+     * 分类列表（聚合网盘源专用）。某些聚合源（觅盘/盘搜等）的 searchContent 返回
+     * vodId=quark/xunlei/alixxx 这类网盘类型入口而非真实影片，点进详情页 detailContent
+     * 返回空。此时用这个方法调 categoryContent，typeId 就是那个分类入口 vodId，
+     * spider 会返回该网盘类型下的真实影片列表（vodId 是网盘分享页 URL）。
+     */
+    suspend fun categoryList(
+        siteKey: String,
+        typeId: String,
+        page: Int = 1
+    ): List<Vod> = withContext(Dispatchers.IO) {
+        val root = baseConfig()
+        val spSites = root?.let { parseSpiderSites(it) } ?: spiderSites
+        if (spSites.isEmpty()) return@withContext emptyList()
+        val cleanKey = siteKey.replace(":", "")
+        val site = spSites.firstOrNull { cleanKey.isBlank() || it.key == cleanKey || it.key.startsWith(cleanKey) || cleanKey.startsWith(it.key) }
+            ?: return@withContext emptyList()
+        categoryContent(
+            TvBoxSite(site.key, site.name, site.api, site.ext, site.searchable, site.quickSearch),
+            typeId, page
+        )
+    }
+
+    /**
      * 远程搜索：调 Spider 的 searchContent 接口，直接在源站搜索。
      * 跟本地 DB 搜索互补——本地搜已入库的，远程搜配置里的 spider 站点。
      *
@@ -553,7 +583,6 @@ class TvBoxClient(
      * @param siteKey 来自 TVBox 配置的站点 key；空表示在所有 spider 站点里逐个尝试
      */
     suspend fun detail(vodId: String, siteKey: String = ""): Vod? = withContext(Dispatchers.IO) {
-        // 配置走缓存：之前这里每次都重新下载整份配置，开一个详情就多一次整包请求
         val root = baseConfig()
         val spSites = root?.let { parseSpiderSites(it) } ?: spiderSites
         if (spSites.isEmpty()) return@withContext null
@@ -561,34 +590,119 @@ class TvBoxClient(
             rememberSpiderUrl(root.optString("spider"))
         }
 
-        // vodId 是站点私有的：带 siteKey 时只查本站。
-        // 跨站兜底几乎必然落空（各站 vodId 命名空间不同），还会让每个无关站点吃满 30s
-        // detailContent 超时 —— 这正是「直播详情加载半天后空白」的真因。本站不支持/无数据
-        // 就快速返回，不再全库串行。siteKey 为空（无法定位来源）时保留旧的全站尝试路径。
-        // 完整故障档案（症状/两层真因/日志证据）与真支持 py 的路径见 SpiderLoader.isUnsupportedApi 注释。
-        val ordered = if (siteKey.isNotBlank()) {
-            listOfNotNull(spSites.firstOrNull { it.key == siteKey })
+        // siteKey 可能带线路后缀（如 "趣盘:https"），也可能没带冒号（如 "趣盘https"）；
+        // SpiderSite.key 已经过 replace(":", "")。用去冒号后的干净 key 做 startsWith 匹配，
+        // 既兼容新旧格式，也能处理站点内部分类重名的边缘情况。
+        val cleanKey = siteKey.replace(":", "")
+        val primary = if (cleanKey.isNotBlank()) {
+            spSites.filter { it.key.startsWith(cleanKey) || cleanKey.startsWith(it.key) }
+                .ifEmpty { spSites } // 一个都对不上时退化为全量（只走一轮，避免之前只找空列表）
         } else {
             spSites
         }
-        for (site in ordered) {
-            fetchSpiderDetail(site, vodId)?.let { return@withContext it }
+        Log.e("SpiderProxy", "detail vodId=$vodId siteKey=$siteKey cleanKey=$cleanKey primarySize=${primary.size}")
+        for (site in primary) {
+            val direct = fetchSpiderDetail(site, vodId)
+            if (direct != null) {
+                if (direct.playSources.isNotEmpty()) return@withContext direct
+                val homeVod = fetchHomeFallback(site, vodId)
+                if (homeVod != null && homeVod.playSources.isNotEmpty()) return@withContext homeVod
+                return@withContext direct
+            }
+            // detailContent 返回 null：先尝试 homeContent 补
+            fetchHomeFallback(site, vodId)?.let { return@withContext it }
+            // 调试：如果 vodId 像分类标识（短、无 URL 特征），试一下 categoryContent 并打印原始 JSON
+            if (vodId.length <= 20 && !vodId.contains("://") && !vodId.contains("/")) {
+                dumpCategoryAndHome(site, vodId)
+            }
         }
         null
     }
 
     private suspend fun fetchSpiderDetail(site: SpiderSite, vodId: String): Vod? {
+        val loader = spiderLoader ?: run {
+            Log.e("SpiderProxy", "detail(${site.name})：缺少 Android Context，跳过")
+            return null
+        }
+        if (configSpiderUrl.isBlank()) {
+            Log.e("SpiderProxy", "detail(${site.name})：配置缺少 spider 字段")
+            return null
+        }
+        val loaderKey = runCatching { loader.ensureLoaded(configSpiderUrl) }.getOrNull() ?: run {
+            Log.e("SpiderProxy", "detail(${site.name})：spider 包加载失败")
+            return null
+        }
+        val proxy = loader.getSpider(loaderKey, site.api, site.ext) ?: run {
+            Log.e("SpiderProxy", "detail(${site.name}) getSpider 失败：${loader.lastError}")
+            return null
+        }
+        val json = proxy.detailContent(listOf(vodId)) ?: run {
+            Log.e("SpiderProxy", "detail(${site.name}) detailContent($vodId) 返回空")
+            return null
+        }
+        val vod = CatVodResultParser.parseDetail(json, site.key, site.name) ?: run {
+            Log.e("SpiderProxy", "detail(${site.name}) parseDetail 失败，vodId=$vodId，json前200字=${json.take(200)}")
+            return null
+        }
+        if (vod.playSources.isEmpty()) {
+            Log.e("SpiderProxy", "detail(${site.name}) 解析成功但 playSources 为空，vodId=$vodId")
+        }
+        return vod
+    }
+
+    /**
+     * detailContent 返回空或 playSources 为空时的回退：调同站点的 homeContent，
+     * 在返回的频道列表里找 vodId 完全匹配的那条（直播源/网盘源的 homeContent 通常就带完整 playSources）。
+     * 找不到或 homeContent 本身返回空时返回 null，不阻塞 detail() 继续尝试下一个站点。
+     */
+    private suspend fun fetchHomeFallback(site: SpiderSite, vodId: String): Vod? {
         val loader = spiderLoader ?: return null
         if (configSpiderUrl.isBlank()) return null
         val loaderKey = runCatching { loader.ensureLoaded(configSpiderUrl) }.getOrNull() ?: return null
         val proxy = loader.getSpider(loaderKey, site.api, site.ext) ?: return null
-        val json = proxy.detailContent(listOf(vodId)) ?: return null
-        val vod = CatVodResultParser.parseDetail(json, site.key, site.name) ?: return null
+        val json = runCatching { proxy.homeContent(false) }.getOrNull() ?: return null
+        val list = runCatching { CatVodResultParser.parseVodList(json, site.key, site.name) }.getOrNull() ?: return null
+        if (list.isEmpty()) return null
+        // 先精确匹配，再用 endsWith 兜底（某些 spider detailContent 传的 URL vodId 和 homeContent 返回的略差）
+        val match = list.firstOrNull { it.vodId == vodId }
+            ?: list.firstOrNull { vodId.endsWith(it.vodId) || it.vodId.endsWith(vodId) }
+        if (match == null) {
+            Log.w("SpiderProxy", "homeFallback(${site.name}) homeContent 返回 ${list.size} 条，无 vodId=$vodId 的匹配项")
+            return null
+        }
+        if (match.playSources.isEmpty()) {
+            Log.w("SpiderProxy", "homeFallback(${site.name}) 命中 vodId=$vodId 但 playSources 仍为空")
+            return null
+        }
+        Log.w("SpiderProxy", "homeFallback(${site.name}) 命中 vodId=$vodId，playSources.size=${match.playSources.size}")
+        return match
+    }
 
-        // 注意：不再在这里对所有非 http 地址统一调 playerContent 解析。
-        // 网盘线路一部剧动辄几十上百集、多条云盘，逐个 playerContent 会让详情加载卡死。
-        // 云盘 scheme 地址（quark://、aliyundrive:// 等）原样保留，播放时再按需解析。
-        return vod
+    /**
+     * 调试用：当 detailContent 失败且 vodId 像分类标识时，
+     * 同时调 homeContent 和 categoryContent，把原始 JSON 前 500 字打出来。
+     * 帮助确定聚合网盘源到底返回什么结构。
+     */
+    private suspend fun dumpCategoryAndHome(site: SpiderSite, vodId: String) {
+        val loader = spiderLoader ?: return
+        if (configSpiderUrl.isBlank()) return
+        val loaderKey = runCatching { loader.ensureLoaded(configSpiderUrl) }.getOrNull() ?: return
+        val proxy = loader.getSpider(loaderKey, site.api, site.ext) ?: return
+
+        val homeJson = runCatching { proxy.homeContent(false) }.getOrNull()
+        Log.e("SpiderProxy", "DUMP[homeContent(${site.name})] vodId=$vodId raw=${homeJson?.take(500) ?: "null"}")
+
+        val catJson = runCatching { proxy.categoryContent(vodId, "1", true, null) }.getOrNull()
+        Log.e("SpiderProxy", "DUMP[categoryContent(${site.name},type=$vodId)] raw=${catJson?.take(500) ?: "null"}")
+
+        // 如果 categoryContent 有返回，再 parse 一下看 list 里有多少条、每条 vodId 长什么样
+        if (!catJson.isNullOrBlank()) {
+            val list = runCatching { CatVodResultParser.parseVodList(catJson, site.key, site.name) }.getOrNull()
+            Log.e("SpiderProxy", "DUMP[categoryContent parsed] list.size=${list?.size ?: 0}")
+            list?.take(5)?.forEachIndexed { i, v ->
+                Log.e("SpiderProxy", "DUMP  #$i vodId=${v.vodId.take(60)} name=${v.name.take(30)} playSrc.size=${v.playSources.size}")
+            }
+        }
     }
 
     /**
@@ -681,11 +795,15 @@ class TvBoxClient(
         }
         if (configSpiderUrl.isBlank()) throw IllegalStateException("spider 配置缺失")
 
-        val site = if (siteKey.isNotBlank()) {
-            spSites.firstOrNull { it.key == siteKey }
+        // 与 detail() 同样的逻辑：siteKey 可能带 :http/:https 后缀，配置里的 key 已经过 replace(":","")
+        val cleanKey = siteKey.replace(":", "")
+        val site = if (cleanKey.isNotBlank()) {
+            spSites.firstOrNull {
+                it.key == cleanKey || it.key.startsWith(cleanKey) || cleanKey.startsWith(it.key)
+            }
         } else {
             spSites.firstOrNull()
-        } ?: throw IllegalStateException("未找到 spider 站点：$siteKey")
+        } ?: throw IllegalStateException("未找到 spider 站点：$siteKey (cleanKey=$cleanKey)")
 
         val loader = spiderLoader ?: throw IllegalStateException("SpiderLoader 不可用")
         val loaderKey = runCatching { loader.ensureLoaded(configSpiderUrl) }.getOrNull()

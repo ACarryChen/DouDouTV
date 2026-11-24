@@ -201,6 +201,7 @@ class MediaRepository(private val context: Context) {
             // 排序与快照路径同口径，保证首搜与缓存复搜的顺序一致
             return@withContext toRemoteEntities(
                 cached.filter { (vod, source) -> !Prefs.isLineHidden(source.id, vod.siteKey) }
+                    .filter { (vod, _) -> isVodValid(vod) }
                     .sortedByDescending { (vod, _) -> searchScore(vod.name, kw.lowercase()) }
             )
         }
@@ -219,6 +220,7 @@ class MediaRepository(private val context: Context) {
             .filter { (vod, _) ->
                 vod.name.lowercase().contains(lower) || vod.name.toPinyinInitials().contains(lower)
             }
+            .filter { (vod, _) -> isVodValid(vod) }
             .sortedByDescending { (vod, _) -> searchScore(vod.name, lower) }
             .map { (vod, source) ->
                 val key = "${source.id}:${vod.siteKey}:${vod.vodId}"
@@ -303,6 +305,21 @@ class MediaRepository(private val context: Context) {
             title.toPinyinInitials().contains(lowerKeyword) -> 1
             else -> 0
         }
+    }
+
+    /**
+     * 过滤掉爬虫返回的无效条目：聚合网盘源常返回「已失效」「链接过期」「被和谐」这类占位行，
+     * 标题/备注里含这些关键词时直接丢掉，不进搜索列表也不进分类列表。
+     */
+    private val INVALID_MARKERS = arrayOf(
+        "无效", "失效", "已失效", "过期", "已过期", "被和谐", "已删除", "链接失效",
+        "无法播放", "不能播放", "播放不了", "已下架", "资源已失效", "敏感词",
+        "违规", "侵权", "无法访问"
+    )
+    private fun isVodValid(vod: TvBoxClient.Vod): Boolean {
+        val remarks = vod.remarks
+        if (remarks.isBlank()) return true  // 无备注 = 默认有效
+        return INVALID_MARKERS.none { remarks.contains(it) }
     }
 
     /** 原始命中 → 临时 MediaEntity（负 id），并登记到 remoteHits 供详情页落库 */
@@ -1568,6 +1585,12 @@ class MediaRepository(private val context: Context) {
         )
     }
 
+    /** 聚合网盘分类列表：单条 Vod 转临时浏览实体（负 ID），进详情页时会 materializeRemote 落库 */
+    suspend fun insertTvboxBrowseVod(sourceId: Long, vod: TvBoxClient.Vod): MediaEntity? {
+        val source = sourceDao.get(sourceId) ?: return null
+        return browseEntity(source, vod)
+    }
+
     /** 浏览临时 id 注册表（与搜索共用详情页落库入口） */
     private val browseHits = java.util.concurrent.ConcurrentHashMap<Long, RemoteHit>()
     private val browseIds = java.util.concurrent.ConcurrentHashMap<String, Long>()
@@ -1621,6 +1644,22 @@ class MediaRepository(private val context: Context) {
     }
 
     /**
+     * 聚合网盘源的分类列表：某些源（觅盘/盘搜等）searchContent 返回 vodId=quark/xunlei 这类网盘类型入口，
+     * 点详情会 detailContent 返回空。这里调 categoryContent，typeId 就是入口 vodId，
+     * 返回该网盘下的真实影片列表（vodId 是分享页 URL，后续点详情能正常拿到剧集）。
+     */
+    suspend fun loadTvBoxCategory(
+        source: SourceEntity,
+        siteKey: String,
+        typeId: String,
+        page: Int = 1
+    ): Pair<List<TvBoxClient.Vod>, Int> = withContext(Dispatchers.IO) {
+        val client = TvBoxClient(source.location, context)
+        val list = client.categoryList(siteKey, typeId, page).filter { isVodValid(it) }
+        Pair(list, list.size)
+    }
+
+    /**
      * 拉取 TVBox 详情并入库分集。
      * 由详情页触发，返回值供 UI 立即展示线路列表。
      */
@@ -1630,7 +1669,10 @@ class MediaRepository(private val context: Context) {
     ): List<TvBoxClient.PlaySource> = withContext(Dispatchers.IO) {
         val (siteKey, vodId) = parseTvBoxKey(source.id, remoteId)
         val client = TvBoxClient(source.location, context)
-        val detail = client.detail(vodId, siteKey) ?: return@withContext emptyList()
+        val detail = client.detail(vodId, siteKey) ?: run {
+            Log.e("MediaRepo", "loadTvBoxDetail：siteKey=$siteKey vodId=$vodId 详情拉取失败")
+            return@withContext emptyList()
+        }
 
         val shell = mediaDao.byRemoteId(remoteId)
         val seriesKey = shell?.seriesKey?.takeIf { it.isNotBlank() } ?: remoteId
@@ -1890,8 +1932,12 @@ class MediaRepository(private val context: Context) {
     private data class CachedPlayUrl(val value: TvBoxClient.ResolvedPlayUrl, val at: Long)
 
     private companion object {
-        /** 云盘分享令牌的保守有效期：入库超过这个时长就重新拉一次详情换新令牌 */
-        const val CLOUD_URI_TTL_MS = 5 * 60 * 1000L
+        /**
+         * 云盘分享令牌的刷新间隔：每 12 小时重新拉一次源站详情换新分享页链接。
+         * 网盘分享 token 实际有效期 24-72h，12h 留足安全余量；
+         * 真过期时还有被动死链重试层兜住（播放中收到 404 会强制跳过窗口重刷）。
+         */
+        const val CLOUD_URI_TTL_MS = 12 * 60 * 60 * 1000L
 
         /**
          * 一次同步最多补多少个剧集壳。
@@ -1901,11 +1947,11 @@ class MediaRepository(private val context: Context) {
         const val SHELL_FETCH_LIMIT = 60
 
         /**
-         * 预热直链的复用窗口。
-         * 比云盘令牌的 5 分钟更短：直链是带签名的临时地址，宁可切集时重新解析一次慢 8 秒，
-         * 也不要拿一条已失效的地址去起播 —— 那是直接报错，比慢更难交代。
+         * 预热直链的复用窗口：2 小时。
+         * 网盘 CDN 直链签名实际有效期 4-12h，2h 足够覆盖看一整部剧的切集需求，
+         * 不用每次切集都等 spider 重新解析 8 秒；真过期时有被动死链重试层兜底。
          */
-        const val RESOLVED_URL_TTL_MS = 3 * 60 * 1000L
+        const val RESOLVED_URL_TTL_MS = 2 * 60 * 60 * 1000L
 
         /**
          * 「分集 id|uri」→ 已解析直链。
@@ -1930,14 +1976,13 @@ class MediaRepository(private val context: Context) {
         /** 拼音算法版本：TinyPinyin 为 1，改动算法时 +1 触发一次性重建 */
         const val PINYIN_VERSION = 1
 
-        /** 远程搜索单站条数上限：只限每个站点，总量不截断 —— 总量截断会让首搜只显示
-         *  前 60 条、复搜读缓存却出全量，两遍条数不一致。以前总量只有 20，一两个站点
-         *  的结果就能把名额占满，其余线路整个消失 */
-        const val REMOTE_RESULT_LIMIT = 60
+        /** 远程搜索单站条数上限：聚合网盘源单线路可能有上百条命中，提至 200 保证不截长尾 */
+        const val REMOTE_RESULT_LIMIT = 200
 
-        /** 远程搜索整批截止时间（毫秒）：所有站点并发搜索，最多总共等这么久。
-         *  5 秒时慢站点（海外接口、多页搜索的慢速模式）整批还没回就被掐掉，提到 10 秒 */
-        const val SEARCH_DEADLINE_MS = 10000L
+        /** 远程搜索整批截止时间（毫秒）：冷启动壳解 dex 要几秒，10 秒内慢站还没跑完就被掐，
+         *  提升到 25 秒让首次搜索也能拿全量；并发跑 25 秒 UI 会通过 onPartial 流式上屏，
+         *  不是整批干等，用户感知不到延迟 */
+        const val SEARCH_DEADLINE_MS = 25000L
 
         /** 搜索结果缓存有效期（毫秒）：超时后同词重搜走网络重新拉取 */
         const val SEARCH_CACHE_TTL_MS = 10 * 60 * 1000L

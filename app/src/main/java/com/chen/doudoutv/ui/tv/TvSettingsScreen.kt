@@ -35,6 +35,8 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Insights
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
@@ -91,8 +93,7 @@ import com.chen.doudoutv.ui.settings.APP_VERSION_LABEL
 import com.chen.doudoutv.ui.settings.SettingChoice
 import com.chen.doudoutv.ui.settings.forceTvMode
 import com.chen.doudoutv.ui.settings.label
-// dev 尚无多核：随内核帮手一并屏蔽
-// import com.chen.doudoutv.ui.settings.playerKernelLabel
+import com.chen.doudoutv.ui.settings.playerKernelLabel
 import com.chen.doudoutv.ui.settings.setForceTvMode
 import com.chen.doudoutv.ui.tv.nf.LocalNfShell
 import com.chen.doudoutv.ui.tv.nf.NfScaffold
@@ -152,8 +153,7 @@ fun TvSettingsScreen(
     // 焦点移动效果同理
     var cardMotion by remember { mutableStateOf(Prefs.tvCardMotion) }
     // 播放内核：写 Prefs 不会触发重组，弹窗选中态得自己留一份。
-    // dev 尚无多核：Prefs.playerKernel 不存在，状态声明一并屏蔽
-    // var playerKernel by remember { mutableStateOf(Prefs.playerKernel) }
+    var playerKernel by remember { mutableStateOf(Prefs.playerKernel) }
     var tmdbOn by remember { mutableStateOf(Prefs.tmdbEnabled) }
     var tmdbToken by remember { mutableStateOf(Prefs.tmdbReadToken) }
     var engineTick by remember { mutableStateOf(0) }
@@ -213,14 +213,15 @@ fun TvSettingsScreen(
         handover.value = scope.launch { withFrameNanos { }; tvMoveFocus(target) }
     }
 
-    val titles = listOf("状态", "界面", "缓存", "刮削", "关于")
+    val titles = listOf("状态", "界面", "功能", "缓存", "刮削", "关于")
     val icons = listOf(
-        Icons.Outlined.Insights, Icons.Outlined.Tune, Icons.Outlined.Storage,
-        Icons.Outlined.AutoAwesome, Icons.Outlined.Info
+        Icons.Outlined.Insights, Icons.Outlined.Tune, Icons.Outlined.Smartphone,
+        Icons.Outlined.Storage, Icons.Outlined.AutoAwesome, Icons.Outlined.Info
     )
     val summaries = listOf(
         "${sources.size} 来源 · $libraryCount 条",
         "${AppPalette.current.label} · ${posterSize.label()} · ${cardMotion.label()}",
+        "${if (skipIntro) "跳过片头已开启" else "跳过片头已关闭"} · ${playerKernelLabel(playerKernel)}",
         if (videoCache > 0) "${videoTier.label} · 已用 ${PlayerFactory.formatBytes(videoCache)}" else videoTier.label,
         if (tmdbOn) "TMDB 已开启" else "TMDB 已关闭",
         APP_VERSION_LABEL
@@ -228,6 +229,7 @@ fun TvSettingsScreen(
     val descs = listOf(
         "媒体库与来源的当前规模。",
         "布局、焦点动效与主题色，改动即时生效，档位按 OK 展开选择。",
+        "自动跳过片头与播放内核切换，改动即时生效。",
         "看过的内容在本机留一份：往回拖进度、重看同一集不再重复下载，看完的自动删。",
         "自动补全海报、评分、简介与演职员。",
         "版本、功能与实现说明。"
@@ -425,10 +427,14 @@ fun TvSettingsScreen(
                                     value = if (AppColors.lightOn()) "浅色" else "暗色",
                                     onClick = { choice = SettingChoice.ThemeMode to modeFocus }
                                 )
+                            }
+
+                            2 -> {
+                                val paneFirstFocus = remember { FocusRequester() }
                                 TvSettingRow(
                                     title = "自动跳过片头",
                                     hint = "开启后剧集详情页与播放器显示「跳过片头」按钮；关闭则不显示、也不再自动跳过",
-                                    focusRequester = skipIntroFocus,
+                                    focusRequester = paneFirstFocus,
                                     value = if (skipIntro) "已开启" else "已关闭",
                                     accent = skipIntro,
                                     onClick = {
@@ -436,16 +442,15 @@ fun TvSettingsScreen(
                                         Prefs.skipIntroEnabled = skipIntro
                                     }
                                 )
-                                // dev 尚无多核：内核行屏蔽（本行无独立焦点锚点，摘除不影响交棒链）
-                                // TvSettingRow(
-                                //     title = "播放内核",
-                                //     hint = "FongMi 档为实验内核，对齐 FongMi 官方播放栈；经典档为原自研 Exo 直连。改动在下次进播放器时生效。",
-                                //     value = playerKernelLabel(playerKernel),
-                                //     onClick = { choice = SettingChoice.PlayerKernel to skipIntroFocus }
-                                // )
+                                TvSettingRow(
+                                    title = "播放内核",
+                                    hint = "FongMi 档为实验内核，对齐 FongMi 官方播放栈；经典档为原自研 Exo 直连。改动在下次进播放器时生效。",
+                                    value = playerKernelLabel(playerKernel),
+                                    onClick = { choice = SettingChoice.PlayerKernel to paneFirstFocus }
+                                )
                             }
 
-                            2 -> {
+                            3 -> {
                                 TvSettingRow(
                                     title = "视频缓存容量上限",
                                     hint = null,
@@ -482,7 +487,7 @@ fun TvSettingsScreen(
                                 )
                             }
 
-                            3 -> {
+                            4 -> {
                                 TvSettingRow(
                                     title = "使用 TMDB 刮削",
                                     hint = "开启后自动补全海报、评分、简介与演职员",
@@ -681,19 +686,16 @@ fun TvSettingsScreen(
                     onDismiss = dismiss
                 )
 
-                // 播放内核：TV 端也接 fongmi 舱（TvPlayerActivity 与手机同一份 Prefs 键）。
-                // dev 尚无多核：弹窗屏蔽
-                // SettingChoice.PlayerKernel -> TvChoiceDialog(
-                //     title = "播放内核",
-                //     options = listOf(Prefs.KERNEL_FONGMI, Prefs.KERNEL_CLASSIC),
-                //     label = { playerKernelLabel(it) },
-                //     selected = playerKernel,
-                //     dot = null,
-                //     hint = "FongMi 档为实验内核，对齐 FongMi 官方播放栈；经典档为原自研 Exo 直连。改动在下次进播放器时生效。",
-                //     onPick = { Prefs.playerKernel = it; playerKernel = it },
-                //     onDismiss = dismiss
-                // )
-                SettingChoice.PlayerKernel -> Unit
+                SettingChoice.PlayerKernel -> TvChoiceDialog(
+                    title = "播放内核",
+                    options = listOf(Prefs.KERNEL_FONGMI, Prefs.KERNEL_CLASSIC),
+                    label = { playerKernelLabel(it) },
+                    selected = playerKernel,
+                    dot = null,
+                    hint = "FongMi 档为实验内核，对齐 FongMi 官方播放栈；经典档为原自研 Exo 直连。改动在下次进播放器时生效。",
+                    onPick = { Prefs.playerKernel = it; playerKernel = it },
+                    onDismiss = dismiss
+                )
             }
         }
         }
