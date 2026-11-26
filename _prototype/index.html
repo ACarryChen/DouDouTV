@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>资源列表 · 无封面纯列表</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-font-smoothing: antialiased; }
+  html, body { background:#0b0b0d; color:#f2f3f5; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif; }
+
+  /* 手机外壳 */
+  .device {
+    width: 375px; height: 812px; margin: 40px auto;
+    border-radius: 44px; overflow: hidden; position: relative;
+    background: #0b0b0d; border: 2px solid #2a2a2e;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);
+  }
+  .notch { position:absolute; top:12px; left:50%; transform:translateX(-50%); width:120px; height:28px; background:#000; border-radius:20px; z-index:10; }
+  .status-bar { height: 44px; padding: 0 24px; display:flex; justify-content:space-between; align-items:center; font-size: 13px; color: #f2f3f580; padding-top:6px; }
+
+  /* 顶部栏 */
+  .top-bar { height: 56px; padding: 0 16px; display:flex; align-items:center; gap: 12px; position: relative; z-index: 5; }
+  .back-btn { width: 36px; height: 36px; border-radius: 50%; background: rgba(255,255,255,0.06); backdrop-filter: blur(12px); display:flex; align-items:center; justify-content:center; }
+  .back-btn svg { width: 18px; height: 18px; stroke: #f2f3f5; }
+  .top-group { display:flex; flex-direction:column; flex:1; overflow:hidden; }
+  .top-title { font-size: 17px; font-weight: 600; }
+  .top-sub { font-size: 12px; color: #f2f3f550; margin-top: 1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .top-count { font-size: 12px; color: #f2f3f550; background: rgba(255,255,255,0.06); padding: 4px 10px; border-radius: 14px; }
+
+  .divider { height: 1px; background: rgba(255,255,255,0.05); margin: 0 16px; }
+
+  /* 列表容器 */
+  .list-wrap { height: calc(812px - 100px); overflow-y: auto; padding: 4px 0 32px; }
+  .list-wrap::-webkit-scrollbar { display:none; }
+
+  /* 纯文本条目 */
+  .item {
+    padding: 16px 18px; cursor: pointer; position: relative;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    transition: background 0.15s;
+  }
+  .item:active { background: rgba(255,255,255,0.04); }
+  .item:last-child { border-bottom: none; }
+
+  /* 第一行：片名（左）+ 来源角标（右） */
+  .row-top { display:flex; align-items:flex-start; gap: 10px; }
+  .name {
+    flex: 1; font-size: 15px; font-weight: 600; line-height: 1.4; color: #fff;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    padding-right: 4px;
+  }
+  .source-tag {
+    flex-shrink: 0; padding: 3px 8px; border-radius: 6px;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+    display: inline-flex; align-items: center; gap: 4px;
+    height: 20px; line-height: 1; margin-top: 1px;
+  }
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .quark { background: rgba(33,150,243,0.18); color: #64B5F6; } .quark .dot { background: #2196F3; }
+  .aliyun { background: rgba(255,152,0,0.18); color: #FFB74D; } .aliyun .dot { background: #FF9800; }
+  .xunlei { background: rgba(229,57,53,0.18); color: #EF5350; } .xunlei .dot { background: #E53935; }
+  .uc { background: rgba(76,175,80,0.18); color: #66BB6A; } .uc .dot { background: #4CAF50; }
+  .baidu { background: rgba(41,182,246,0.18); color: #4FC3F7; } .baidu .dot { background: #29B6F6; }
+
+  /* 第二行：评分 · 年份 · 类型 */
+  .row-meta { display:flex; align-items:center; gap: 8px; margin-top: 8px; font-size: 12px; color: #f2f3f555; }
+  .rating { color: #FFB74D; font-weight: 600; }
+  .dot-sep { color: #f2f3f525; }
+  .genre { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+
+  /* 第三行：备注（有效状态） */
+  .row-remarks { display:flex; align-items:center; gap: 5px; margin-top: 6px; font-size: 12px; }
+  .remarks.ok { color: #66BB6A; }
+  .remarks.warn { color: #FFB74D; }
+  .remarks.bad { color: #f2f3f535; }
+  .remarks svg { flex-shrink: 0; }
+
+  .glow { position: absolute; inset: 0; pointer-events: none; z-index: 0;
+    background: radial-gradient(ellipse 60% 30% at 50% 0%, rgba(91,127,255,0.06), transparent 70%); }
+  .device > * { position: relative; z-index: 1; }
+
+  .label { text-align:center; font-size: 13px; color: #f2f3f550; margin: 40px 0 10px; letter-spacing: 2px; }
+
+  /* ====== TV 端 ====== */
+  .tv-frame { margin: 40px auto; width: 920px; height: 520px; border-radius: 12px; overflow:hidden; border: 2px solid #2a2a2e; box-shadow: 0 30px 80px rgba(0,0,0,0.6); }
+  .tv-inner { width: 100%; height: 100%; background: #0b0b0d; padding: 16px 28px 24px; display:flex; flex-direction:column; }
+  .tv-header { display:flex; align-items:center; gap: 14px; padding-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.06); margin-bottom: 14px; }
+  .tv-back { width: 42px; height: 42px; border-radius: 10px; background: rgba(255,255,255,0.06); display:flex; align-items:center; justify-content:center; }
+  .tv-title { font-size: 22px; font-weight: 600; }
+  .tv-sub { font-size: 13px; color: #f2f3f550; margin-left: auto; }
+  .tv-list { flex:1; overflow-y: auto; }
+  .tv-item { display:flex; align-items:center; gap: 16px; padding: 10px 14px; border-radius: 10px; cursor:pointer; transition: all 0.18s; border: 2px solid transparent; }
+  .tv-item.focused { background: rgba(91,127,255,0.14); border-color: rgba(91,127,255,0.5); }
+  .tv-info { flex:1; min-width:0; }
+  .tv-name { font-size: 15px; font-weight: 600; display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
+  .tv-meta { font-size: 12px; color:#f2f3f555; margin-top:3px; display:flex; align-items:center; gap:8px; }
+  .tv-remarks { font-size: 12px; color:#66BB6A; margin-top:3px; }
+  .tv-source { flex-shrink:0; }
+</style>
+</head>
+<body>
+
+<h2 class="label">手机端 · 纯文本列表</h2>
+<div class="device">
+  <div class="notch"></div>
+  <div class="glow"></div>
+  <div class="status-bar"><span>9:41</span><span>📶 📡 🔋</span></div>
+
+  <div class="top-bar">
+    <div class="back-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+    </div>
+    <div class="top-group">
+      <div class="top-title">夸克网盘</div>
+      <div class="top-sub">觅盘 · 聚合网盘搜索</div>
+    </div>
+    <div class="top-count">共 35 部</div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="list-wrap">
+
+    <div class="item">
+      <div class="row-top">
+        <div class="name">两京十五日（2026）[更新至12集][高清4K][国产/古装]</div>
+        <div class="source-tag quark"><span class="dot"></span>夸克</div>
+      </div>
+      <div class="row-meta">
+        <span class="rating">★ 9.1</span>
+        <span>2026</span>
+        <span class="dot-sep">·</span>
+        <span class="genre">古装 · 剧情 · 成毅/林更新</span>
+      </div>
+      <div class="row-remarks remarks ok">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
+        ✅有效 · 2026-11-25
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="row-top">
+        <div class="name">狂飙【全39集】【4K.HDR】【高码率】【内封简中】</div>
+        <div class="source-tag aliyun"><span class="dot"></span>阿里</div>
+      </div>
+      <div class="row-meta">
+        <span class="rating">★ 9.4</span>
+        <span>2023</span>
+        <span class="dot-sep">·</span>
+        <span class="genre">犯罪 · 悬疑 · 张译/张颂文</span>
+      </div>
+      <div class="row-remarks remarks ok">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
+        ✅有效 · 2026-11-25
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="row-top">
+        <div class="name">流浪地球2 4K HDR 高码率 60帧率 国语中字</div>
+        <div class="source-tag quark"><span class="dot"></span>夸克</div>
+      </div>
+      <div class="row-meta">
+        <span class="rating">★ 8.5</span>
+        <span>2023</span>
+        <span class="dot-sep">·</span>
+        <span class="genre">科幻 · 冒险 · 吴京</span>
+      </div>
+      <div class="row-remarks remarks ok">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
+        ✅有效
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="row-top">
+        <div class="name">满江红 (2023) 2160p.HDR.WEB-DL.DD5.1.H265</div>
+        <div class="source-tag xunlei"><span class="dot"></span>迅雷</div>
+      </div>
+      <div class="row-meta">
+        <span>2023</span>
+        <span class="dot-sep">·</span>
+        <span class="genre">悬疑 · 古装 · 沈腾/易烊千玺</span>
+      </div>
+      <div class="row-remarks remarks ok">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
+        ✅有效
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="row-top">
+        <div class="name">三体【全30集】【4K.HDR】【高码率】【国语中字】</div>
+        <div class="source-tag uc"><span class="dot"></span>UC</div>
+      </div>
+      <div class="row-meta">
+        <span class="rating">★ 9.0</span>
+        <span>2023</span>
+        <span class="dot-sep">·</span>
+        <span class="genre">科幻 · 剧集 · 张鲁一</span>
+      </div>
+      <div class="row-remarks remarks ok">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
+        ✅有效 · 2026-11-24
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="row-top">
+        <div class="name">封神第一部：朝歌风云 (2023) 4K 蓝光原盘</div>
+        <div class="source-tag quark"><span class="dot"></span>夸克</div>
+      </div>
+      <div class="row-meta">
+        <span class="rating">★ 7.9</span>
+        <span>2023</span>
+        <span class="dot-sep">·</span>
+        <span class="genre">奇幻 · 动作 · 费翔</span>
+      </div>
+      <div class="row-remarks remarks ok">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
+        ✅有效
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="row-top">
+        <div class="name">肖申克的救赎 (1994) 1080p.BluRay.x264</div>
+        <div class="source-tag quark"><span class="dot"></span>夸克</div>
+      </div>
+      <div class="row-meta">
+        <span class="rating">★ 9.6</span>
+        <span>1994</span>
+        <span class="dot-sep">·</span>
+        <span class="genre">经典 · 剧情 · 蒂姆·罗宾斯</span>
+      </div>
+      <div class="row-remarks remarks warn">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M12 9v4m0 4h.01"/><circle cx="12" cy="12" r="10"/></svg>
+        ⚠️ 48 小时内有效
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="row-top">
+        <div class="name">长津湖 (2021) 4K HDR 杜比视界</div>
+        <div class="source-tag aliyun"><span class="dot"></span>阿里</div>
+      </div>
+      <div class="row-meta">
+        <span class="rating">★ 8.4</span>
+        <span>2021</span>
+        <span class="dot-sep">·</span>
+        <span class="genre">战争 · 历史 · 吴京</span>
+      </div>
+      <div class="row-remarks remarks ok">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
+        ✅有效
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="row-top">
+        <div class="name">奥本海默 (2023) 4K HDR IMAX Enhanced</div>
+        <div class="source-tag baidu"><span class="dot"></span>百度</div>
+      </div>
+      <div class="row-meta">
+        <span class="rating">★ 8.9</span>
+        <span>2023</span>
+        <span class="dot-sep">·</span>
+        <span class="genre">传记 · 剧情 · 基里安·墨菲</span>
+      </div>
+      <div class="row-remarks remarks ok">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
+        ✅有效 · 2026-11-25
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="row-top">
+        <div class="name">碟中谍7：致命清算 (2023) 4K HDR</div>
+        <div class="source-tag quark"><span class="dot"></span>夸克</div>
+      </div>
+      <div class="row-meta">
+        <span class="rating">★ 8.2</span>
+        <span>2023</span>
+        <span class="dot-sep">·</span>
+        <span class="genre">动作 · 冒险 · 汤姆·克鲁斯</span>
+      </div>
+      <div class="row-remarks remarks bad">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        ❌ 已失效
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<h2 class="label">TV 端 · 焦点列表</h2>
+<div class="tv-frame">
+  <div class="tv-inner">
+    <div class="tv-header">
+      <div class="tv-back">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#f2f3f5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </div>
+      <div class="tv-title">夸克网盘</div>
+      <div class="tv-sub">觅盘 · 35 部</div>
+    </div>
+    <div class="tv-list">
+
+      <div class="tv-item focused">
+        <div class="tv-info">
+          <div class="tv-name">两京十五日（2026）[更新至12集][高清4K][国产/古装]</div>
+          <div class="tv-meta"><span style="color:#FFB74D;font-weight:600;">★ 9.1</span><span>2026</span><span>·</span><span>古装 · 剧情 · 成毅/林更新</span></div>
+          <div class="tv-remarks">✅有效 · 2026-11-25</div>
+        </div>
+        <div class="tv-source" style="background:rgba(33,150,243,0.18);color:#64B5F6;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;">夸克</div>
+      </div>
+
+      <div class="tv-item">
+        <div class="tv-info">
+          <div class="tv-name">狂飙【全39集】【4K.HDR】【高码率】【内封简中】</div>
+          <div class="tv-meta"><span style="color:#FFB74D;font-weight:600;">★ 9.4</span><span>2023</span><span>·</span><span>犯罪 · 悬疑 · 张译/张颂文</span></div>
+          <div class="tv-remarks">✅有效 · 2026-11-25</div>
+        </div>
+        <div class="tv-source" style="background:rgba(255,152,0,0.18);color:#FFB74D;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;">阿里</div>
+      </div>
+
+      <div class="tv-item">
+        <div class="tv-info">
+          <div class="tv-name">流浪地球2 4K HDR 高码率 60帧率 国语中字</div>
+          <div class="tv-meta"><span style="color:#FFB74D;font-weight:600;">★ 8.5</span><span>2023</span><span>·</span><span>科幻 · 冒险 · 吴京</span></div>
+          <div class="tv-remarks">✅有效</div>
+        </div>
+        <div class="tv-source" style="background:rgba(33,150,243,0.18);color:#64B5F6;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;">夸克</div>
+      </div>
+
+      <div class="tv-item">
+        <div class="tv-info">
+          <div class="tv-name">满江红 (2023) 2160p.HDR.WEB-DL.DD5.1.H265</div>
+          <div class="tv-meta"><span>2023</span><span>·</span><span>悬疑 · 古装 · 沈腾/易烊千玺</span></div>
+          <div class="tv-remarks">✅有效</div>
+        </div>
+        <div class="tv-source" style="background:rgba(229,57,53,0.18);color:#EF5350;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;">迅雷</div>
+      </div>
+
+      <div class="tv-item">
+        <div class="tv-info">
+          <div class="tv-name">三体【全30集】【4K.HDR】【高码率】【国语中字】</div>
+          <div class="tv-meta"><span style="color:#FFB74D;font-weight:600;">★ 9.0</span><span>2023</span><span>·</span><span>科幻 · 剧集 · 张鲁一</span></div>
+          <div class="tv-remarks">✅有效 · 2026-11-24</div>
+        </div>
+        <div class="tv-source" style="background:rgba(76,175,80,0.18);color:#66BB6A;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;">UC</div>
+      </div>
+
+      <div class="tv-item">
+        <div class="tv-info">
+          <div class="tv-name">封神第一部：朝歌风云 (2023) 4K 蓝光原盘</div>
+          <div class="tv-meta"><span style="color:#FFB74D;font-weight:600;">★ 7.9</span><span>2023</span><span>·</span><span>奇幻 · 动作 · 费翔</span></div>
+          <div class="tv-remarks">✅有效</div>
+        </div>
+        <div class="tv-source" style="background:rgba(33,150,243,0.18);color:#64B5F6;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;">夸克</div>
+      </div>
+
+      <div class="tv-item">
+        <div class="tv-info">
+          <div class="tv-name">肖申克的救赎 (1994) 1080p.BluRay.x264</div>
+          <div class="tv-meta"><span style="color:#FFB74D;font-weight:600;">★ 9.6</span><span>1994</span><span>·</span><span>经典 · 剧情 · 蒂姆·罗宾斯</span></div>
+          <div class="tv-remarks" style="color:#FFB74D;">⚠️ 48 小时内有效</div>
+        </div>
+        <div class="tv-source" style="background:rgba(33,150,243,0.18);color:#64B5F6;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;">夸克</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

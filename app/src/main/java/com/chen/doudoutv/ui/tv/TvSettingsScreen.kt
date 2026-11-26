@@ -182,7 +182,7 @@ fun TvSettingsScreen(
     // 侧栏 master-detail：selected 是当前预览/展开的分组；railFocus 是左栏五颗入口；
     // paneFirstFocus 是右栏第一颗可聚焦元件（信息组没有可聚焦行，落在可滚动的容器上）。
     var selected by remember { mutableIntStateOf(0) }
-    val railFocus = remember { List(5) { FocusRequester() } }
+    val railFocus = remember { List(6) { FocusRequester() } }
     val paneFirstFocus = remember { FocusRequester() }
     val paneScroll = rememberScrollState()
     val resumeTick = tvResumeTick()

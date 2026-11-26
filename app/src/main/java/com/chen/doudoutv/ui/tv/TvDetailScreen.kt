@@ -322,9 +322,8 @@ fun TvDetailScreen(
     }
 
     LaunchedEffect(mediaId) {
-        // 聚合网盘分类入口检测：某些聚合源（觅盘/盘搜）searchContent 返回
-        // vodId=quark/xunlei 这类网盘类型短字符串，detailContent 查不到内容。
-        // 检测到后跳 CategoryList 页面，不再走正常详情渲染。
+        // 聚合网盘分类入口检测：只有明确等于网盘类型名的 vodId 才跳 CategoryList
+        val CLOUD_TYPES = setOf("quark", "xunlei", "aliyundrive", "ucwangpan", "douyin", "baidu", "weiyun", "onedrive", "aliyunpan", "pikpak", "115pan", "123pan")
         val probe = vm.mediaOf(mediaId)
         if (probe != null) {
             val parts = probe.remoteId.removePrefix("tvbox:").split(":")
@@ -332,8 +331,7 @@ fun TvDetailScreen(
                 val sourceId = parts.getOrNull(0)?.toLongOrNull()
                 val siteKey = parts.getOrNull(1).orEmpty()
                 val cleanVodId = parts.last()
-                val isCategory = cleanVodId.length <= 20 &&
-                    !cleanVodId.contains("://") && !cleanVodId.contains("/") &&
+                val isCategory = cleanVodId.lowercase() in CLOUD_TYPES &&
                     sourceId != null && onCategoryVodId != null
                 if (isCategory) {
                     onCategoryVodId(sourceId, siteKey, cleanVodId, cleanVodId.uppercase())
