@@ -41,6 +41,7 @@ object TmdbIpStore {
     private const val TAG = "TmdbIpStore"
     private const val FILE = "tmdb_ip_store"
     private const val KEY_SEEDED = "seeded"
+    private const val KEY_LAST_REFRESH = "last_refresh_at"
 
     /** IP 有效期。超过这个时间的排到队尾但仍保留。 */
     private const val TTL_MS = 45L * 24 * 60 * 60 * 1000
@@ -48,8 +49,14 @@ object TmdbIpStore {
     /** 连接失败后的冷却时长。 */
     private const val BLACKLIST_MS = 6 * 60 * 60 * 1000L
 
-    /** 拉取间隔：6 小时。CheckTMDB 每天更新，6 小时足够。 */
-    private const val REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000L
+    /**
+     * 拉取间隔：一天。
+     *
+     * CheckTMDB 本身就是每天更新一次 IP，没必要每次开 App 都去拉：
+     * 徒增流量和后台请求，还可能把用户刚启动的冷启动拖慢。
+     * 上次拉取时间落盘（[KEY_LAST_REFRESH]），杀进程重开也不会重复拉。
+     */
+    private const val REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
     private val MIRRORS = listOf(
         "https://cdn.jsdelivr.net/gh/cnwikee/CheckTMDB@main/Tmdb_host_ipv4",
@@ -134,6 +141,8 @@ object TmdbIpStore {
                 }
                 .filterValues { it.isNotEmpty() }
         }
+        // 上次拉取时间跨进程保留：杀进程重开 App 也不会在同一天重复拉
+        lastRefreshAt = sp.getLong(KEY_LAST_REFRESH, 0L)
     }
 
     private fun parseEntry(raw: String): Entry? {
@@ -169,11 +178,21 @@ object TmdbIpStore {
     /**
      * 拉取最新 IP 池。成功返回 true。
      * 任何一个镜像可用即算成功，失败时保持原池子不变。
+     *
+     * 一天最多真正发一次请求：距上次拉取不足 24 小时直接跳过。
+     * 拉取时间在发起请求时就落盘（成功与否都记），这样即使镜像全挂、
+     * 用户反复重启 App，也不会短时间内反复打扰镜像。
      */
     suspend fun refresh(): Boolean = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
-        if (now - lastRefreshAt < REFRESH_INTERVAL_MS) return@withContext false
+        if (now - lastRefreshAt < REFRESH_INTERVAL_MS) {
+            Log.d(TAG, "距上次拉取不足 24 小时，本次跳过")
+            return@withContext false
+        }
         lastRefreshAt = now
+        if (::sp.isInitialized) {
+            sp.edit().putLong(KEY_LAST_REFRESH, now).apply()
+        }
 
         for (mirror in MIRRORS) {
             try {
