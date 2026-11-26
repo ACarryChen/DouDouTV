@@ -3,14 +3,19 @@ package com.chen.doudoutv.data.tmdb
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.Dns
+import okhttp3.EventListener
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.util.concurrent.TimeUnit
-import kotlin.random.Random
 
 /**
  * TMDB (The Movie Database) 刮削客户端。
@@ -291,52 +296,37 @@ class TmdbClient(
          * 这里做成单例，连接池（默认 5 个空闲连接保活 5 分钟）才能真正发挥作用。
          */
         /**
-         * TMDB 海外真实 IP 池（github.com/cnwikee/CheckTMDB 多期快照合并）。
-         * AWS Cloudfront IP 每周滚动更新，这里合并了 2026-10 ~ 2026-11 多期数据，
-         * 尽量覆盖当前有效 IP。DNS 污染绕过 + 多 IP 轮询双重保险。
-         * 其他域名不受影响，继续走系统 DNS。
+         * 自定义 DNS：TMDB 域名从 [TmdbIpStore] 的动态 IP 池取真实海外 IP，
+         * 绕过 GFW 的 DNS 污染。IP 池由 CheckTMDB 仓库定期刷新，
+         * 连不通的 IP 会被自动冷却剔除。其他域名照常走系统 DNS。
          */
-        private val TMDB_FIXED_IPS = mapOf(
-            "api.themoviedb.org"  to listOf(
-                "3.169.173.96", "3.169.173.22", "3.169.173.45",
-                "3.175.34.102", "52.84.150.33", "52.84.150.49",
-                "143.204.1.109", "3.169.173.123",
-            ),
-            "image.tmdb.org"      to listOf(
-                "169.150.249.167", "143.204.1.109",
-                "3.169.173.123", "3.169.173.22",
-            ),
-            "images.tmdb.org"     to listOf(
-                "169.150.249.167", "143.204.1.109",
-                "3.169.173.123", "3.169.173.22",
-            ),
-            "themoviedb.org"      to listOf(
-                "3.169.173.22", "3.169.173.45",
-                "52.84.150.33", "52.84.150.49",
-            ),
-            "www.themoviedb.org"  to listOf(
-                "3.169.173.45", "3.169.173.22",
-                "52.84.150.49", "52.84.150.33",
-            ),
-            "tmdb.org"            to listOf(
-                "143.204.1.109", "3.169.173.123",
-            ),
-        )
-
-        /** 自定义 DNS：TMDB 域名多 IP 轮询（随机打散），其他域名走系统默认 */
         private val tmdbDns: Dns = object : Dns {
             override fun lookup(hostname: String): List<InetAddress> {
-                val fixed = TMDB_FIXED_IPS[hostname]
-                if (fixed != null) {
-                    // 每次请求随机打乱 IP 顺序，避免同一 IP 连续命中被 GFW 标记
-                    val shuffled = fixed.shuffled(Random(System.currentTimeMillis()))
-                    val resolved = shuffled.mapNotNull { ip ->
+                val ips = TmdbIpStore.ipsFor(hostname)
+                if (ips.isNotEmpty()) {
+                    val resolved = ips.mapNotNull { ip ->
                         try { InetAddress.getAllByName(ip).firstOrNull() } catch (_: Exception) { null }
                     }
-                    // 如果硬 IP 全解析失败（极端情况），兜底走系统 DNS
                     if (resolved.isNotEmpty()) return resolved
                 }
                 return Dns.SYSTEM.lookup(hostname)
+            }
+        }
+
+        /**
+         * 捕获连接失败，把连不通的那个 IP 标记为冷却。
+         * 这是 IP 自动淘汰的关键：GFW 封一批新 IP 后，App 自己就会把它们排掉，
+         * 不需要等下次发版。
+         */
+        private val connectWatcher = object : EventListener() {
+            override fun connectFailed(
+                call: Call,
+                inetSocketAddress: InetSocketAddress,
+                proxy: Proxy,
+                protocol: Protocol?,
+                ioe: IOException,
+            ) {
+                TmdbIpStore.markFailed(inetSocketAddress.address?.hostAddress)
             }
         }
 
@@ -344,6 +334,7 @@ class TmdbClient(
             OkHttpClient.Builder()
                 // 自定义 DNS：TMDB 域名直接解析到海外真实 IP
                 .dns(tmdbDns)
+                .eventListenerFactory { connectWatcher }
                 // 超时收紧到 8s/15s —— 硬 IP 绕过 DNS 后直接走 AWS Cloudfront，
                 // 成功率比之前高，但仍保守留够时间（之前 6s/10s 偶尔不够）
                 .connectTimeout(8, TimeUnit.SECONDS)

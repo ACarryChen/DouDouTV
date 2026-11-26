@@ -8,7 +8,12 @@ import com.chen.doudoutv.core.VideoCache
 import com.chen.doudoutv.data.db.AppDatabase
 import com.chen.doudoutv.data.image.PicHeaderInterceptor
 import com.chen.doudoutv.data.scrape.ScrapeStrategy
+import com.chen.doudoutv.data.tmdb.TmdbIpStore
 import com.chen.doudoutv.ui.theme.isTelevision
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class DouDouTvApp : com.fongmi.android.tv.App(), ImageLoaderFactory {
 
@@ -59,6 +64,13 @@ class DouDouTvApp : com.fongmi.android.tv.App(), ImageLoaderFactory {
                 "（TMDB 开关${if (Prefs.tmdbEnabled) "开" else "关"}，" +
                 "令牌${if (Prefs.tmdbConfigured) "已填" else "未填"}）"
         )
+
+        // TMDB 海外 IP 池：GFW 污染了 DNS，只能直连 AWS Cloudfront 真实 IP，
+        // 而 IP 池每周滚动。后台从 CheckTMDB 仓库拉最新 IP 覆盖旧值，
+        // 连不通的 IP 由 TmdbClient 的 EventListener 自动冷却剔除。
+        // 后台线程执行，不阻塞冷启动；拉取失败也不影响任何功能。
+        TmdbIpStore.init(this)
+        appScope.launch { TmdbIpStore.refresh() }
     }
 
     /**
@@ -81,5 +93,8 @@ class DouDouTvApp : com.fongmi.android.tv.App(), ImageLoaderFactory {
     companion object {
         lateinit var instance: DouDouTvApp
             private set
+
+        /** 应用级后台任务作用域：IP 池刷新这类不阻塞 UI 的活儿都挂这里。 */
+        private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }
