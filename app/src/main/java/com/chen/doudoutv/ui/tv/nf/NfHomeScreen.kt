@@ -89,6 +89,22 @@ private object NfHeroBackdropCache {
 }
 
 /**
+ * 「继续观看」卡的刮削海报覆盖表（mediaId -> 刮削横板，没有横板取竖板）。
+ * 口径与 [NfHeroBackdropCache] 一致：空串 = 查过没有，不再重查；刷新轮次变了整份作废。
+ */
+private object NfContinueArtCache {
+    val urls = mutableStateMapOf<Long, String>()
+    private var epoch = -1
+
+    fun rollTo(current: Int) {
+        if (epoch != current) {
+            epoch = current
+            urls.clear()
+        }
+    }
+}
+
+/**
  * 本进程是否已经进过首页。冷启动第一次进首页要把焦点站在顶栏第一颗 tab 并回到首屏；
  * 之后从详情/播放器返回则沿用「站在离开时那张卡」的恢复逻辑，不被这次抢焦拽回顶栏。
  */
@@ -148,6 +164,24 @@ fun NfHomeScreen(
             .map { group -> group.label to group.items.sortedByDescending { it.lastPlayedAt } }
     }
     val continueTotalCount = continueBySource.sumOf { it.second.size }
+
+    // 继续观看卡刮削海报：media 行的图常常是源站小缩略图（刮削回填只补空），
+    // 卡片优先展示 scraped_meta 表里那份高清海报。只读表、不联网，查过没有记空串。
+    val continueArtOverrides = NfContinueArtCache.urls
+    LaunchedEffect(continueBySource, vm.homeRefreshEpoch) {
+        NfContinueArtCache.rollTo(vm.homeRefreshEpoch)
+        val missing = continueBySource.flatMap { it.second }
+            .filter { !continueArtOverrides.containsKey(it.id) }
+            .distinctBy { it.id }
+        if (missing.isEmpty()) return@LaunchedEffect
+        missing.map { item ->
+            async(Dispatchers.IO) {
+                val m = vm.tmdbCached(item.title, item.year, item.kind, item.genres)
+                val art = m?.backdropUrl.orEmpty().ifBlank { m?.posterUrl.orEmpty() }
+                item.id to art
+            }
+        }.awaitAll().forEach { (id, url) -> continueArtOverrides[id] = url }
+    }
 
     var heroIndex by remember { NfHomeHeroIndex }
     val heroProgress = remember { mutableFloatStateOf(0f) }
@@ -376,6 +410,7 @@ fun NfHomeScreen(
                                 firstFocus = if (isFirstGroup) continueFirstFocus else FocusRequester(),
                                 entryFocus = if (isFirstGroup) continueRowEntry else null,
                                 upFocus = if (isFirstGroup && hero != null) heroPlayFocus else null,
+                                artOverrides = continueArtOverrides,
                                 onDetail = onDetail,
                                 onPlay = onPlay,
                                 onMenu = { media, cardFocus -> continueMenu = media to cardFocus }
@@ -455,6 +490,7 @@ private fun NfContinueRow(
     firstFocus: FocusRequester,
     entryFocus: FocusRequester?,
     upFocus: FocusRequester?,
+    artOverrides: Map<Long, String> = emptyMap(),
     onDetail: (Long) -> Unit,
     onPlay: (MediaEntity) -> Unit,
     onMenu: (MediaEntity, FocusRequester) -> Unit
@@ -485,6 +521,7 @@ private fun NfContinueRow(
             NfContinueCard(
                 item = item,
                 cardWidth = cardWidth,
+                scrapedArt = artOverrides[item.id],
                 modifier = upModifier.then(
                     ReturnSpot.cardStand(NfHomeKey, rowKey, item.id, stand, cardFocus)
                 ),

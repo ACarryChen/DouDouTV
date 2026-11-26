@@ -2421,8 +2421,10 @@ private fun TvEpisodeCard(
         Column(
             focusChain
                 .clip(Radius.Md)
-                // 与手机端 Emby 卡同款白透明玻璃；剧照没加载出来时不至于是一块黑砖
-                .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.08f))))
+                // 与手机端 Emby 卡同款白透明玻璃；剧照没加载出来时不至于是一块黑砖。
+                // 填充取 50% 档：原来 16% 太透，浅色模式下焦点环（深色）压在暗底上几乎看不见，
+                // 底提亮后焦点框才有对比度可依。
+                .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), Color.White.copy(alpha = 0.38f))))
                 .tvFocusRing(focused)
                 .then(
                     if (focused) Modifier
@@ -2445,8 +2447,9 @@ private fun TvEpisodeCard(
             // 详情页不放大获焦的卡片：放大一改焦点矩形，verticalScroll 的
             // bring-into-view 每次都补一点滚动，左右切集时整屏跟着上下抖。
             // 焦点只用全局那圈白描边表示，尺寸一动都不动。
+            // 填充 50% 档：同 Emby 分支，太透会让浅色模式下的焦点环看不清。
             .clip(Radius.Md)
-            .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.08f))))
+            .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.50f), Color.White.copy(alpha = 0.38f))))
             .tvFocusRing(focused)
             .then(
                 if (focused) Modifier

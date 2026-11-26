@@ -60,6 +60,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -115,6 +116,9 @@ import com.chen.doudoutv.ui.listState
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.themeBackdrop
 import com.chen.doudoutv.ui.theme.Radius
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -178,6 +182,22 @@ fun HomeScreen(
         }
     }
 
+    // 轮播图「刮削海报优先」：media 行上的图常常只是源站小缩略图（刮削回填是只补空，
+    // 源站有图时 TMDB 那份进不了 media 行），高清那份在 scraped_meta 表里。
+    // 只读表、不联网；查过没有记空串，避免每次重组重查。
+    val heroArtOverrides = remember { mutableStateMapOf<Long, String>() }
+    LaunchedEffect(heroItems) {
+        val missing = heroItems.filter { !heroArtOverrides.containsKey(it.id) }
+        if (missing.isEmpty()) return@LaunchedEffect
+        missing.map { item ->
+            async(Dispatchers.IO) {
+                val m = vm.tmdbCached(item.title, item.year, item.kind, item.genres)
+                val art = m?.backdropUrl.orEmpty().ifBlank { m?.posterUrl.orEmpty() }
+                item.id to art
+            }
+        }.awaitAll().forEach { (id, url) -> heroArtOverrides[id] = url }
+    }
+
     // 来源/站点（线路）选择器数据：选了 TVBox 源且站点列表已拉取 → 顶栏动态显示「线路」按钮
     val siteList = selectedSource?.id?.let { vm.homeSitesBySource[it] }.orEmpty()
     val namedSites = siteList.filter { it.key.isNotBlank() }
@@ -224,6 +244,7 @@ fun HomeScreen(
                     HeroBanner(
                         items = heroItems,
                         isTv = isTv,
+                        scrapedArts = heroArtOverrides,
                         onOpen = { onOpenDetail(it.id) },
                         onPlay = { onPlay(it) }
                     )

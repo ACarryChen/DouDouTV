@@ -296,22 +296,10 @@ class TmdbClient(
          * 这里做成单例，连接池（默认 5 个空闲连接保活 5 分钟）才能真正发挥作用。
          */
         /**
-         * 自定义 DNS：TMDB 域名从 [TmdbIpStore] 的动态 IP 池取真实海外 IP，
-         * 绕过 GFW 的 DNS 污染。IP 池由 CheckTMDB 仓库定期刷新，
-         * 连不通的 IP 会被自动冷却剔除。其他域名照常走系统 DNS。
+         * 自定义 DNS：见 [TmdbIpStore.tmdbDns]。刮削 API 与 Coil 图片加载共用这一份，
+         * IP 池的刷新与冷却只需要维护一处。
          */
-        private val tmdbDns: Dns = object : Dns {
-            override fun lookup(hostname: String): List<InetAddress> {
-                val ips = TmdbIpStore.ipsFor(hostname)
-                if (ips.isNotEmpty()) {
-                    val resolved = ips.mapNotNull { ip ->
-                        try { InetAddress.getAllByName(ip).firstOrNull() } catch (_: Exception) { null }
-                    }
-                    if (resolved.isNotEmpty()) return resolved
-                }
-                return Dns.SYSTEM.lookup(hostname)
-            }
-        }
+        private val tmdbDns: Dns = TmdbIpStore.tmdbDns
 
         /**
          * 捕获连接失败，把连不通的那个 IP 标记为冷却。

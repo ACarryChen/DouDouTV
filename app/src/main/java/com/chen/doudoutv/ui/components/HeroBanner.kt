@@ -78,6 +78,8 @@ fun HeroBanner(
     isTv: Boolean,
     onOpen: (MediaEntity) -> Unit,
     onPlay: (MediaEntity) -> Unit,
+    /** 刮削海报覆盖表（mediaId -> TMDB 横板/竖板）：轮播图优先展示刮削那份高清海报 */
+    scrapedArts: Map<Long, String> = emptyMap(),
     modifier: Modifier = Modifier
 ) {
     if (items.isEmpty()) return
@@ -122,7 +124,8 @@ fun HeroBanner(
         ) { page ->
             val item = items[page]
             Box(Modifier.fillMaxSize()) {
-                val art = item.backdropUrl.ifBlank { item.posterUrl }
+                val art = scrapedArts[item.id]?.takeIf { it.isNotBlank() }
+                    ?: item.backdropUrl.ifBlank { item.posterUrl }
                 if (art.isNotBlank()) {
                     // 直接 Crop：手机这一格接近正方（宽 × 460dp），竖版海报裁掉的是
                     // 海报自身的上下留白，主体还在画面里。

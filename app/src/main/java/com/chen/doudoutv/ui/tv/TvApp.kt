@@ -413,7 +413,9 @@ fun TvApp(vm: LibraryViewModel) {
             ) {
                 Text(
                     "再按一次「返回」键退出",
-                    color = TvText.Title,
+                    // 胶囊底钉死黑 72%，文字就必须钉死白：
+                    // TvText.Title 在浅色模式下翻成近黑，黑字压黑底整条提示直接看不见。
+                    color = Color.White,
                     style = MaterialTheme.typography.bodyMedium
                 )
             }

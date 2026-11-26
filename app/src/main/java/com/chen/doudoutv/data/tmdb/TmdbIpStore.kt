@@ -5,8 +5,10 @@ import android.content.SharedPreferences
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
@@ -173,6 +175,27 @@ object TmdbIpStore {
     fun markFailed(ip: String?) {
         if (ip.isNullOrBlank()) return
         blacklist[ip] = System.currentTimeMillis() + BLACKLIST_MS
+    }
+
+    /**
+     * TMDB 域名 → 真实海外 IP 的 DNS 注入，供所有需要访问 TMDB 的 OkHttpClient 复用
+     * （刮削 API、Coil 图片加载）。
+     *
+     * 刮削回来的海报直链指向 image.tmdb.org —— 这个域名同样被 DNS 污染，
+     * 图片加载若走系统 DNS 就永远拿不到真图，界面只能回落到默认缩略图。
+     * 非 TMDB 域名原样交回系统 DNS，其余图片的加载路径不受影响。
+     */
+    val tmdbDns: Dns = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            val ips = ipsFor(hostname)
+            if (ips.isNotEmpty()) {
+                val resolved = ips.mapNotNull { ip ->
+                    try { InetAddress.getAllByName(ip).firstOrNull() } catch (_: Exception) { null }
+                }
+                if (resolved.isNotEmpty()) return resolved
+            }
+            return Dns.SYSTEM.lookup(hostname)
+        }
     }
 
     /**

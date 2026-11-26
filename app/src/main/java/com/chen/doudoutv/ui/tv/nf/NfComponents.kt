@@ -954,6 +954,10 @@ private fun NfPosterBody(
 /**
  * 继续观看横版卡：16:9，图按「横版截取」填满 —— PosterArt 内部就是 ContentScale.Crop，
  * 竖版海报进来取中间一条带，横版 backdrop 正好铺满。底部压渐变放片名、集数和进度。
+ *
+ * @param scrapedArt 刮削来的海报（TMDB 横板优先，其次竖板）。media 行上的 poster/backdrop
+ *        常常只是源站给的小缩略图（刮削回填是「只补空」，源站有图时 TMDB 那份进不了 media 行），
+ *        卡片要优先展示刮削那份，才不是一屏糊图。
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -963,7 +967,8 @@ fun NfContinueCard(
     onClick: () -> Unit,
     onMenu: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
-    anchorStart: Boolean = false
+    anchorStart: Boolean = false,
+    scrapedArt: String? = null
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -1024,7 +1029,11 @@ fun NfContinueCard(
             .tvFocusRing(focused)
             .then(if (focused) Modifier else Modifier.border(1.dp, Edge.Hairline, cardShape))
     ) {
-        PosterArt(model = item.backdropUrl.ifBlank { item.posterUrl }, contentDescription = item.title) {
+        PosterArt(
+            model = scrapedArt?.takeIf { it.isNotBlank() }
+                ?: item.backdropUrl.ifBlank { item.posterUrl },
+            contentDescription = item.title
+        ) {
             PosterFallback(title = item.title, showTitle = false, titleFontSize = 30.sp)
         }
         Box(

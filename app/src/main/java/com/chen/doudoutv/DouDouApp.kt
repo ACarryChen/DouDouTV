@@ -14,6 +14,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 
 class DouDouTvApp : com.fongmi.android.tv.App(), ImageLoaderFactory {
 
@@ -79,12 +81,24 @@ class DouDouTvApp : com.fongmi.android.tv.App(), ImageLoaderFactory {
      *
      * [PicHeaderInterceptor] 负责拆 TVBox 海报直链末尾的 @Referer= / @User-Agent= 后缀，
      * 否则豆瓣图床会把整串当路径并返回 418（表现为大量卡片没有封面）。
+     *
+     * 给 Coil 的 OkHttpClient 也装 [TmdbIpStore.tmdbDns]：TMDB 刮削回来的海报
+     * 直链指向 image.tmdb.org，系统 DNS 在国内被污染，图片加载会失败，
+     * 界面只能回落到默认缩略图 —— 这就是 TV 继续观看卡 / 首页轮播图「很糊」的根因。
+     * 注入后只有 TMDB 域名走海外 IP 池，其余图片加载路径不受影响。
      */
     override fun newImageLoader(): ImageLoader {
         // TV 端低端 GPU 大面积 alpha 混合吃不消：一屏海报同时做 220ms 淡入，
         // 每帧都要重画整屏卡片，实测掉帧里「Slow issue draw commands」占一半。
         // TV 直接出图，手机端保留淡入过渡。
-        val builder = ImageLoader.Builder(this).crossfade(!isTelevision())
+        val tmdbHttp = OkHttpClient.Builder()
+            .dns(TmdbIpStore.tmdbDns)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .build()
+        val builder = ImageLoader.Builder(this)
+            .crossfade(!isTelevision())
+            .okHttpClient(tmdbHttp)
         return builder
             .components { add(PicHeaderInterceptor()) }
             .build()
