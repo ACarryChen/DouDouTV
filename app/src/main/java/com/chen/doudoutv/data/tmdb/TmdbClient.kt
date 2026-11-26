@@ -3,11 +3,14 @@ package com.chen.doudoutv.data.tmdb
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.InetAddress
 import java.util.concurrent.TimeUnit
+import kotlin.random.Random
 
 /**
  * TMDB (The Movie Database) 刮削客户端。
@@ -287,17 +290,65 @@ class TmdbClient(
          * 既浪费资源又复用不了 TCP 连接。OkHttp 本身是线程安全且鼓励复用的，
          * 这里做成单例，连接池（默认 5 个空闲连接保活 5 分钟）才能真正发挥作用。
          */
+        /**
+         * TMDB 海外真实 IP 池（github.com/cnwikee/CheckTMDB 多期快照合并）。
+         * AWS Cloudfront IP 每周滚动更新，这里合并了 2026-10 ~ 2026-11 多期数据，
+         * 尽量覆盖当前有效 IP。DNS 污染绕过 + 多 IP 轮询双重保险。
+         * 其他域名不受影响，继续走系统 DNS。
+         */
+        private val TMDB_FIXED_IPS = mapOf(
+            "api.themoviedb.org"  to listOf(
+                "3.169.173.96", "3.169.173.22", "3.169.173.45",
+                "3.175.34.102", "52.84.150.33", "52.84.150.49",
+                "143.204.1.109", "3.169.173.123",
+            ),
+            "image.tmdb.org"      to listOf(
+                "169.150.249.167", "143.204.1.109",
+                "3.169.173.123", "3.169.173.22",
+            ),
+            "images.tmdb.org"     to listOf(
+                "169.150.249.167", "143.204.1.109",
+                "3.169.173.123", "3.169.173.22",
+            ),
+            "themoviedb.org"      to listOf(
+                "3.169.173.22", "3.169.173.45",
+                "52.84.150.33", "52.84.150.49",
+            ),
+            "www.themoviedb.org"  to listOf(
+                "3.169.173.45", "3.169.173.22",
+                "52.84.150.49", "52.84.150.33",
+            ),
+            "tmdb.org"            to listOf(
+                "143.204.1.109", "3.169.173.123",
+            ),
+        )
+
+        /** 自定义 DNS：TMDB 域名多 IP 轮询（随机打散），其他域名走系统默认 */
+        private val tmdbDns: Dns = object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                val fixed = TMDB_FIXED_IPS[hostname]
+                if (fixed != null) {
+                    // 每次请求随机打乱 IP 顺序，避免同一 IP 连续命中被 GFW 标记
+                    val shuffled = fixed.shuffled(Random(System.currentTimeMillis()))
+                    val resolved = shuffled.mapNotNull { ip ->
+                        try { InetAddress.getAllByName(ip).firstOrNull() } catch (_: Exception) { null }
+                    }
+                    // 如果硬 IP 全解析失败（极端情况），兜底走系统 DNS
+                    if (resolved.isNotEmpty()) return resolved
+                }
+                return Dns.SYSTEM.lookup(hostname)
+            }
+        }
+
         private val sharedHttp: OkHttpClient by lazy {
             OkHttpClient.Builder()
-                // 超时收紧到 6s/10s（原来是 12s/25s）。
-                // 国内直连 TMDB 经常「能连但很慢」，长超时会让每个失败请求白等十几秒，
-                // 多个请求叠加起来就是「刮削特别慢」的直接观感。
-                // 快速失败 + 缓存兜底，比死等更划算。
-                .connectTimeout(6, TimeUnit.SECONDS)
-                .readTimeout(10, TimeUnit.SECONDS)
-                // 整个调用（含重定向、读 body）的上限，防止个别请求无限拖
-                .callTimeout(15, TimeUnit.SECONDS)
-                // 复用连接：保持 5 个空闲连接 5 分钟，后续请求不用重新握手
+                // 自定义 DNS：TMDB 域名直接解析到海外真实 IP
+                .dns(tmdbDns)
+                // 超时收紧到 8s/15s —— 硬 IP 绕过 DNS 后直接走 AWS Cloudfront，
+                // 成功率比之前高，但仍保守留够时间（之前 6s/10s 偶尔不够）
+                .connectTimeout(8, TimeUnit.SECONDS)
+                .readTimeout(15, TimeUnit.SECONDS)
+                .callTimeout(20, TimeUnit.SECONDS)
                 .connectionPool(okhttp3.ConnectionPool(5, 5, TimeUnit.MINUTES))
                 .retryOnConnectionFailure(true)
                 .build()
