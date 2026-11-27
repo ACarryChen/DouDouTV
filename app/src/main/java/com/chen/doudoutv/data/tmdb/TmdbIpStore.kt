@@ -178,8 +178,8 @@ object TmdbIpStore {
     }
 
     /**
-     * TMDB 域名 → 真实海外 IP 的 DNS 注入，供所有需要访问 TMDB 的 OkHttpClient 复用
-     * （刮削 API、Coil 图片加载）。
+     * TMDB 域名 → 真实海外 IP 的 DNS 注入，供刮削客户端（TmdbClient）的 OkHttpClient 复用。
+     * Coil 图片加载不走这里（缩略图必须走系统 DNS，注入版曾导致源站缩略图加载失败，已撤回）。
      *
      * 刮削回来的海报直链指向 image.tmdb.org —— 这个域名同样被 DNS 污染，
      * 图片加载若走系统 DNS 就永远拿不到真图，界面只能回落到默认缩略图。

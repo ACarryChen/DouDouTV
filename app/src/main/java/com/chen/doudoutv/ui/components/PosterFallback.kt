@@ -1,5 +1,6 @@
 package com.chen.doudoutv.ui.components
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -104,15 +105,26 @@ fun PosterFallback(
  * 两个分支互斥、不把兜底垫在图下面，是有取舍的：一屏最多七十张卡，垫着等于多排七十次文字，
  * 弱盒子上白白吃帧；代价是加载中会先露一会儿卡片底色，跟改动前一样。
  * 只在失败时换兜底，也顺带省掉了空 URL 那次注定失败的图片请求。
+ *
+ * [fallbackModel]：主图加载失败后先换这颗再试一次，仍失败（或它为空）才画 [fallback]。
+ * 给「优先高清外链、失败回落到源站本地图」这类两级图床用 —— 没有这一级，
+ * 高清外链连不通时整屏卡片直接掉进渐变占位，源站本来能加载的图反而没人试。
  */
 @Composable
 fun PosterArt(
     model: String,
     contentDescription: String?,
+    fallbackModel: String? = null,
     fallback: @Composable () -> Unit
 ) {
-    var failed by remember(model) { mutableStateOf(false) }
-    if (model.isBlank() || failed) {
+    var primaryFailed by remember(model) { mutableStateOf(false) }
+    val active = when {
+        !primaryFailed -> model
+        !fallbackModel.isNullOrBlank() -> fallbackModel
+        else -> ""
+    }
+    var activeFailed by remember(active) { mutableStateOf(false) }
+    if (active.isBlank() || activeFailed) {
         fallback()
         return
     }
@@ -120,8 +132,8 @@ fun PosterArt(
     // 硬切更稳，也少一层 alpha 合成。
     val tv = LocalTvMode.current
     val context = LocalContext.current
-    val request = remember(model, tv) {
-        if (tv) ImageRequest.Builder(context).data(model).crossfade(false).build() else model
+    val request = remember(active, tv) {
+        if (tv) ImageRequest.Builder(context).data(active).crossfade(false).build() else active
     }
     AsyncImage(
         model = request,
@@ -129,10 +141,20 @@ fun PosterArt(
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxSize(),
         onState = { state ->
-            if (state is AsyncImagePainter.State.Error) failed = true
+            if (state is AsyncImagePainter.State.Error) {
+                val error = state.result.throwable
+                Log.w(
+                    "DouDouImage",
+                    "load failed url=${active.redactedImageUrl()} " +
+                        "type=${error.javaClass.simpleName} msg=${error.message?.redactedImageUrl()}"
+                )
+                if (!primaryFailed) primaryFailed = true else activeFailed = true
+            }
         }
     )
 }
+
+private fun String.redactedImageUrl(): String = substringBefore('@').substringBefore('?')
 
 private fun posterFallbackBrush(seed: String, brand: Color): Brush {
     val brandHsv = FloatArray(3)

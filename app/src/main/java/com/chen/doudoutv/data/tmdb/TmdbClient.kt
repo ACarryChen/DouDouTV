@@ -296,8 +296,8 @@ class TmdbClient(
          * 这里做成单例，连接池（默认 5 个空闲连接保活 5 分钟）才能真正发挥作用。
          */
         /**
-         * 自定义 DNS：见 [TmdbIpStore.tmdbDns]。刮削 API 与 Coil 图片加载共用这一份，
-         * IP 池的刷新与冷却只需要维护一处。
+         * 自定义 DNS：见 [TmdbIpStore.tmdbDns]。只供刮削 API 使用（Coil 图片加载已撤回、
+         * 走系统 DNS），IP 池的刷新与冷却只需要维护一处。
          */
         private val tmdbDns: Dns = TmdbIpStore.tmdbDns
 

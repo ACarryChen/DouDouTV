@@ -1029,9 +1029,13 @@ fun NfContinueCard(
             .tvFocusRing(focused)
             .then(if (focused) Modifier else Modifier.border(1.dp, Edge.Hairline, cardShape))
     ) {
+        // 刮削海报（image.tmdb.org）优先，但它在国内网络时通时断：加载失败必须回落到
+        // 源站自己的图，否则整排继续观看卡直接掉进渐变占位，比改动前还空。
+        val siteArt = item.backdropUrl.ifBlank { item.posterUrl }
+        val scraped = scrapedArt?.takeIf { it.isNotBlank() }
         PosterArt(
-            model = scrapedArt?.takeIf { it.isNotBlank() }
-                ?: item.backdropUrl.ifBlank { item.posterUrl },
+            model = scraped ?: siteArt,
+            fallbackModel = if (scraped != null) siteArt else null,
             contentDescription = item.title
         ) {
             PosterFallback(title = item.title, showTitle = false, titleFontSize = 30.sp)

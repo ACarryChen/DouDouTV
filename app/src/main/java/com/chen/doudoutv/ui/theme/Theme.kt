@@ -58,18 +58,18 @@ object AppColors {
 
     /**
      * 材质四层 L0~L3 与文字三级。暗色为纯中性灰（2026-11-10 去蓝调，明度未动）；
-     * 浅色为 Apple TV 口径：#F5F5F7 底 + 白卡 + 灰字，hairline 反转为黑 8%。
+     * 浅色为暖调米纸：#F5F5F0 底 + 同色系分层表面 + 灰字，hairline 反转为黑 8%。
      */
-    val Bg: Color get() = if (lightOn()) Color(0xFFF5F5F7) else Color(0xFF080808)
+    val Bg: Color get() = if (lightOn()) Color(0xFFF5F5F0) else Color(0xFF080808)
 
-    /** L1 —— 分区容器、分组面板、图片占位；苹果钛白（冷调奶白），不刺眼显高级 */
-    val Surface: Color get() = if (lightOn()) Color(0xFFF2F3F5) else Color(0xFF131313)
+    /** L1 —— 分区容器、分组面板、图片占位；暖调奶白，不刺眼显高级 */
+    val Surface: Color get() = if (lightOn()) Color(0xFFF0F0EA) else Color(0xFF131313)
 
     /** L2 —— 卡片、列表行、输入控件 */
-    val SurfaceHi: Color get() = if (lightOn()) Color(0xFFE9E9EE) else Color(0xFF1F1F1F)
+    val SurfaceHi: Color get() = if (lightOn()) Color(0xFFE9E9E2) else Color(0xFF1F1F1F)
 
     /** L3 —— 焦点/抬起态的填充 */
-    val SurfaceRaise: Color get() = if (lightOn()) Color(0xFFD9D9DF) else Color(0xFF2C2C2C)
+    val SurfaceRaise: Color get() = if (lightOn()) Color(0xFFDEDED7) else Color(0xFF2C2C2C)
 
     /** 文字三级：白 → 灰（暗色）/ 近黑 → 灰（浅色） */
     val TextPrimary: Color get() = if (lightOn()) Color(0xFF1C1C1E) else Color(0xFFF4F4F4)
@@ -78,7 +78,7 @@ object AppColors {
     val Rating = Color(0xFFFFC107)
 
     /** 磨砂玻璃底（底栏抓不到模糊时的兜底色） */
-    val GlassBase: Color get() = if (lightOn()) Color(0xFFF2F2F6) else Color(0xFF161618)
+    val GlassBase: Color get() = if (lightOn()) Color(0xFFF2F2EC) else Color(0xFF161618)
 
     /** 磨砂玻璃的暗色压层：浅色下换成透明白（防止 copy(alpha) 把 RGB 拖向纯黑） */
     val GlassShade: Color get() = if (lightOn()) Color(0x00FFFFFF) else Color(0xFF0B0B0D)

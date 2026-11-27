@@ -332,11 +332,11 @@ fun TvSettingsScreen(
                                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_BACK -> { exitPane(); true }
                                 // 信息组（状态 / 关于）右栏没有可聚焦行，整块容器聚焦，上下键直接滚动
                                 KeyEvent.KEYCODE_DPAD_UP ->
-                                    if (selected == 0 || selected == 4) {
+                                    if (selected == 0 || selected == 5) {
                                         scope.launch { paneScroll.animateScrollTo(paneScroll.value - 220) }; true
                                     } else false
                                 KeyEvent.KEYCODE_DPAD_DOWN ->
-                                    if (selected == 0 || selected == 4) {
+                                    if (selected == 0 || selected == 5) {
                                         scope.launch { paneScroll.animateScrollTo(paneScroll.value + 220) }; true
                                     } else false
                                 else -> false
@@ -349,7 +349,7 @@ fun TvSettingsScreen(
                         .fillMaxSize()
                         .verticalScroll(paneScroll)
                         .then(
-                            if (wide && (selected == 0 || selected == 4))
+                            if (wide && (selected == 0 || selected == 5))
                                 Modifier.focusRequester(paneFirstFocus).focusable()
                             else Modifier
                         )
@@ -430,7 +430,6 @@ fun TvSettingsScreen(
                             }
 
                             2 -> {
-                                val paneFirstFocus = remember { FocusRequester() }
                                 TvSettingRow(
                                     title = "自动跳过片头",
                                     hint = "开启后剧集详情页与播放器显示「跳过片头」按钮；关闭则不显示、也不再自动跳过",
