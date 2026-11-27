@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -177,9 +176,8 @@ fun TvSettingsScreen(
     val motionFocus = remember { FocusRequester() }
     val themeFocus = remember { FocusRequester() }
     val modeFocus = remember { FocusRequester() }
-    val skipIntroFocus = remember { FocusRequester() }
 
-    // 侧栏 master-detail：selected 是当前预览/展开的分组；railFocus 是左栏五颗入口；
+    // 侧栏 master-detail：selected 是当前预览/展开的分组；railFocus 是左栏六颗入口；
     // paneFirstFocus 是右栏第一颗可聚焦元件（信息组没有可聚焦行，落在可滚动的容器上）。
     var selected by remember { mutableIntStateOf(0) }
     val railFocus = remember { List(6) { FocusRequester() } }
@@ -1044,8 +1042,7 @@ private fun TvSettingRow(
     focusRequester: FocusRequester? = null,
     onClick: (() -> Unit)? = null,
     value: String? = null,
-    accent: Boolean = false,
-    trailing: (@Composable RowScope.() -> Unit)? = null
+    accent: Boolean = false
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -1083,7 +1080,6 @@ private fun TvSettingRow(
                 color = if (accent) AppColors.Brand else TvText.Body
             )
         }
-        trailing?.invoke(this)
     }
 }
 

@@ -118,11 +118,6 @@ fun TvCategoryListScreen(
                     Text(text = error ?: "加载失败", color = AppColors.TextSecondary, fontSize = 16.sp)
                 }
             }
-            current?.isEmpty() == true -> {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(text = "暂无内容", color = AppColors.TextSecondary, fontSize = 16.sp)
-                }
-            }
             else -> {
                 val list = current ?: return@Column
                 LazyColumn(
@@ -139,18 +134,6 @@ fun TvCategoryListScreen(
                 }
             }
         }
-    }
-}
-
-private fun cloudTagColorTv(source: String): Pair<Color, Color> {
-    val s = source.lowercase()
-    return when {
-        s.contains("quark") || s.contains("夸克") -> Color(0xFF2196F3).copy(alpha = 0.18f) to Color(0xFF64B5F6)
-        s.contains("ali") || s.contains("阿里") || s.contains("alipan") -> Color(0xFFFF9800).copy(alpha = 0.18f) to Color(0xFFFFB74D)
-        s.contains("xunlei") || s.contains("迅雷") -> Color(0xFFE53935).copy(alpha = 0.18f) to Color(0xFFEF5350)
-        s.contains("uc") -> Color(0xFF4CAF50).copy(alpha = 0.18f) to Color(0xFF66BB6A)
-        s.contains("baidu") || s.contains("百度") -> Color(0xFF29B6F6).copy(alpha = 0.18f) to Color(0xFF4FC3F7)
-        else -> Color(0xFF9E9E9E).copy(alpha = 0.18f) to Color(0xFFBDBDBD)
     }
 }
 

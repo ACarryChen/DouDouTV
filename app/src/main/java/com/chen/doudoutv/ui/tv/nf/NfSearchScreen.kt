@@ -437,7 +437,6 @@ fun NfSearchScreen(
                                                     focusRequester = fr,
                                                     rightFocusRequester = gridFirstFocus,
                                                     // 上下移动只换高亮，不再动右侧（重排整屏海报是卡顿主因）
-                                                    onFocused = {},
                                                     // OK：确认这条线路并进右侧网格首卡
                                                     onEnter = {
                                                         if (routeKey == confirmedRouteKey) {
@@ -743,7 +742,7 @@ private fun nfSearchGroups(results: List<MediaEntity>, sources: List<SourceEntit
     }
 
 /**
- * 左栏的线路行：常显、不折叠 —— 焦点落到哪条，右栏立刻换成那条线路的影片。
+ * 左栏的线路行：常显、不折叠 —— 焦点只控制当前行高亮，不切换右栏内容。
  * 选中行给一条品牌红竖条作静态标识；聚焦态仍是全页统一的 [tvFocusRing] 双环。
  * → / OK 进右栏首卡；↑↓ 交给系统几何寻焦（轨道本身就是纵向列表）。
  */
@@ -755,7 +754,6 @@ private fun NfRailRouteRow(
     selected: Boolean,
     focusRequester: FocusRequester,
     rightFocusRequester: FocusRequester,
-    onFocused: () -> Unit,
     onEnter: () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -770,7 +768,6 @@ private fun NfRailRouteRow(
             .tvFocusRing(focused)
             .nfFocusRoute(right = rightFocusRequester)
             .focusRequester(focusRequester)
-            .onFocusEvent { if (it.hasFocus) onFocused() }
             .clickable(interactionSource = interaction, indication = null, onClick = onEnter)
             .focusable(interactionSource = interaction)
             .padding(start = 12.dp, end = 12.dp),

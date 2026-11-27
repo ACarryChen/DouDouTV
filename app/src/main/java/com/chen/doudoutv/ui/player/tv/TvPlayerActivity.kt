@@ -291,6 +291,7 @@ class TvPlayerActivity : ComponentActivity() {
      * 落进度不在这里挂：见 [saveProgress]，它要能在 Activity 已经销毁后把最后一笔写完。
      */
     private val workScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val saveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** 交互计数：每次按键 / 选项切换都 +1，用于重置 3 秒自动隐藏 */
     private var tick by mutableStateOf(0)
@@ -909,7 +910,7 @@ class TvPlayerActivity : ComponentActivity() {
         val pos = p.currentPosition.coerceAtLeast(0L)
         val dur = p.duration.takeIf { it > 0L } ?: 0L
 
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        saveScope.launch {
             runCatching {
                 repo.saveProgress(item.id, pos)
                 if (dur > 0L) repo.fillDuration(item.id, dur)
@@ -1266,7 +1267,6 @@ class TvPlayerActivity : ComponentActivity() {
         // 先停掉在飞的装载/预热，再 release 播放器：反过来的话，
         // 解析回来那一步还会摸到已释放的实例和已 detach 的 PlayerView
         workScope.cancel()
-        saveProgress(force = true)
         playerView?.player = null
         if (useFongmiKernel) {
             // manager 拥有底层 ExoPlayer 的生命周期，统一走它的 release；
@@ -1401,7 +1401,9 @@ class TvPlayerActivity : ComponentActivity() {
                     }
                 },
                 update = { view ->
-                    view.player = this@TvPlayerActivity.player
+                    if (view.player !== this@TvPlayerActivity.player) {
+                        view.player = this@TvPlayerActivity.player
+                    }
                     // 从按下到新一集首帧上屏，全程黑幕 + 转圈：解析期播放器是 IDLE、
                     // 缓冲期是 BUFFERING，两段连起来才不露出上一集的画面。
                     val show = if (loading) View.VISIBLE else View.GONE

@@ -187,7 +187,7 @@ fun NfScopeDrawer(
     LaunchedEffect(cursorId) { cursorId?.let { onEnsureSites(it) } }
 
     // 右列打开时要停在当前生效的那条线路上，而不是从「全部站点」往下找。
-    // 「全部站点」占第 0 格，真实站点的下标要 +1；光标不在当前来源上（没有高亮）就回到顶部。
+    // 「全部站点」占第 1 格（第 0 格是线路管理），真实站点的下标要 +2；光标不在当前来源上（没有高亮）就回到顶部。
     LaunchedEffect(cursorId, sites, siteEntryIndex) {
         siteListState.scrollToItem(siteEntryIndex)
     }

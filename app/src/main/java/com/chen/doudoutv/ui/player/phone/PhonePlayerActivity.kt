@@ -8,6 +8,8 @@ import android.content.res.Configuration
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
@@ -208,6 +210,13 @@ class PhonePlayerActivity : ComponentActivity() {
 
     private var speedState by mutableStateOf(1f)
 
+    private var screenLocked = false
+    private var lockView: ImageView? = null
+    private val gestureHandler = Handler(Looper.getMainLooper())
+    private var longPressRunnable: Runnable? = null
+    private var longPressActive = false
+    private var speedBeforeLongPress: Float? = null
+
     /** 0=适应 1=铺满 2=缩放 */
     private var resizeModeState by mutableStateOf(0)
 
@@ -390,6 +399,7 @@ class PhonePlayerActivity : ComponentActivity() {
         episodesView = view.findViewById(R.id.doudou_episodes)
         playPauseView = view.findViewById(R.id.doudou_play_pause)
         introView = view.findViewById(R.id.doudou_intro_skip)
+        lockView = view.findViewById(R.id.doudou_lock)
 
         titleView?.text = titleState
         speedView?.text = formatSpeed(speedState)
@@ -413,6 +423,16 @@ class PhonePlayerActivity : ComponentActivity() {
             if (episodeList.isNotEmpty()) showEpisodeDialog = true
         }
         introView?.setOnClickListener { onIntroClick() }
+        lockView?.setOnClickListener { setScreenLocked(!screenLocked) }
+        view.controllerAutoShow = false
+        view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+            if (screenLocked && visibility == View.VISIBLE) {
+                view.hideController()
+            } else {
+                updateLockVisibility(visibility == View.VISIBLE)
+            }
+        })
+        updateLockVisibility(false)
 
         // 底部栏首位：播放暂停（快退/快进已移到左右滑动手势）
         playPauseView?.setOnClickListener {
@@ -481,6 +501,21 @@ class PhonePlayerActivity : ComponentActivity() {
         }
     }
 
+    private fun setScreenLocked(locked: Boolean) {
+        finishLongPress()
+        screenLocked = locked
+        lockView?.setImageResource(
+            if (locked) R.drawable.doudou_ic_lock_open else R.drawable.doudou_ic_lock_closed
+        )
+        lockView?.contentDescription = if (locked) "解锁屏幕" else "锁定屏幕"
+        if (locked) playerView?.hideController() else playerView?.showController()
+        updateLockVisibility(!locked)
+    }
+
+    private fun updateLockVisibility(controllerVisible: Boolean) {
+        lockView?.visibility = if (screenLocked || controllerVisible) View.VISIBLE else View.GONE
+    }
+
     /** 更新底部播放暂停按钮图标 */
     private fun updatePlayPauseLabel() {
         val p = player ?: return
@@ -512,6 +547,7 @@ class PhonePlayerActivity : ComponentActivity() {
     private fun setupTouchSeek(view: PlayerView) {
         val slop = ViewConfiguration.get(this).scaledTouchSlop
         val doubleTapMs = ViewConfiguration.getDoubleTapTimeout()
+        val longPressMs = ViewConfiguration.getLongPressTimeout().toLong()
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         // 边缘调节区：左右各占屏宽 16%，中间区域不触发音量/亮度，
@@ -530,6 +566,7 @@ class PhonePlayerActivity : ComponentActivity() {
         var lastTapMs = 0L
 
         view.setOnTouchListener { v, event ->
+            if (screenLocked) return@setOnTouchListener true
             val p = player
             if (p == null) {
                 // 解析直链的这几秒里播放器还是 null，而 PlayerView 自己的单击分支带了
@@ -556,6 +593,7 @@ class PhonePlayerActivity : ComponentActivity() {
                     // 双击暂停：两次 DOWN 间隔 < doubleTapTimeout → 切换播放
                     val now = System.currentTimeMillis()
                     if (now - lastTapMs < doubleTapMs) {
+                        cancelLongPress()
                         if (p.isPlaying) p.pause() else p.play()
                         updatePlayPauseLabel()
                         // 消费掉这次 DOWN，并隐藏控制条，避免双击时弹出进度条/功能栏
@@ -564,17 +602,29 @@ class PhonePlayerActivity : ComponentActivity() {
                         true
                     } else {
                         lastTapMs = now
+                        val trigger = Runnable {
+                            val currentPlayer = player ?: return@Runnable
+                            longPressRunnable = null
+                            speedBeforeLongPress = currentPlayer.playbackParameters.speed
+                            longPressActive = true
+                            currentPlayer.setPlaybackSpeed(2f)
+                            speedView?.text = formatSpeed(2f)
+                        }
+                        longPressRunnable = trigger
+                        gestureHandler.postDelayed(trigger, longPressMs)
                         false
                     }
                 }
 
                 MotionEvent.ACTION_MOVE -> {
+                    if (longPressActive) return@setOnTouchListener true
                     val dx = event.x - downX
                     val dy = event.y - downY
                     if (gesture == G_NONE) {
                         val adx = abs(dx)
                         val ady = abs(dy)
                         if (adx <= slop && ady <= slop) return@setOnTouchListener false
+                        cancelLongPress()
                         val w = v.width.coerceAtLeast(1)
                         gesture = when {
                             adx > ady * 1.4f -> G_SEEK
@@ -615,6 +665,10 @@ class PhonePlayerActivity : ComponentActivity() {
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (finishLongPress()) {
+                        gesture = G_NONE
+                        return@setOnTouchListener true
+                    }
                     when (gesture) {
                         G_SEEK -> {
                             p.seekTo(targetPos)
@@ -631,6 +685,22 @@ class PhonePlayerActivity : ComponentActivity() {
                 else -> false
             }
         }
+    }
+
+    private fun cancelLongPress() {
+        longPressRunnable?.let(gestureHandler::removeCallbacks)
+        longPressRunnable = null
+    }
+
+    private fun finishLongPress(): Boolean {
+        cancelLongPress()
+        if (!longPressActive) return false
+        longPressActive = false
+        val restoreSpeed = speedBeforeLongPress ?: speedState
+        speedBeforeLongPress = null
+        player?.setPlaybackSpeed(restoreSpeed)
+        speedView?.text = formatSpeed(restoreSpeed)
+        return true
     }
 
     private fun showSeekPreview(text: String) {
@@ -785,6 +855,7 @@ class PhonePlayerActivity : ComponentActivity() {
             toastState = "该条目没有可播放地址（可能需要在详情页重新加载）"
             return
         }
+        finishLongPress()
 
         // 云盘 scheme 地址需要先解析出真实视频 URL + 请求头，再创建播放器
         setLoading(true)
@@ -1295,6 +1366,7 @@ class PhonePlayerActivity : ComponentActivity() {
     }
 
     private fun cycleSpeed() {
+        finishLongPress()
         val next = SPEEDS[(SPEEDS.indexOfFirst { abs(it - speedState) < 0.01f } + 1) % SPEEDS.size]
         speedState = next
         player?.setPlaybackSpeed(next)
@@ -1637,12 +1709,14 @@ class PhonePlayerActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        finishLongPress()
         saveProgress(force = true)
         // 离开播放器这一刻停播收尾；onDestroy 之前一定先走 onPause，不重复报
         stopEmbySession()
     }
 
     override fun onDestroy() {
+        finishLongPress()
         saveProgress(force = true)
         playerView?.player = null
         if (useFongmiKernel) {
@@ -1658,6 +1732,9 @@ class PhonePlayerActivity : ComponentActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (screenLocked && keyCode != KeyEvent.KEYCODE_BACK &&
+            keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN
+        ) return true
         val controllerVisible = playerView?.isControllerFullyVisible == true
         when (keyCode) {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {

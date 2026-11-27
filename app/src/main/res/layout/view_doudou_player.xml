@@ -9,4 +9,21 @@
     app:controller_layout_id="@layout/doudou_player_controller"
     app:resize_mode="fit"
     app:show_buffering="when_playing"
-    app:use_controller="true" />
+    app:use_controller="true">
+
+    <ImageView
+        android:id="@+id/doudou_lock"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="end|center_vertical"
+        android:layout_marginEnd="18dp"
+        android:background="@drawable/doudou_circle_bg"
+        android:clickable="true"
+        android:contentDescription="锁定屏幕"
+        android:elevation="8dp"
+        android:focusable="true"
+        android:padding="12dp"
+        android:src="@drawable/doudou_ic_lock_closed"
+        android:visibility="gone" />
+
+</androidx.media3.ui.PlayerView>
