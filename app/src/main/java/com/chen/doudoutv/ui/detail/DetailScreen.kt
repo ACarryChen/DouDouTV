@@ -269,56 +269,37 @@ fun DetailScreen(
             }.getOrNull()
 
             if (m.kind == MediaKind.SERIES) {
+                val src = vm.sourceOf(m.sourceId)
                 var eps = vm.episodesOf(m.seriesKey)
 
-                // 分集按需拉取（TVBox 详情 / Emby 分集都不随整库同步）
-                if (eps.isEmpty()) {
-                    val src = vm.sourceOf(m.sourceId)
-                    when (src?.kind) {
-                        SourceKind.TVBOX -> {
-                            vm.loadTvBoxDetail(m.sourceId, m.remoteId)
-                            media = vm.mediaOf(id) ?: m
-                        }
-                        SourceKind.EMBY -> {
-                            if (vm.loadEmbyEpisodes(m.sourceId, m.remoteId)) {
-                                media = vm.mediaOf(id) ?: m
-                            }
-                        }
-                        null -> Unit
-                    }
-                } else if (isEmbySource) {
-                    // 库里已有分集：分集行的画质字段是空的，徽章只能靠媒体流缓存（进程内内存），
-                    // 进程重建后缓存是空的 → 徽章只剩 TMDB。后台非阻塞补一次详情把缓存填上。
-                    vm.ensureEmbyMediaInfoBackground(m.sourceId, m.remoteId, m.seriesKey)
-                }
+                if (src?.kind == SourceKind.TVBOX) {
+                    var sources = vm.playSourcesOf(m.seriesKey)
+                    playSources = sources
+                    if (sources.isNotEmpty() && selectedPlaySource !in sources) selectedPlaySource = sources.first()
+                    eps = if (sources.isNotEmpty()) vm.episodesBySource(m.seriesKey, selectedPlaySource)
+                    else vm.episodesOf(m.seriesKey)
+                    episodes = eps
+                    selectedSeason = eps.firstOrNull()?.season ?: 1
 
-                // TVBox：读取全部播放源（云盘/线路），默认选第一条；按选中源过滤分集。
-                // Emby 没有多源概念，playSources 为空、走原来的全量分集。
-                val sources = vm.playSourcesOf(m.seriesKey)
-                playSources = sources
-                if (sources.isNotEmpty()) {
-                    if (selectedPlaySource !in sources) selectedPlaySource = sources.first()
-                    eps = vm.episodesBySource(m.seriesKey, selectedPlaySource)
-                } else {
-                    eps = vm.episodesOf(m.seriesKey)
+                    vm.loadTvBoxDetail(m.sourceId, m.remoteId)
+                    media = vm.mediaOf(id) ?: m
+                    sources = vm.playSourcesOf(m.seriesKey)
+                    playSources = sources
+                    if (sources.isNotEmpty() && selectedPlaySource !in sources) selectedPlaySource = sources.first()
+                    eps = if (sources.isNotEmpty()) vm.episodesBySource(m.seriesKey, selectedPlaySource)
+                    else vm.episodesOf(m.seriesKey)
+                } else if (src?.kind == SourceKind.EMBY) {
+                    if (eps.isEmpty()) {
+                        if (vm.loadEmbyEpisodes(m.sourceId, m.remoteId)) media = vm.mediaOf(id) ?: m
+                    } else {
+                        vm.ensureEmbyMediaInfoBackground(m.sourceId, m.remoteId, m.seriesKey)
+                    }
                 }
 
                 episodes = eps
                 selectedSeason = eps.firstOrNull()?.season ?: 1
             } else if (isEmbySource) {
-                // 电影没有分集拉取这条路，媒体流缓存不会被顺带写上 → 音轨徽章永远缺一块。
-                // 非阻塞补拉一次单条媒体流信息写进缓存（与电视端同口径）。
                 vm.ensureEmbyItemInfoBackground(m.sourceId, m.remoteId)
-            }
-
-            // 演员/更新备注是这次才入库的列，老条目里是空串（而分集守卫又让它们没机会重拉）。
-            // 补一次「只写壳」的详情请求：不删不插分集，播放进度与选集列表都不受影响。
-            val shell = vm.mediaOf(id) ?: m
-            if (shell.kind == MediaKind.SERIES && shell.actors.isBlank() && shell.remarks.isBlank() &&
-                vm.sourceOf(shell.sourceId)?.kind == SourceKind.TVBOX &&
-                vm.refreshTvBoxMeta(shell.sourceId, shell.remoteId)
-            ) {
-                media = vm.mediaOf(id) ?: shell
             }
         }
         loading = false

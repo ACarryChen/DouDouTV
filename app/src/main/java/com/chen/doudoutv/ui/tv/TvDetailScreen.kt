@@ -1241,6 +1241,16 @@ private suspend fun tvDetailLoadChain(vm: LibraryViewModel, mediaId: Long, s: Tv
             s.media.value = m
             val src = vm.sourceOf(m.sourceId)
             s.isEmbySource.value = src?.kind == SourceKind.EMBY
+            if (src?.kind == SourceKind.TVBOX && m.kind == MediaKind.SERIES) {
+                val cachedSources = runCatching { vm.playSourcesOf(m.seriesKey) }.getOrDefault(emptyList())
+                s.playSources.value = cachedSources
+                val cachedSource = s.selectedPlaySource.value.takeIf { it in cachedSources } ?: cachedSources.firstOrNull().orEmpty()
+                if (cachedSource.isNotBlank()) s.selectedPlaySource.value = cachedSource
+                s.episodes.value = runCatching {
+                    if (cachedSource.isNotBlank()) vm.episodesBySource(m.seriesKey, cachedSource)
+                    else vm.episodesOf(m.seriesKey)
+                }.getOrDefault(emptyList())
+            }
             if (src?.kind == SourceKind.EMBY) {
                 s.scraped.value = runCatching { vm.embyDetailOf(m.sourceId, m.remoteId) }.getOrNull()
                 // 与 TVBox 同口径：库里已有分集就不重拉。返回详情页时系统常把后台 Activity
@@ -1257,27 +1267,12 @@ private suspend fun tvDetailLoadChain(vm: LibraryViewModel, mediaId: Long, s: Tv
                     // 否则主演下方的信息面板永远取不到缓存、不显示
                     vm.ensureEmbyItemInfoBackground(m.sourceId, m.remoteId)
                 }
-            } else if (src?.kind == SourceKind.TVBOX && m.kind == MediaKind.SERIES &&
-                vm.episodesOf(m.seriesKey).isEmpty()
-            ) {
-                // 与手机端同一口径：只在库里还没有分集时才拉详情。loadTvBoxDetail 会把该剧
-                // 分集全删重插（新行、新 id），无条件调用会顺手清掉「继续观看」的进度，
-                // 并让主按钮正要播的那条分集行失效。
+            } else if (src?.kind == SourceKind.TVBOX && m.kind == MediaKind.SERIES) {
+                // 每次进入都请求最新详情；上面已先展示缓存，网络失败时旧分集仍可用。
                 runCatching { vm.loadTvBoxDetail(m.sourceId, m.remoteId) }
             }
             val latest = vm.mediaOf(id) ?: m
             s.media.value = latest
-
-            // 演员/更新备注是这次才入库的字段：老条目里是空串，而上面的分集守卫又让它们
-            // 没机会重拉详情。这里补一次「只写壳」的详情请求——不动分集行，
-            // 「继续观看」进度与正在展示的选集都不受影响；每个 remoteId 一个进程只试一次。
-            if (src?.kind == SourceKind.TVBOX && latest.kind == MediaKind.SERIES &&
-                latest.actors.isBlank()
-            ) {
-                if (vm.refreshTvBoxMeta(m.sourceId, latest.remoteId)) {
-                    s.media.value = vm.mediaOf(id) ?: latest
-                }
-            }
 
             // TVBox 多播放源：读取全部云盘/线路，默认选第一条，按选中源过滤分集；
             // Emby 无源概念，playSources 为空时走全量分集。

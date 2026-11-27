@@ -1322,7 +1322,7 @@ class TvPlayerActivity : ComponentActivity() {
 
         // 进度层 3 秒自动隐藏（工具栏另有一条 10 秒计时，见下）
         LaunchedEffect(tick, toolbarOpen, panelTab, isPlaying) {
-            if (!toolbarOpen && overlayVisible && isPlaying && seekHint == null) {
+            if (!toolbarOpen && overlayVisible && isPlaying) {
                 delay(3_000L)
                 overlayVisible = false
             }

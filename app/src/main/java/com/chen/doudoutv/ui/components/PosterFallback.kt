@@ -106,25 +106,25 @@ fun PosterFallback(
  * 弱盒子上白白吃帧；代价是加载中会先露一会儿卡片底色，跟改动前一样。
  * 只在失败时换兜底，也顺带省掉了空 URL 那次注定失败的图片请求。
  *
- * [fallbackModel]：主图加载失败后先换这颗再试一次，仍失败（或它为空）才画 [fallback]。
- * 给「优先高清外链、失败回落到源站本地图」这类两级图床用 —— 没有这一级，
- * 高清外链连不通时整屏卡片直接掉进渐变占位，源站本来能加载的图反而没人试。
+ * [fallbackModel]：主图失败后的第一顺位替补；[fallbackModels] 可继续按顺序补到源站竖版。
+ * 每一级都真正请求成功才留下，全部失败或为空才画 [fallback]。
  */
 @Composable
 fun PosterArt(
     model: String,
     contentDescription: String?,
     fallbackModel: String? = null,
+    fallbackModels: List<String> = emptyList(),
     fallback: @Composable () -> Unit
 ) {
-    var primaryFailed by remember(model) { mutableStateOf(false) }
-    val active = when {
-        !primaryFailed -> model
-        !fallbackModel.isNullOrBlank() -> fallbackModel
-        else -> ""
+    val models = remember(model, fallbackModel, fallbackModels) {
+        (listOf(model, fallbackModel.orEmpty()) + fallbackModels)
+            .filter { it.isNotBlank() }
+            .distinct()
     }
-    var activeFailed by remember(active) { mutableStateOf(false) }
-    if (active.isBlank() || activeFailed) {
+    var failedModels by remember(model, fallbackModel, fallbackModels) { mutableStateOf(emptySet<String>()) }
+    val active = models.firstOrNull { it !in failedModels }.orEmpty()
+    if (active.isBlank()) {
         fallback()
         return
     }
@@ -148,7 +148,7 @@ fun PosterArt(
                     "load failed url=${active.redactedImageUrl()} " +
                         "type=${error.javaClass.simpleName} msg=${error.message?.redactedImageUrl()}"
                 )
-                if (!primaryFailed) primaryFailed = true else activeFailed = true
+                failedModels = failedModels + active
             }
         }
     )

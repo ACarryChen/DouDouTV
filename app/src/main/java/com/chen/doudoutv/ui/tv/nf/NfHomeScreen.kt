@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.chen.doudoutv.data.model.MediaEntity
+import com.chen.doudoutv.data.model.MediaKind
 import com.chen.doudoutv.ui.LibraryViewModel
 import com.chen.doudoutv.ui.ReturnSpot
 import com.chen.doudoutv.ui.StandTarget
@@ -71,10 +72,10 @@ private val NfHomeHeroIndex = mutableIntStateOf(0)
  *
  * 挂在页面级 `remember` 上时每次切 tab 都归零，回首页就要重查 5 条刮削表；
  * 更糟的是查之前先 clear，hero 会先回落源站小图、再换成刮削横板 —— 肉眼就是「换了一次图」。
- * 记在这里之后：查过的不再查，切回来直接就是最终那张。
+ * 记在这里之后：取过结果的不再重取，切回来直接就是最终那张。
  *
- * 空串 = 「查过，没有可用的刮削横板」，和「还没查」区分开，否则没有横板的条目每次都要重查。
- * 刷新轮次变了才整份作废（切来源 / 切线路 / 点刷新都会自增），刮削表更新后能重新查到。
+ * 空串 = 「缓存或刮削都没有可用的横板」，和「还没处理」区分开，避免同一部反复请求。
+ * 刷新轮次变了才整份作废（切来源 / 切线路 / 点刷新都会自增），之后允许重新刮削。
  */
 private object NfHeroBackdropCache {
     val urls = mutableStateMapOf<Long, String>()
@@ -89,7 +90,7 @@ private object NfHeroBackdropCache {
 }
 
 /**
- * 「继续观看」卡的刮削海报覆盖表（mediaId -> 刮削横板，没有横板取竖板）。
+ * 「继续观看」卡的刮削海报覆盖表（mediaId -> 刮削横板，没有横板记空串）。
  * 口径与 [NfHeroBackdropCache] 一致：空串 = 查过没有，不再重查；刷新轮次变了整份作废。
  */
 private object NfContinueArtCache {
@@ -136,20 +137,6 @@ fun NfHomeScreen(
     val heroItems = remember(filteredLibrary, vm.siteHomeItems) {
         nfHeroCandidates(filteredLibrary, vm.siteHomeItems)
     }
-    // 刮削横板海报覆盖：Emby 行里的 backdropUrl 可能只是源站的小图，
-    // TMDB 刮削来的真·横板存在 scraped_meta 表里；首页 hero 要优先用刮削那份。
-    val heroBackdropOverrides = NfHeroBackdropCache.urls
-    LaunchedEffect(heroItems, vm.homeRefreshEpoch) {
-        NfHeroBackdropCache.rollTo(vm.homeRefreshEpoch)
-        val missing = heroItems.filter { !heroBackdropOverrides.containsKey(it.id) }
-        if (missing.isEmpty()) return@LaunchedEffect
-        missing.map { item ->
-            async(Dispatchers.IO) {
-                val bd = vm.tmdbCached(item.title, item.year, item.kind, item.genres)?.backdropUrl
-                item.id to if (!bd.isNullOrBlank() && bd != item.backdropUrl) bd else ""
-            }
-        }.awaitAll().forEach { (id, url) -> heroBackdropOverrides[id] = url }
-    }
     // 继续观看：只列当前首页来源那一份记录 —— 顶栏已经跟着来源换了，这里再把别的来源铺进来就是重复信息。
     // TVBox 一份配置（它下面所有线路/站点）算同一个来源，各线路的追看记录汇在这一行；
     // Emby 一台服务器算一个来源，所以过滤键是来源 id，不是来源名。
@@ -166,7 +153,8 @@ fun NfHomeScreen(
     val continueTotalCount = continueBySource.sumOf { it.second.size }
 
     // 继续观看卡刮削海报：media 行的图常常是源站小缩略图（刮削回填只补空），
-    // 卡片优先展示 scraped_meta 表里那份高清海报。只读表、不联网，查过没有记空串。
+    // 有高清横板时优先展示 scraped_meta 表里的 backdrop；只有竖版海报则继续用源站缩略图。
+    // 只读表、不联网，查过没有横板也记空串。
     val continueArtOverrides = NfContinueArtCache.urls
     LaunchedEffect(continueBySource, vm.homeRefreshEpoch) {
         NfContinueArtCache.rollTo(vm.homeRefreshEpoch)
@@ -176,9 +164,11 @@ fun NfHomeScreen(
         if (missing.isEmpty()) return@LaunchedEffect
         missing.map { item ->
             async(Dispatchers.IO) {
-                val m = vm.tmdbCached(item.title, item.year, item.kind, item.genres)
-                val art = m?.backdropUrl.orEmpty().ifBlank { m?.posterUrl.orEmpty() }
-                item.id to art
+                // 分集行存的是文件名和 EPISODE；刮削表按剧集壳的片名和 SERIES 存。
+                val title = item.parentTitle.ifBlank { item.title }
+                val kind = if (item.kind == MediaKind.EPISODE) MediaKind.SERIES else item.kind
+                val m = vm.tmdbCached(title, item.year, kind, item.genres)
+                item.id to m?.backdropUrl.orEmpty()
             }
         }.awaitAll().forEach { (id, url) -> continueArtOverrides[id] = url }
     }
@@ -186,6 +176,19 @@ fun NfHomeScreen(
     var heroIndex by remember { NfHomeHeroIndex }
     val heroProgress = remember { mutableFloatStateOf(0f) }
     val hero = heroItems.getOrNull(heroIndex.coerceIn(0, (heroItems.size - 1).coerceAtLeast(0)))
+    // 当前项先取缓存/刮削结果并立即回填，随后按轮播顺序处理后面四项。
+    // tmdbScrape 自己先查 scraped_meta，未命中才联网；串行处理避免五部同时撞 TMDB 限流。
+    val heroBackdropOverrides = NfHeroBackdropCache.urls
+    LaunchedEffect(heroItems, vm.homeRefreshEpoch) {
+        NfHeroBackdropCache.rollTo(vm.homeRefreshEpoch)
+        if (heroItems.isEmpty()) return@LaunchedEffect
+        val start = heroItems.indexOfFirst { it.id == hero?.id }.coerceAtLeast(0)
+        val priority = List(minOf(heroItems.size, 5)) { offset -> heroItems[(start + offset) % heroItems.size] }
+        for (item in priority) {
+            if (heroBackdropOverrides.containsKey(item.id)) continue
+            heroBackdropOverrides[item.id] = tmdbHeroBackdrop(vm, item)
+        }
+    }
     // 底图 URL：有刮削横板优先用刮削的，否则源站给的 backdrop，再否则 poster
     val heroBackdropUrl = hero?.let { (heroBackdropOverrides[it.id]?.takeIf { u -> u.isNotBlank() } ?: it.backdropUrl).ifBlank { it.posterUrl } }.orEmpty()
     // 底图下缘取样色：渐隐遮罩和下面的收色带共用一个值，见 [TvHero] 的同名变量
@@ -458,6 +461,11 @@ fun NfHomeScreen(
         )
     }
 }
+
+private suspend fun tmdbHeroBackdrop(vm: LibraryViewModel, item: MediaEntity): String =
+    vm.tmdbScrape(item.title, item.year, item.kind, genres = item.genres)?.backdropUrl
+        ?.takeIf { it.isNotBlank() && it != item.backdropUrl }
+        .orEmpty()
 
 /** 轮播候选：线路首页内容优先，回落到本地库里带横图/竖图的条目 */
 private fun nfHeroCandidates(library: List<MediaEntity>, siteHomeItems: List<MediaEntity>): List<MediaEntity> {

@@ -226,9 +226,8 @@ interface MediaDao {
     @Query("DELETE FROM media WHERE sourceId = :sourceId")
     suspend fun deleteBySource(sourceId: Long)
 
-    /** 清空某剧的全部分集（TVBox 详情重入时去重用，不删剧集壳） */
-    @Query("DELETE FROM media WHERE seriesKey = :seriesKey AND kind = 'EPISODE'")
-    suspend fun deleteEpisodesBySeriesKey(seriesKey: String)
+    @Query("DELETE FROM media WHERE id IN (:ids)")
+    suspend fun deleteEpisodes(ids: List<Long>)
 
     /** 清理旧版本遗留的 Emby 剧集壳（remoteId 未带 sourceId 的那批） */
     @Query(

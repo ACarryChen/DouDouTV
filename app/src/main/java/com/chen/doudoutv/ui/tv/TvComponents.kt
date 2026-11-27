@@ -398,6 +398,7 @@ fun TvPillButton(
      * 「下一页 ›」这类箭头在右边，「上一页 ‹」在左边，两种方向不能共用一个位置参数。
      */
     trailingIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    hero: Boolean = false,
     onClick: () -> Unit
 ) {
     // 焦点态统一由 interactionSource 驱动：clickable 与 focusable 共用同一个 source。
@@ -409,35 +410,39 @@ fun TvPillButton(
     val brandSoft = AppColors.BrandSoft
     // 恒暗页（TV 详情页）：玻璃档翻成白透明、次档文字钉白，浅色模式下不能翻成黑玻璃/深字
     val onDark = LocalTvPageDark.current
+    val shape = if (hero) Radius.Pill else Radius.Md
 
     Box(
         modifier
             .then(
                 // 只有实底档发光：一屏多颗光晕会互相干扰，反而显脏
-                if (primary) {
+                if (primary && !hero) {
                     Modifier.shadow(
                         ButtonMaterial.PrimaryGlow,
-                        Radius.Md,
+                        shape,
                         clip = false,
                         ambientColor = brand.copy(alpha = 0.35f),
                         spotColor = brand.copy(alpha = 0.45f)
                     )
                 } else Modifier
             )
-            .clip(Radius.Md)
+            .clip(shape)
             .background(
-                Brush.verticalGradient(
-                    if (primary) ButtonMaterial.primaryStops(brand, brandSoft)
-                    else if (onDark) pageGlassStops() else ButtonMaterial.glassStops()
-                )
+                when {
+                    primary && hero -> SolidColor(brand)
+                    primary -> Brush.verticalGradient(ButtonMaterial.primaryStops(brand, brandSoft))
+                    onDark -> Brush.verticalGradient(pageGlassStops())
+                    else -> Brush.verticalGradient(ButtonMaterial.glassStops())
+                }
             )
-            .tvFocusRing(focused)
+            .tvFocusRing(focused, if (hero) 100.dp else 12.dp)
             .then(
                 when {
                     focused -> Modifier
-                    primary -> Modifier.border(1.dp, ButtonMaterial.highlightEdge, Radius.Md)
+                    primary && hero -> Modifier.border(1.dp, brandSoft.copy(alpha = 0.65f), shape)
+                    primary -> Modifier.border(1.dp, ButtonMaterial.highlightEdge, shape)
                     else -> Modifier.border(
-                        1.dp, if (onDark) pageGlassEdge else ButtonMaterial.glassEdge, Radius.Md
+                        1.dp, if (onDark) pageGlassEdge else ButtonMaterial.glassEdge, shape
                     )
                 }
             )

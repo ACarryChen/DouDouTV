@@ -89,6 +89,7 @@ import com.chen.doudoutv.ui.components.GradientBake
 import com.chen.doudoutv.ui.components.argbWithAlpha
 import com.chen.doudoutv.ui.components.continueTitle
 import com.chen.doudoutv.ui.components.episodeLabel
+import com.chen.doudoutv.ui.components.PosterArt
 import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.LocalTvPageDark
 import com.chen.doudoutv.ui.theme.Motion
@@ -209,9 +210,7 @@ internal fun TvHero(
      */
     ambient: Color,
     /**
-     * 底图 URL 覆盖：刮削横板海报优先。
-     * Emby 行里的 backdropUrl 是源站直接给的（可能只是一张小竖板），
-     * TMDB 刮削来的真·横板存在 scraped_meta 表，展示层要用那一份。
+     * 底图 URL 覆盖：刮削横板海报优先；加载失败后依次回退源站 backdrop 和 poster。
      */
     backdropUrlOverride: String? = null,
     titleContent: (@Composable (MediaEntity) -> Unit)? = null
@@ -259,7 +258,7 @@ internal fun TvHero(
     // Hero 整块压在底图上，等同恒暗面：玻璃按钮、元信息行按暗页口径取色，
     // 浅色模式下不能翻成黑玻璃/深字压在画面上。
     CompositionLocalProvider(LocalTvPageDark provides true) {
-        Box(
+        BoxWithConstraints(
             Modifier
                 .fillMaxWidth()
                 .height(tvHeroHeight())
@@ -284,18 +283,23 @@ internal fun TvHero(
                         }
                 )
             }
-            AsyncImage(
-                model = currentUrl.value,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
+            Box(
+                Modifier
                     .fillMaxSize()
                     .graphicsLayer {
                         alpha = backdropAlpha.value
                         scaleX = zoom.value
                         scaleY = zoom.value
                     }
-            )
+            ) {
+                PosterArt(
+                    model = backdropUrlOverride.orEmpty(),
+                    contentDescription = null,
+                    fallbackModel = item.backdropUrl,
+                    fallbackModels = listOf(item.posterUrl),
+                    fallback = {}
+                )
+            }
         }
 
         // 渐变遮罩：横向压暗 + 纵向着陆色渐隐，两层烘成一张图一次画完（见 [HeroOverlayBake]）。
@@ -324,6 +328,17 @@ internal fun TvHero(
                     val landing = heroLandingColor(blended())
                     val argb = landing.toArgb()
                     val overlay = overlayBake.image(w, h, landing) { cv ->
+                        cv.drawRect(
+                            0f, 0f, w, h,
+                            Paint().apply {
+                                shader = LinearGradient(
+                                    0f, 0f, 0f, h * 0.24f,
+                                    intArrayOf(0x73000000, 0x00000000),
+                                    floatArrayOf(0f, 1f),
+                                    Shader.TileMode.CLAMP
+                                )
+                            }
+                        )
                         cv.drawRect(
                             0f, 0f, w, h,
                             Paint().apply {
@@ -401,6 +416,18 @@ internal fun TvHero(
                     }
                     Spacer(Modifier.height(14.dp))
                     TvMetaRow(current)
+                    val synopsis = remember(current.overview) { current.overview.trim().replace(Regex("\\s+"), " ") }
+                    if (synopsis.isNotBlank()) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            synopsis,
+                            color = Color.White.copy(alpha = 0.72f),
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = this@BoxWithConstraints.maxWidth * 0.5f)
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(18.dp))
@@ -425,6 +452,7 @@ internal fun TvHero(
                     modifier = heroUpKey.focusRequester(playFocusRequester),
                     primary = true,
                     size = TvButtonSize.Lg,
+                    hero = true,
                     icon = Icons.Filled.PlayArrow,
                     onClick = onPlay
                 )
@@ -433,6 +461,7 @@ internal fun TvHero(
                     modifier = heroUpKey,
                     primary = false,
                     size = TvButtonSize.Lg,
+                    hero = true,
                     icon = Icons.Filled.Info,
                     onClick = onDetail
                 )

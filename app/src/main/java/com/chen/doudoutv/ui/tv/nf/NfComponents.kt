@@ -564,7 +564,8 @@ private fun NfScopeChip(
         when {
             // 聚焦落在品牌实底上：白字两种模式都成立；浅色下 45% 透明会把品牌色冲成粉底、白字读不出
             focused -> if (AppColors.lightOn()) AppColors.Brand else AppColors.Brand.copy(alpha = 0.45f)
-            else -> if (AppColors.lightOn()) Color.Black.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.05f)
+            else -> if (onImage || !AppColors.lightOn()) Color.White.copy(alpha = 0.08f)
+            else Color.Black.copy(alpha = 0.05f)
         },
         tween(Motion.BASE, easing = Motion.Ease), label = "scopeBg"
     )
@@ -730,7 +731,6 @@ fun NfNavBar(
         ) {
             Text(
                 "DouDouTV",
-                // 浅色模式压图时钉白：品牌深字压在 Hero 画面上读不出来；暗色不动
                 color = if (onImage && AppColors.lightOn()) Color.White else AppColors.Focus,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
@@ -955,7 +955,7 @@ private fun NfPosterBody(
  * 继续观看横版卡：16:9，图按「横版截取」填满 —— PosterArt 内部就是 ContentScale.Crop，
  * 竖版海报进来取中间一条带，横版 backdrop 正好铺满。底部压渐变放片名、集数和进度。
  *
- * @param scrapedArt 刮削来的海报（TMDB 横板优先，其次竖板）。media 行上的 poster/backdrop
+ * @param scrapedArt 仅接受刮削来的横版海报（TMDB 横板覆盖，无横板则回退源站竖板）。media 行上的 poster/backdrop
  *        常常只是源站给的小缩略图（刮削回填是「只补空」，源站有图时 TMDB 那份进不了 media 行），
  *        卡片要优先展示刮削那份，才不是一屏糊图。
  */
@@ -1043,7 +1043,7 @@ fun NfContinueCard(
         Box(
             Modifier
                 .fillMaxSize()
-                .background(Brush.verticalGradient(0.42f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.92f)))
+                .background(Brush.verticalGradient(0.36f to Color.Transparent, 0.66f to Color.Black.copy(alpha = 0.28f), 1f to Color.Black.copy(alpha = 0.94f)))
         )
         Column(Modifier.align(Alignment.BottomStart).padding(12.dp).fillMaxWidth()) {
             // 文字压在图上的黑渐变里，两种颜色模式都恒白

@@ -3,6 +3,7 @@ package com.chen.doudoutv.data
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
+import androidx.room.withTransaction
 import com.chen.doudoutv.DouDouTvApp
 import com.chen.doudoutv.data.db.AppDatabase
 import com.chen.doudoutv.data.db.HotTitleEntity
@@ -35,6 +36,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.UUID
 
 /**
  * 媒体库仓储。
@@ -69,7 +71,7 @@ class MediaRepository(private val context: Context) {
     /**
      * 「继续观看」：记录行常常是分集（title 是播放源的分集名），
      * 卡片要显示用户记得住的剧名，所以按 seriesKey 一次批量回查壳行补 [MediaEntity.parentTitle]，
-     * 顺带用壳行的海报/背景图补空（分集行这两个字段经常是空的）。
+     * 顺带补空壳行的海报、背景图、年份和类型，供首页按同一份刮削结果取图。
      */
     fun observeContinueWatching(): Flow<List<MediaEntity>> =
         mediaDao.observeContinueWatching().map { rows ->
@@ -82,7 +84,9 @@ class MediaRepository(private val context: Context) {
                 val shell = if (row.kind == MediaKind.EPISODE) shells[row.seriesKey] else null
                 if (shell == null) row else row.copy(
                     posterUrl = row.posterUrl.ifBlank { shell.posterUrl },
-                    backdropUrl = row.backdropUrl.ifBlank { shell.backdropUrl }
+                    backdropUrl = row.backdropUrl.ifBlank { shell.backdropUrl },
+                    year = row.year.takeIf { it > 0 } ?: shell.year,
+                    genres = row.genres.ifBlank { shell.genres }
                 ).also { it.parentTitle = shell.title }
             }
         }
@@ -769,10 +773,14 @@ class MediaRepository(private val context: Context) {
     suspend fun scrapedMetaOf(title: String, year: Int, kind: String, genres: String = ""): TmdbClient.ScrapeResult? =
         withContext(Dispatchers.IO) {
             val query = ScrapeTitle.forSearch(title)
+            val resolvedKind = scrapeKindOf(kind, title, genres)
             val want = ScrapeCategory.ofSource(genres)
             val meta = storedMeta(
-                TmdbCache.keyOf(query, year, kind),
-                listOf(TmdbCache.titleKeyOf(query, kind)),
+                TmdbCache.keyOf(query, year, resolvedKind),
+                listOf(
+                    TmdbCache.titleKeyOf(query, resolvedKind),
+                    TmdbCache.titleKeyOf(query, altKind(resolvedKind))
+                ),
                 want
             )
             meta?.toScrapeResult()
@@ -1659,10 +1667,50 @@ class MediaRepository(private val context: Context) {
         Pair(list, list.size)
     }
 
-    /**
-     * 拉取 TVBox 详情并入库分集。
-     * 由详情页触发，返回值供 UI 立即展示线路列表。
-     */
+    private suspend fun syncTvBoxEpisodes(seriesKey: String, incoming: List<MediaEntity>) =
+        db.withTransaction {
+            val existing = mediaDao.episodes(seriesKey)
+            val used = HashSet<Long>()
+            val updates = ArrayList<MediaEntity>()
+            val additions = ArrayList<MediaEntity>()
+            incoming.forEach { item ->
+                val source = existing.filter { it.playSource == item.playSource && it.id !in used }
+                val match = source.firstOrNull { episodeKey(it.title) == episodeKey(item.title) }
+                    ?: source.firstOrNull { it.episode == item.episode }
+                if (match == null) {
+                    additions += item
+                } else {
+                    used += match.id
+                    updates += match.copy(
+                        uri = item.uri,
+                        title = item.title,
+                        season = item.season,
+                        episode = item.episode,
+                        overview = item.overview,
+                        posterUrl = item.posterUrl,
+                        backdropUrl = item.backdropUrl,
+                        playSource = item.playSource,
+                        pinyinInitials = item.pinyinInitials,
+                        sourceName = item.sourceName,
+                        videoResolution = item.videoResolution.ifBlank { match.videoResolution },
+                        hdrType = item.hdrType.ifBlank { match.hdrType },
+                        videoCodec = item.videoCodec.ifBlank { match.videoCodec },
+                        audioType = item.audioType.ifBlank { match.audioType }
+                    )
+                }
+            }
+            val removed = existing.map { it.id }.filter { it !in used }
+            if (removed.isNotEmpty()) mediaDao.deleteEpisodes(removed)
+            if (updates.isNotEmpty()) mediaDao.updateAll(updates)
+            if (additions.isNotEmpty()) mediaDao.insertAll(additions)
+        }
+
+    private fun episodeKey(title: String): String =
+        buildString(title.length) {
+            title.lowercase().forEach { if (!it.isWhitespace() && it != '.' && it != '_' && it != '-') append(it) }
+        }
+
+    /** 每次进入详情都拉取最新分集；按线路和集名合并，保留已有行的播放进度。 */
     suspend fun loadTvBoxDetail(
         source: SourceEntity,
         remoteId: String
@@ -1711,19 +1759,12 @@ class MediaRepository(private val context: Context) {
         // 详情页据此展示「云盘切换」选项，默认选第一条源。
         if (detail.playSources.isEmpty()) return@withContext emptyList()
 
-        // 清掉该剧之前入库的分集（避免旧源残留），再按最新详情全量写入。
-        // loadTvBoxDetail 只在分集为空时触发，这里通常删不到东西；仅为重入时去重。
-        mediaDao.deleteEpisodesBySeriesKey(seriesKey)
-
-        // 批量入库：原来每集走一次 saveMedia（查来源 + 查重复 + 单条写），
-        // 3 条源 × 40 集就是 360 次 DB 往返，电视盒子上详情页会明显卡顿。
         val incoming = detail.playSources.flatMapIndexed { sourceIndex, src ->
             src.episodes.mapIndexed { epIndex, ep ->
                 MediaEntity(
                     sourceId = source.id,
                     uri = ep.url,
-                    // remoteId 带上源下标，保证不同云盘的同一集不冲突
-                    remoteId = "$remoteId:$sourceIndex:$epIndex",
+                    remoteId = "$remoteId:refresh:$sourceIndex:$epIndex:${UUID.randomUUID()}",
                     seriesKey = seriesKey,
                     title = ep.name,
                     kind = MediaKind.EPISODE,
@@ -1738,53 +1779,10 @@ class MediaRepository(private val context: Context) {
                 )
             }
         }
-        // 上面已按 seriesKey 清空旧分集，这里不会有重复行，一次批量写入即可
-        if (incoming.isNotEmpty()) mediaDao.insertAll(incoming)
+        if (incoming.isNotEmpty()) syncTvBoxEpisodes(seriesKey, incoming)
 
         detail.playSources
     }
-
-    /** 演员/备注补齐只在一条 seriesKey 上试一次：源本来就不给这些字段时，重复请求白挨一次超时 */
-    private val metaTried = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-
-    /**
-     * 只补剧集壳的演职员与更新备注，不碰分集行。
-     *
-     * 为什么要单独一条路：actors/directors/remarks 是新加的列，老库里的 TVBox 条目全是空串，
-     * 而详情页的分集守卫（库里已有分集就不再拉详情）正好让它们没机会补。
-     * 直接复用 [loadTvBoxDetail] 会把分集全删重插，顺手清掉「继续观看」进度，所以这里只写壳。
-     *
-     * 返回 true 表示库里这条记录已经被更新，调用方重新读一次就能看到。
-     */
-    suspend fun refreshTvBoxMeta(source: SourceEntity, remoteId: String): Boolean =
-        withContext(Dispatchers.IO) {
-            if (source.kind != SourceKind.TVBOX) return@withContext false
-            if (metaTried.putIfAbsent(remoteId, true) != null) return@withContext false
-            val shell = mediaDao.byRemoteId(remoteId) ?: return@withContext false
-            if (shell.kind != MediaKind.SERIES) return@withContext false
-            val (siteKey, vodId) = parseTvBoxKey(source.id, remoteId)
-            val detail = runCatching {
-                TvBoxClient(source.location, context).detail(vodId, siteKey)
-            }.getOrNull() ?: return@withContext false
-            if (detail.actors.isBlank() && detail.directors.isBlank() && detail.remarks.isBlank()) {
-                return@withContext false
-            }
-            mediaDao.update(
-                shell.copy(
-                    actors = detail.actors.ifBlank { shell.actors },
-                    directors = detail.directors.ifBlank { shell.directors },
-                    remarks = detail.remarks.ifBlank { shell.remarks }
-                )
-            )
-            true
-        }
-
-    /** 供 ViewModel 调用：按 sourceId 找源后补元数据 */
-    suspend fun refreshTvBoxMeta(sourceId: Long, remoteId: String): Boolean =
-        withContext(Dispatchers.IO) {
-            val src = sourceDao.get(sourceId) ?: return@withContext false
-            refreshTvBoxMeta(src, remoteId)
-        }
 
     /** TVBox 条目唯一键：配置型源可能含多个站点，用 siteKey 区分 */
     private fun tvboxKey(sourceId: Long, siteKey: String, vodId: String): String =
