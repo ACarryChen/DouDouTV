@@ -824,7 +824,7 @@ private fun TvManageLineChip(
                     else -> AppColors.Surface
                 }
             )
-            .then(if (focused) Modifier.border(2.dp, AppColors.Focus, Radius.Md) else Modifier)
+            .then(if (focused) Modifier.border(2.dp, AppColors.FocusRing, Radius.Md) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },

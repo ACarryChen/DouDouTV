@@ -25,7 +25,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Movie
@@ -34,7 +33,6 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -61,7 +59,6 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -81,6 +78,7 @@ import com.chen.doudoutv.ui.tv.TvMenuRow
 import com.chen.doudoutv.ui.tv.TvPillButton
 import com.chen.doudoutv.ui.tv.TvPagePadding
 import com.chen.doudoutv.ui.tv.TvSourceMinCellWidth
+import com.chen.doudoutv.ui.tv.TvTextField
 import com.chen.doudoutv.ui.tv.tvGridColumns
 import com.chen.doudoutv.ui.tv.tvFocusRing
 
@@ -730,6 +728,7 @@ private fun TvSourceFormPanel(
     var location by remember { mutableStateOf(initial?.location ?: "") }
     var username by remember { mutableStateOf(initial?.username ?: "") }
     var password by remember { mutableStateOf(initial?.password ?: "") }
+    var inputEditing by remember { mutableStateOf(false) }
 
     // Dialog 焦点根容器 + 第一个输入框焦点
     val dialogRootFocus = remember { FocusRequester() }
@@ -750,8 +749,7 @@ private fun TvSourceFormPanel(
             .focusRequester(dialogRootFocus)
             .focusable()
             .onPreviewKeyEvent { e ->
-                // Back 键关闭 Dialog
-                if (e.type == KeyEventType.KeyDown && e.key == Key.Back) {
+                if (e.type == KeyEventType.KeyDown && e.key == Key.Back && !inputEditing) {
                     onDismiss()
                     true
                 } else false
@@ -827,6 +825,7 @@ private fun TvSourceFormPanel(
                             value = name,
                             focusRequester = nameFieldFocus,
                             placeholder = if (kind == SourceKind.EMBY) "例如：我的 NAS 影库" else "例如：主线路",
+                            onEditingChange = { inputEditing = it },
                             onValueChange = { name = it }
                         )
                     }
@@ -839,6 +838,7 @@ private fun TvSourceFormPanel(
                             value = location,
                             placeholder = if (kind == SourceKind.EMBY) "https://emby.example.com" else "https://example.com/tvbox.json",
                             keyboardType = KeyboardType.Uri,
+                            onEditingChange = { inputEditing = it },
                             onValueChange = { location = it }
                         )
                         Spacer(Modifier.height(6.dp))
@@ -866,6 +866,7 @@ private fun TvSourceFormPanel(
                                         required = true,
                                         value = username,
                                         placeholder = "admin",
+                                        onEditingChange = { inputEditing = it },
                                         onValueChange = { username = it }
                                     )
                                 }
@@ -876,6 +877,7 @@ private fun TvSourceFormPanel(
                                         value = password,
                                         placeholder = "••••••••",
                                         isPassword = true,
+                                        onEditingChange = { inputEditing = it },
                                         onValueChange = { password = it }
                                     )
                                 }
@@ -956,6 +958,7 @@ private fun TvFormField(
     isPassword: Boolean = false,
     keyboardType: KeyboardType = KeyboardType.Text,
     focusRequester: FocusRequester? = null,
+    onEditingChange: (Boolean) -> Unit = {},
     onValueChange: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -969,33 +972,18 @@ private fun TvFormField(
                 Box(Modifier.size(6.dp).background(AppColors.Danger, CircleShape))
             }
         }
-        OutlinedTextField(
+        TvTextField(
             value = value,
             onValueChange = onValueChange,
-            placeholder = {
-                Text(text = placeholder, color = TvText.Meta)
-            },
-            singleLine = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(60.dp)
-                .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier),
-            visualTransformation = if (isPassword) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
-            keyboardOptions = KeyboardOptions(
-                keyboardType = keyboardType,
-                imeAction = ImeAction.Next
-            ),
-            textStyle = MaterialTheme.typography.bodyLarge.copy(color = TvText.Title),
-            shape = Radius.Md,
-            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                unfocusedContainerColor = AppColors.Bg,
-                focusedContainerColor = AppColors.Bg,
-                unfocusedBorderColor = AppColors.SurfaceHi,
-                focusedBorderColor = AppColors.Brand,
-                cursorColor = AppColors.Brand,
-                focusedTextColor = TvText.Title,
-                unfocusedTextColor = TvText.Title
-            )
+            modifier = Modifier.fillMaxWidth(),
+            focusRequester = focusRequester,
+            placeholder = placeholder,
+            isPassword = isPassword,
+            keyboardType = keyboardType,
+            imeAction = ImeAction.Next,
+            onEditingChange = onEditingChange,
+            height = 60.dp,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = TvText.Title)
         )
     }
 }

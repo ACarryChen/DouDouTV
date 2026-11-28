@@ -102,8 +102,8 @@ fun Modifier.tvCardSurface(
         .clip(shape)
         .background(Brush.verticalGradient(TvCardMaterial.stops))
         .then(
-            // 焦点白环是 TV 的落点语言；浅色下白边落在亮底上读不出，翻成近黑
-            if (focused) Modifier.border(borderWidth, AppColors.Focus, shape)
+            // 焦点环跟随明暗模式：暗色反白，浅色用压暗的品牌色
+            if (focused) Modifier.border(borderWidth, AppColors.FocusRing, shape)
             else Modifier.border(borderWidth, TvCardMaterial.edge, shape)
         )
         .drawWithContent {

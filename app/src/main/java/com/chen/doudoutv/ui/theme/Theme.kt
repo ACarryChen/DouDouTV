@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalConfiguration
 
 import com.chen.doudoutv.core.Prefs
@@ -100,11 +101,12 @@ object AppColors {
     /** 细分割线（hairline）：浅反黑 6%，深反白 6%，全局统一避免魔法数字散落 */
     val Hairline: Color get() = if (lightOn()) Color.Black.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.06f)
 
-    /**
-     * 焦点态指示色：焦点环 / 焦点描边。TV 的焦点语言是「反白高亮」，
-     * 浅色模式下白环落在亮底上读不出来，翻成近黑。
-     */
+    /** 焦点前景：图标与文字，浅色近黑、暗色白。 */
     val Focus: Color get() = if (lightOn()) Color(0xFF1C1C1E) else Color.White
+
+    /** 焦点环：浅色用压暗的品牌色保证亮底对比，暗色保持反白。 */
+    val FocusRing: Color
+        get() = if (lightOn()) lerp(AppPalette.current.brand, Color.Black, 0.16f) else Focus
 
     /**
      * 详情页顶栏 scrim 的底色：要「和屏幕底色完全一致」，跟 [Bg] 同源。

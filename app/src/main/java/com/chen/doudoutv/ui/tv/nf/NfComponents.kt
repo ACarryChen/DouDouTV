@@ -104,8 +104,8 @@ import com.chen.doudoutv.data.model.SourceEntity
 import com.chen.doudoutv.data.model.SourceKind
 import com.chen.doudoutv.ui.ReturnSpot
 import com.chen.doudoutv.ui.StandTarget
-import com.chen.doudoutv.ui.PrecomposeWindow
 import com.chen.doudoutv.ui.cardStand
+import com.chen.doudoutv.ui.posterGridPrecompose
 import com.chen.doudoutv.ui.components.PosterArt
 import com.chen.doudoutv.ui.components.PosterFallback
 import com.chen.doudoutv.ui.components.continueTitle
@@ -852,14 +852,17 @@ fun NfPosterCard(
     // 焦点所在的那一项不许被 Lazy 回收，否则 1.9 会直接把焦点清空（见 tvKeepFocusedItemAlive）
     tvKeepFocusedItemAlive(focused)
     val liftMode = Prefs.tvCardMotion == Prefs.CardMotion.LIFT
-    val lift = animateFloatAsState(if (focused && liftMode) liftPx else 0f, tween(Motion.FAST, easing = Motion.Ease), label = "nfCardLift")
-    val artScale = animateFloatAsState(if (focused && !liftMode) ArtZoom else 1f, tween(Motion.FAST, easing = Motion.Ease), label = "nfCardArt")
+    val motion = animateFloatAsState(
+        if (focused) 1f else 0f,
+        tween(Motion.FAST, easing = Motion.Ease),
+        label = "nfCardMotion"
+    )
     val cardShape = remember { Radius.Md }
 
     Column(
         modifier
             .then(if (fillCell) Modifier.fillMaxWidth() else Modifier.width(width))
-            .zIndex(if (focused) 1f else 0f)
+            .then(if (focused) Modifier.zIndex(1f) else Modifier)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             // 位移必须挂在 clickable（= 焦点目标）的**内层**，不能挂外面：
             // graphicsLayer 的 translationY 会进 Compose 的焦点矩形（NodeCoordinator.rectInParent
@@ -867,23 +870,27 @@ fun NfPosterCard(
             // 同一行的邻卡立刻全变成「在它下面」的合法候选，↓ 被吃掉去横向跳格，
             // searchBeyondBounds 因此永不触发，Lazy 网格不再补组合下一行，列表卡死在屏幕底部。
             // 放大档没这毛病是因为 scale 挂在图片那一层、且绕中心涨，焦点矩形没动过。
-            .graphicsLayer { translationY = -lift.value }
+            // 只有上抬档需要这层；默认放大档不再为每张卡创建一层恒为零的合成层。
+            .then(
+                if (liftMode) Modifier.graphicsLayer { translationY = -motion.value * liftPx }
+                else Modifier
+            )
     ) {
         // 圆角和放大只作用在图片这一层。片名要是跟着一起放大，同一行的字号就齐不了，
         // 涨出来的高度还会往下压到下一行的片名上 —— 图外字幕这版排版要的就是文字层稳定。
         Box(
             Modifier
                 .fillMaxWidth()
-                .then(
-                    if (liftMode) Modifier else Modifier.graphicsLayer {
-                        scaleX = artScale.value
-                        scaleY = artScale.value
-                        // 首卡往右扩：绕中心放大把左缘往左推了半个增量，行首卡就比下面各行更靠左，
-                        // 用平移精确补回来（和经典版同一个做法）。
-                        if (anchorStart) translationX = (artScale.value - 1f) * size.width / 2f
-                    }
-                )
-                .clip(cardShape)
+                .graphicsLayer {
+                    val scale = if (liftMode) 1f else 1f + (ArtZoom - 1f) * motion.value
+                    scaleX = scale
+                    scaleY = scale
+                    // 首卡往右扩：绕中心放大把左缘往左推了半个增量，行首卡就比下面各行更靠左，
+                    // 用平移精确补回来（和经典版同一个做法）。
+                    if (anchorStart && !liftMode) translationX = (scale - 1f) * size.width / 2f
+                    shape = cardShape
+                    clip = true
+                }
                 .tvFocusRing(focused)
         ) {
             // 内容体单独一个组合函数、只收稳定原语参数：焦点态翻转会重组外壳（层级 / 位移都跟着变），
@@ -1264,8 +1271,18 @@ fun NfPosterGrid(
     // 记录要在建 gridState 之前读出来：数据还没补齐时 LazyGrid 会把位置 clamp 到末尾，
     // 并通过 gridState 的写回把原记录改小，之后就再也回不到离开时那一屏
     val saved = remember(pageKey) { ReturnSpot.scrollOf(pageKey) }
-    val gridState = state ?: ReturnSpot.gridState(pageKey, precompose = PrecomposeWindow.Tv)
+    val gridState = state ?: ReturnSpot.gridState(
+        pageKey,
+        precompose = posterGridPrecompose(columns)
+    )
     val firstId = items.firstOrNull()?.id
+    val focusRequesters = remember { mutableMapOf<Long, FocusRequester>() }
+    val scope = rememberCoroutineScope()
+    var verticalMoveJob by remember { mutableStateOf<Job?>(null) }
+    fun requesterAt(index: Int): FocusRequester? {
+        val item = items.getOrNull(index) ?: return null
+        return if (item.id == firstId) firstFocus else focusRequesters.getOrPut(item.id) { FocusRequester() }
+    }
     var scrollRestored by remember(pageKey) { mutableStateOf(false) }
     LaunchedEffect(pageKey, items.size) {
         if (!restoreScrollOnce || scrollRestored || items.isEmpty()) return@LaunchedEffect
@@ -1295,7 +1312,34 @@ fun NfPosterGrid(
         verticalArrangement = Arrangement.spacedBy(NfRowVerticalPadding)
     ) {
         gridItemsIndexed(items, key = { _, it -> "nf_grid_${it.id}" }, contentType = { _, _ -> "poster" }) { index, item ->
-            val ownFocus = remember(item.id) { FocusRequester() }
+            val ownFocus = focusRequesters.getOrPut(item.id) { FocusRequester() }
+            val cardFocus = if (item.id == firstId) firstFocus else ownFocus
+            // 上下固定走同列，避开 Lazy 网格跨行时的几何搜索偏差；目标未组合时先滚到该行再交焦。
+            val verticalMove = Modifier.onPreviewKeyEvent { event ->
+                val code = event.nativeKeyEvent.keyCode
+                if (event.type != KeyEventType.KeyDown ||
+                    (code != android.view.KeyEvent.KEYCODE_DPAD_DOWN &&
+                        code != android.view.KeyEvent.KEYCODE_DPAD_UP)
+                ) return@onPreviewKeyEvent false
+                if (verticalMoveJob?.isActive == true) return@onPreviewKeyEvent true
+                val down = code == android.view.KeyEvent.KEYCODE_DPAD_DOWN
+                val targetIndex = if (down) index + columns else index - columns
+                if (targetIndex !in items.indices) return@onPreviewKeyEvent false
+                val target = requesterAt(targetIndex) ?: return@onPreviewKeyEvent false
+                val direction = if (down) FocusDirection.Down else FocusDirection.Up
+                if (tvMoveFocus(target, direction = direction)) {
+                    verticalMoveJob = null
+                    true
+                } else {
+                    verticalMoveJob = scope.launch {
+                        gridState.animateScrollToItem(targetIndex)
+                        withFrameNanos { }
+                        tvMoveFocus(target, direction = direction)
+                        verticalMoveJob = null
+                    }
+                    true
+                }
+            }
             NfPosterCard(
                 item = item,
                 onClick = { onDetail(item.id) },
@@ -1303,6 +1347,7 @@ fun NfPosterGrid(
                 anchorStart = index % columns == 0,
                 // 首卡同时是本页的入口锚点，记账复用它的 requester，不挂第二个
                 modifier = Modifier
+                    .then(verticalMove)
                     .then(
                         if (index < columns)
                             Modifier.nfFocusRoute(up = upFocusRequester)
@@ -1314,7 +1359,7 @@ fun NfPosterGrid(
                             rowKey = "grid",
                             mediaId = item.id,
                             target = stand,
-                            requester = if (item.id == firstId) firstFocus else ownFocus
+                            requester = cardFocus
                         )
                     ),
                 // 已经刮过的挂 TMDB 官方图标 + 评分（左上角）

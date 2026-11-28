@@ -367,6 +367,59 @@ class MediaRepository(private val context: Context) {
             ?.takeIf { it > 0 }
     }
 
+    data class TvBoxCategoryRef(
+        val sourceId: Long,
+        val siteKey: String,
+        val typeId: String,
+        val typeName: String
+    )
+
+    data class TvBoxRoute(val mediaId: Long, val category: TvBoxCategoryRef? = null)
+
+    private val probedDetails = java.util.concurrent.ConcurrentHashMap<String, TvBoxClient.Vod>()
+
+    /** 按源站响应结构统一判断 TVBox 分类入口与详情，不依赖网盘名称。 */
+    suspend fun resolveTvBoxRoute(mediaId: Long): TvBoxRoute? = withContext(Dispatchers.IO) {
+        val resolvedId = if (mediaId < 0) {
+            materializeRemote(mediaId) ?: return@withContext null
+        } else {
+            mediaId
+        }
+        val media = mediaDao.get(resolvedId) ?: return@withContext null
+        if (!media.remoteId.startsWith("tvbox:")) return@withContext TvBoxRoute(resolvedId)
+
+        val source = sourceDao.get(media.sourceId) ?: return@withContext TvBoxRoute(resolvedId)
+        if (source.kind != SourceKind.TVBOX) return@withContext TvBoxRoute(resolvedId)
+        val hit = remoteHits[mediaId] ?: browseHits[mediaId]
+        val (parsedSiteKey, parsedVodId) = parseTvBoxKey(source.id, media.remoteId)
+        val siteKey = hit?.vod?.siteKey ?: parsedSiteKey
+        val vodId = hit?.vod?.vodId ?: parsedVodId
+        if (vodId.isBlank()) return@withContext TvBoxRoute(resolvedId)
+        val category = TvBoxCategoryRef(
+            sourceId = source.id,
+            siteKey = siteKey,
+            typeId = vodId,
+            typeName = hit?.vod?.name ?: media.title
+        )
+
+        if (hit?.vod?.isFolder == true) return@withContext TvBoxRoute(resolvedId, category)
+        if (hit?.vod?.playSources?.isNotEmpty() == true) return@withContext TvBoxRoute(resolvedId)
+        if (media.seriesKey.isNotBlank() && mediaDao.episodes(media.seriesKey).isNotEmpty()) {
+            return@withContext TvBoxRoute(resolvedId)
+        }
+
+        val client = TvBoxClient(source.location, context)
+        val detail = runCatching { client.detail(vodId, siteKey) }.getOrNull()
+        if (detail?.playSources?.isNotEmpty() == true) {
+            probedDetails[media.remoteId] = detail
+            return@withContext TvBoxRoute(resolvedId)
+        }
+        probedDetails.remove(media.remoteId)
+
+        val list = runCatching { client.categoryList(siteKey, vodId, 1) }.getOrNull()
+        if (!list.isNullOrEmpty()) TvBoxRoute(resolvedId, category) else TvBoxRoute(resolvedId)
+    }
+
     private data class RemoteHit(val source: SourceEntity, val vod: TvBoxClient.Vod)
 
     /** 远程临时结果缓存：负 id → 原始站点 + Vod，点进详情时据此落库 */
@@ -807,80 +860,123 @@ class MediaRepository(private val context: Context) {
         rawKind: String,
         mediaId: Long = 0L,
         genres: String = "",
-        bypassNegativeCache: Boolean = false
+        bypassNegativeCache: Boolean = false,
+        manual: Boolean = false,
+        categoryOverride: Int? = null
     ): TmdbClient.ScrapeResult? = withContext(Dispatchers.IO) {
         // 清洗放在这里，而不是 TmdbClient 里面：缓存键、表键和检索词必须用同一个串，
         // 否则「（臻彩）」和「[4K]」两种后缀会算成两条，换条线路重进就白刮一次。
         // 库里的 title、详情页展示、FormatProbe 读的文件名都不动，只有发 TMDB 的这个词被洗过。
         val query = ScrapeTitle.forSearch(title)
-        // 类型就地纠正：调用方给的 kind 不可信（TVBox 一律写死 SERIES，电影也标成剧集），
-        // 纠正之后「缓存键 / 查表键 / 实际检索」三处必须用同一个值 ——
-        // 用两个不同的 kind 算键，缓存和表就永远对不上，等于每次都白刮。
-        val kind = scrapeKindOf(rawKind, title, genres)
+        // 手动刮削完全尊重用户选择的类型；自动链路仍按分类名和片名特征纠正。
+        val kind = if (manual) rawKind else scrapeKindOf(rawKind, title, genres)
         val exactKey = TmdbCache.keyOf(query, year, kind)
         val titleKey = TmdbCache.titleKeyOf(query, kind)
-        // 另一个 kind 的同名键：TVBox 的壳写死 SERIES、Emby 电影是 MOVIE，
-        // 同一部片在两个来源下算出两条 titleKey。查表时两种都试，
-        // 否则一部片在 TVBox 刮过、到 Emby 又被当新的刮一遍。
         val titleKeys = listOf(titleKey, TmdbCache.titleKeyOf(query, altKind(kind)))
-        // 分类消歧：同名动画与真人剧（凡人修仙传）年份又常为 0，只靠片名+年份必然撞键。
-        // 写入键带上分类后缀，动画与真人各占一行，谁也不能覆盖谁；读取侧按兼容性过滤。
-        val want = ScrapeCategory.ofSource(genres)
+        val want = categoryOverride ?: ScrapeCategory.ofSource(genres)
         val fetchKey = "$exactKey#c$want"
 
-        // 第一步永远先查表。命中就不联网，也让「跨重启、跨来源、跨线路」三部同名片子只刮一次，
-        // 顺带让演职员、标语这些 media 行装不下的字段有了落点。
-        val stored = storedMeta(exactKey, titleKeys, want)
+        // 手动刮削绕过正负缓存和表命中，必须真正发一次网络请求。
+        val stored = if (manual) null else storedMeta(exactKey, titleKeys, want)
         val result = stored?.toScrapeResult() ?: run {
-            // 表里没有才轮到开关和凭据。用 resolve() 现算而不是读 ScrapeStrategy.engine 那份快照：
-            // 用户在设置页刚填完密钥、没重启退回来也该立刻能刮。
-            if (ScrapeStrategy.resolve() != ScrapeEngine.TMDB) return@withContext null
+            // 自动刮削遵守总开关；用户在手动表单里明确点击时，只要求已配置 TMDB 凭据。
+            if (!manual && ScrapeStrategy.resolve() != ScrapeEngine.TMDB) return@withContext null
             runCatching {
-                TmdbCache.getOrFetch(fetchKey, ignoreNegative = bypassNegativeCache) {
-                    TmdbClient(Prefs.tmdbApiKey, Prefs.tmdbReadToken).scrape(query, year, kind, want)
+                TmdbCache.getOrFetch(
+                    fetchKey,
+                    ignoreNegative = bypassNegativeCache || manual,
+                    forceRefresh = manual
+                ) {
+                    TmdbClient(Prefs.tmdbApiKey, Prefs.tmdbReadToken).scrape(
+                        query, year, kind, want, allowAltFallback = !manual
+                    )
                 }
             }.getOrNull() ?: return@withContext null
         }
 
-        // 网络刮回来的这份写进表；表里本来就有就不再重复落盘。
-        // 刮不到（result 来自负缓存或空结果）时不占表位，下次仍然有机会重刮。
-        if (stored == null) {
-            runCatching {
-                metaDao.upsert(
-                    ScrapedMetaEntity(
-                        scrapeKey = fetchKey,
-                        titleKey = titleKey,
-                        queryTitle = query,
-                        kind = kind,
-                        year = year,
-                        overview = result.overview,
-                        genres = result.genres,
-                        rating = result.rating,
-                        posterUrl = result.posterUrl,
-                        backdropUrl = result.backdropUrl,
-                        logoUrl = result.logoUrl,
-                        tagline = result.tagline,
-                        directorsJson = ScrapedMetaEntity.encodePeople(result.directors),
-                        castJson = ScrapedMetaEntity.encodePeople(result.actors),
-                        scrapedAt = System.currentTimeMillis()
+        val original = if (mediaId > 0L) mediaDao.get(mediaId) else null
+        val now = System.currentTimeMillis()
+        fun entity(
+            key: String,
+            itemTitleKey: String,
+            queryTitle: String,
+            itemKind: String,
+            itemYear: Int,
+            itemGenres: String = result.genres
+        ) = ScrapedMetaEntity(
+            scrapeKey = key,
+            titleKey = itemTitleKey,
+            queryTitle = queryTitle,
+            kind = itemKind,
+            year = itemYear,
+            overview = result.overview,
+            genres = itemGenres,
+            rating = result.rating,
+            posterUrl = result.posterUrl,
+            backdropUrl = result.backdropUrl,
+            logoUrl = result.logoUrl,
+            tagline = result.tagline,
+            directorsJson = ScrapedMetaEntity.encodePeople(result.directors),
+            castJson = ScrapedMetaEntity.encodePeople(result.actors),
+            scrapedAt = now
+        )
+
+        if (stored == null || manual) {
+            runCatching { metaDao.upsert(entity(fetchKey, titleKey, query, kind, year)) }
+        }
+
+        if (manual && original != null) {
+            val originalQuery = ScrapeTitle.forSearch(original.title)
+            val originalKind = scrapeKindOf(original.kind, original.title, original.genres)
+            val originalWant = ScrapeCategory.ofSource(original.genres)
+            val aliasKey = "${TmdbCache.keyOf(originalQuery, original.year, originalKind)}#c$originalWant"
+            if (aliasKey != fetchKey) {
+                // 类别被用户修正时，别名保留源分类，确保旧自动查询仍能接受这份结果。
+                val aliasGenres = if (
+                    originalWant != ScrapeCategory.UNKNOWN &&
+                    want != ScrapeCategory.UNKNOWN &&
+                    originalWant != want
+                ) original.genres else result.genres
+                runCatching {
+                    metaDao.upsert(
+                        entity(
+                            aliasKey,
+                            TmdbCache.titleKeyOf(originalQuery, originalKind),
+                            originalQuery,
+                            originalKind,
+                            original.year,
+                            aliasGenres
+                        )
                     )
-                )
+                }
             }
         }
 
-        // 回填数据库：只在有 mediaId 时才写，避免列表预刮时乱写
-        if (mediaId > 0L) {
+        if (original != null) {
             runCatching {
-                mediaDao.updateScrapedMeta(
-                    id = mediaId,
-                    posterUrl = result.posterUrl,
-                    backdropUrl = result.backdropUrl,
-                    logoUrl = result.logoUrl,
-                    overview = result.overview,
-                    genres = result.genres,
-                    rating = result.rating,
-                    scrapedAt = System.currentTimeMillis()
-                )
+                if (manual) {
+                    mediaDao.replaceScrapedMeta(
+                        id = original.id,
+                        posterUrl = result.posterUrl.ifBlank { original.posterUrl },
+                        backdropUrl = result.backdropUrl.ifBlank { original.backdropUrl },
+                        logoUrl = result.logoUrl.ifBlank { original.logoUrl },
+                        overview = result.overview.ifBlank { original.overview },
+                        genres = result.genres.ifBlank { original.genres },
+                        rating = result.rating.takeIf { it > 0 } ?: original.rating,
+                        scrapedAt = now
+                    )
+                } else {
+                    mediaDao.updateScrapedMeta(
+                        id = original.id,
+                        posterUrl = result.posterUrl,
+                        backdropUrl = result.backdropUrl,
+                        logoUrl = result.logoUrl,
+                        overview = result.overview,
+                        genres = result.genres,
+                        rating = result.rating,
+                        scrapedAt = now
+                    )
+                }
             }
         }
         result
@@ -1717,8 +1813,8 @@ class MediaRepository(private val context: Context) {
     ): List<TvBoxClient.PlaySource> = withContext(Dispatchers.IO) {
         val (siteKey, vodId) = parseTvBoxKey(source.id, remoteId)
         val client = TvBoxClient(source.location, context)
-        val detail = client.detail(vodId, siteKey) ?: run {
-            Log.e("MediaRepo", "loadTvBoxDetail：siteKey=$siteKey vodId=$vodId 详情拉取失败")
+        val detail = probedDetails.remove(remoteId) ?: client.detail(vodId, siteKey) ?: run {
+            Log.e("MediaRepo", "loadTvBoxDetail：siteKey=$siteKey 详情拉取失败")
             return@withContext emptyList()
         }
 
@@ -1790,8 +1886,13 @@ class MediaRepository(private val context: Context) {
 
     private fun parseTvBoxKey(sourceId: Long, remoteId: String): Pair<String, String> {
         val rest = remoteId.removePrefix("tvbox:$sourceId:")
-        val idx = rest.lastIndexOf(':')
-        return if (idx > 0) rest.substring(0, idx) to rest.substring(idx + 1) else "" to rest
+        val idx = rest.indexOf(':')
+        if (idx <= 0) return "" to rest
+        val key = rest.substring(0, idx)
+        val id = rest.substring(idx + 1)
+        // 空 siteKey 的旧记录可能直接以 URL/URI 作为 vodId，不能把协议名误当成站点 key。
+        if (id.startsWith("//") || key.equals("magnet", ignoreCase = true)) return "" to rest
+        return key to id
     }
 
     // ---------------- 进度 ----------------

@@ -103,12 +103,27 @@ object CatVodResultParser {
                 actors = o.optString("vod_actor").ifBlank { o.optString("vodActor") },
                 directors = o.optString("vod_director").ifBlank { o.optString("vodDirector") },
                 siteKey = siteKey,
-                siteName = siteName
+                siteName = siteName,
+                isFolder = parseIsFolder(o)
             )
             vod.playSources = parsePlaySources(o)
             out += vod
         }
         return out
+    }
+
+    private fun parseIsFolder(obj: JSONObject): Boolean {
+        val tag = obj.optString("vod_tag")
+        val flag = obj.opt("type_flag")
+        val folderFlag = when (flag) {
+            null, JSONObject.NULL -> false
+            is Number -> flag.toInt() == 1
+            is String -> flag.trim() == "1"
+            else -> false
+        }
+        return tag.equals("folder", ignoreCase = true) ||
+            (obj.has("cate") && !obj.isNull("cate")) ||
+            folderFlag
     }
 
     /**
@@ -177,7 +192,8 @@ object CatVodResultParser {
             actors = obj.optString("vod_actor").ifBlank { obj.optString("vodActor") },
             directors = obj.optString("vod_director").ifBlank { obj.optString("vodDirector") },
             siteKey = siteKey,
-            siteName = siteName
+            siteName = siteName,
+            isFolder = parseIsFolder(obj)
         )
 
         vod.playSources = parsePlaySources(obj)

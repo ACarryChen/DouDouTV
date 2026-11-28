@@ -115,13 +115,15 @@ class TmdbClient(
         title: String,
         year: Int,
         kind: String,
-        category: Int = ScrapeCategory.UNKNOWN
+        category: Int = ScrapeCategory.UNKNOWN,
+        allowAltFallback: Boolean = true
     ): ScrapeResult? =
         withContext(Dispatchers.IO) {
             if (!hasCredential || title.isBlank()) return@withContext null
 
             // 先按传进来的 kind 刮
             scrapeAs(title, year, kind, category)?.let { return@withContext it }
+            if (!allowAltFallback) return@withContext null
 
             // 兜底：换一种类型再搜一遍。
             // TVBox 的 vod 不区分电影和剧集，kind 一律写死 SERIES，于是所有电影

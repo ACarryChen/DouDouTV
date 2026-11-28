@@ -26,9 +26,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
@@ -48,7 +45,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -69,6 +65,7 @@ import com.chen.doudoutv.ui.gridState
 import com.chen.doudoutv.ui.listState
 import com.chen.doudoutv.ui.tv.TvPagePadding
 import com.chen.doudoutv.ui.tv.TvSearchUiState
+import com.chen.doudoutv.ui.tv.TvTextField
 import com.chen.doudoutv.ui.tv.tvClaimFocusOnEnter
 import com.chen.doudoutv.ui.tv.tvFocusRing
 import com.chen.doudoutv.ui.tv.tvMoveFocus
@@ -253,9 +250,8 @@ fun NfSearchScreen(
 
     val resumeTick = tvResumeTick()
     // tick 里刻意不放 showSuggestions：联想是「打出第一个字 200ms 后」冒出来的，
-    // 一旦进 tick，抢焦就会把焦点从 BasicTextField 挪到输入框外层那颗 focusable 节点上 ——
-    // 输入法面板跟着关闭，用户才打了一个字就得重新按 OK 弹框。
-    // 联想出现时焦点该留在原处：往下走由输入框自己的 ↓（nfFocusRoute）显式交点。
+    // 一旦进 tick，抢焦就会打断正在输入的编辑态；联想出现时焦点该留在原输入框内，
+    // 往下走由输入框浏览态的 ↓（nfFocusRoute）显式交点。
     // 从别的 tab 点「搜索」切过来：焦点留在标签上，不交给输入框（NfTabSwitch）。
     // 一次性消费：只有进页那一次落标签；tick 也不再挂 results.size —— 否则提交搜索、
     // 远程批次每追加一次结果就重放一遍抢焦，焦点被从输入行拽回导航条（clearFocus 先闪首页 tab）。
@@ -280,6 +276,7 @@ fun NfSearchScreen(
     // 返回键分层的依据：焦点此刻在不在「输入框 + 两颗按钮」这一行
     val jumpTo = rememberNfLayerJump()
     var fieldRowFocused by remember { mutableStateOf(false) }
+    var fieldEditing by remember { mutableStateOf(false) }
 
     NfScaffold(
         vm = vm,
@@ -297,7 +294,9 @@ fun NfSearchScreen(
                 .fillMaxSize()
                 // 返回键的层级：联想 / 结果 / 历史 → 输入框 → tab 栏（tab 栏那一级由 TvApp 根部接）
                 .nfBackKey {
-                    if (fieldRowFocused) jumpTo(chrome.tabOf(NfTab.Search)) else jumpTo(fieldFocus)
+                    if (fieldEditing) false
+                    else if (fieldRowFocused) jumpTo(chrome.tabOf(NfTab.Search))
+                    else jumpTo(fieldFocus)
                 }
         ) {
             Row(
@@ -313,6 +312,7 @@ fun NfSearchScreen(
                     modifier = Modifier.weight(1f),
                     upFocusRequester = chrome.tabOf(NfTab.Search),
                     downFocusRequester = belowField,
+                    onEditingChange = { fieldEditing = it },
                     onValueChange = {
                         state.keyword = it
                         // 改词就清掉上一次的结果，回到「输入 + 联想」状态
@@ -517,58 +517,44 @@ private fun NfSearchField(
     downFocusRequester: FocusRequester,
     modifier: Modifier = Modifier,
     onValueChange: (String) -> Unit,
+    onEditingChange: (Boolean) -> Unit,
     onSubmit: () -> Unit
 ) {
-    var focused by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) }
 
-    Box(
-        modifier
-            .height(56.dp)
+    TvTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier
             .zIndex(1f)
-            .clip(Radius.Md)
-            .background(if (focused) AppColors.SurfaceHi else AppColors.Surface)
-            .tvFocusRing(focused)
-            .then(if (focused) Modifier else Modifier.border(1.dp, Edge.HairlineStrong, Radius.Md))
-            .nfFocusRoute(up = upFocusRequester, down = downFocusRequester)
-            .focusRequester(focusRequester)
-            .onFocusEvent { focused = it.hasFocus }
-            .focusable()
-            .padding(horizontal = 18.dp),
-        contentAlignment = Alignment.CenterStart
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+            .then(
+                if (editing) Modifier
+                else Modifier.nfFocusRoute(up = upFocusRequester, down = downFocusRequester)
+            ),
+        focusRequester = focusRequester,
+        placeholder = "搜索片名 / 演员 / 拼音首字母",
+        imeAction = ImeAction.Search,
+        onImeAction = onSubmit,
+        onEditingChange = {
+            editing = it
+            onEditingChange(it)
+        },
+        bare = true,
+        leadingIcon = {
             androidx.compose.material3.Icon(
                 imageVector = Icons.Filled.Search,
                 contentDescription = null,
                 tint = TvText.Meta,
                 modifier = Modifier.size(22.dp)
             )
-            Spacer(Modifier.width(12.dp))
-            Box(Modifier.weight(1f)) {
-                if (value.isEmpty()) {
-                    Text(
-                        "搜索片名 / 演员 / 拼音首字母",
-                        color = TvText.Meta,
-                        style = MaterialTheme.typography.bodyLarge
-                    )
-                }
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    singleLine = true,
-                    textStyle = TextStyle(
-                        color = TvText.Title,
-                        fontSize = MaterialTheme.typography.bodyLarge.fontSize,
-                        fontWeight = FontWeight.Medium
-                    ),
-                    cursorBrush = SolidColor(AppColors.Brand),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        }
-    }
+        },
+        height = 56.dp,
+        textStyle = TextStyle(
+            color = TvText.Title,
+            fontSize = MaterialTheme.typography.bodyLarge.fontSize,
+            fontWeight = FontWeight.Medium
+        )
+    )
 }
 
 /** 联想片名行：整行可聚焦，OK 直接以该片名搜索；首行的 ↑ 显式还给输入框 */

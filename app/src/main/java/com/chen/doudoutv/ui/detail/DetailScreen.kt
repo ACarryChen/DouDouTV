@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,11 +28,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -56,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
@@ -63,6 +69,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -74,6 +82,8 @@ import com.chen.doudoutv.data.model.MediaEntity
 import com.chen.doudoutv.data.model.MediaKind
 import com.chen.doudoutv.data.model.SourceKind
 import com.chen.doudoutv.data.model.splitCastNames
+import com.chen.doudoutv.data.tmdb.ScrapeCategory
+import com.chen.doudoutv.data.tmdb.ScrapeTitle
 import com.chen.doudoutv.player.PlayerFactory
 import com.chen.doudoutv.ui.LibraryViewModel
 import com.chen.doudoutv.ui.components.AppButton
@@ -165,6 +175,12 @@ fun DetailScreen(
     /** 「跳过片头」预设面板（底部弹层）显隐 */
     var showSkipSheet by remember { mutableStateOf(false) }
 
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var showScrapeSheet by remember { mutableStateOf(false) }
+    var scrapeSubmitting by remember { mutableStateOf(false) }
+    var scrapeError by remember { mutableStateOf("") }
+    var manualTmdb by remember(mediaId) { mutableStateOf(false) }
+
     val scope = rememberCoroutineScope()
 
     // 详情页期间把 MainActivity 的 finish() 拦下来：爬虫壳拉详情（网盘线路）时会顺手结束宿主，
@@ -213,15 +229,17 @@ fun DetailScreen(
         loading = true
         scraped = null
         tmdb = null
-        // 远程搜索结果是负 id 的临时条目：先按所属 TVBox 源落库换成真实 id，
-        // 否则 mediaOf() 查不到会显示「条目不存在」
-        var id = mediaId
+        manualTmdb = false
+        showMoreMenu = false
+        showScrapeSheet = false
+        scrapeError = ""
+        val route = runCatching { vm.resolveTvBoxRoute(mediaId) }.getOrNull()
+        var id = route?.mediaId ?: mediaId
         var m = vm.mediaOf(id)
-        if (m == null && id < 0) {
-            val realId = runCatching { vm.materializeRemote(id) }.getOrNull()
-            if (realId != null && realId > 0) {
-                id = realId
-                m = vm.mediaOf(id)
+        route?.category?.let { category ->
+            if (onCategoryVodId != null) {
+                onCategoryVodId(category.sourceId, category.siteKey, category.typeId, category.typeName)
+                return@LaunchedEffect
             }
         }
         // 「继续观看」进来的是 EPISODE 行：海报/年份/简介/选集全都挂在剧集壳上，
@@ -238,22 +256,6 @@ fun DetailScreen(
         }
         media = m
         if (m != null) {
-            // 聚合网盘分类入口检测：只有明确等于网盘类型名的 vodId 才跳 CategoryList
-            val CLOUD_TYPES = setOf("quark", "xunlei", "aliyundrive", "ucwangpan", "douyin", "baidu", "weiyun", "onedrive", "aliyunpan", "pikpak", "115pan", "123pan")
-            val parts = m.remoteId.removePrefix("tvbox:").split(":")
-            if (parts.size >= 3) {
-                val sourceId = parts.getOrNull(0)?.toLongOrNull()
-                val siteKey = parts.getOrNull(1).orEmpty()
-                val cleanVodId = parts.last()
-                val isCategory = cleanVodId.lowercase() in CLOUD_TYPES &&
-                    sourceId != null && onCategoryVodId != null
-                if (isCategory) {
-                    val typeName = cleanVodId.uppercase()
-                    onCategoryVodId(sourceId, siteKey, cleanVodId, typeName)
-                    return@LaunchedEffect
-                }
-            }
-
             // Emby 源：加载刮削信息（电影/剧集都支持）
             isEmbySource = vm.sourceOf(m.sourceId)?.kind == SourceKind.EMBY
             if (isEmbySource) {
@@ -263,7 +265,7 @@ fun DetailScreen(
             // 刮削结果一律问仓储层：它先读 scraped_meta 表，表里没有才轮到「联网刮削」开关
             // 和凭据决定要不要发请求。这里不能再自己拦一道开关 —— 拦了就把已经刮到、
             // 躺在表里的数据一起藏了，关着开关进详情页会退回源站那张豆瓣图。
-            // mediaId 传下去：拿到结果后回填 media 行并打上 scrapedAt
+            // id 传下去：拿到结果后回填 media 行并打上 scrapedAt
             tmdb = runCatching {
                 vm.tmdbScrape(m.title, m.year, m.kind, id, m.genres)
             }.getOrNull()
@@ -484,7 +486,7 @@ fun DetailScreen(
 
             // 主演名单：Emby 刮削优先、TMDB 补齐，最后回落到源自己给的 actors；
             // 源给的名单没有头像，走 CastCard 的首字占位样式
-            val castList = (scraped?.actors?.map { it.toCast() }
+            val castList = ((if (manualTmdb) null else scraped?.actors)?.map { it.toCast() }
                 ?: tmdb?.actors?.map { it.toCast() }.orEmpty()
                     .takeIf { it.isNotEmpty() }
                 ?: splitCastNames(item.actors).take(12).map { CastPerson(it, "", "") })
@@ -649,26 +651,21 @@ fun DetailScreen(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(Radius.Md)
-                                .background(
-                                    // 已收藏 = 品牌渐变实底压黑心；未收藏 = 磨砂玻璃压白心
-                                    if (fav) {
-                                        Brush.verticalGradient(
-                                            ButtonMaterial.primaryStops(AppColors.Brand, AppColors.BrandSoft)
-                                        )
-                                    } else {
-                                        Brush.verticalGradient(DetailGlassStops)
-                                    }
-                                )
+                                .background(Brush.verticalGradient(DetailGlassStops))
                                 .border(
                                     1.dp,
-                                    if (fav) ButtonMaterial.highlightEdge else DetailGlassEdge,
+                                    if (fav) {
+                                        SolidColor(ButtonMaterial.FavoriteRed.copy(alpha = 0.58f))
+                                    } else {
+                                        DetailGlassEdge
+                                    },
                                     Radius.Md
                                 )
                         ) {
                             Icon(
                                 if (fav) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
                                 contentDescription = if (fav) "取消收藏" else "收藏",
-                                tint = if (fav) Color.Black else Color.White
+                                tint = if (fav) ButtonMaterial.FavoriteRed else Color.White
                             )
                         }
                     }
@@ -711,14 +708,18 @@ fun DetailScreen(
 
                 // ---------- 刮削信息（标语/分级/工作室/导演）：Emby 优先，TMDB 补齐 ----------
                 run {
-                    val tagline = scraped?.tagline.orEmpty().ifBlank { tmdb?.tagline.orEmpty() }
+                    val tagline = if (manualTmdb) {
+                        tmdb?.tagline.orEmpty()
+                    } else {
+                        scraped?.tagline.orEmpty().ifBlank { tmdb?.tagline.orEmpty() }
+                    }
                     val chips = buildList {
                         scraped?.let {
                             if (it.officialRating.isNotBlank()) add(it.officialRating)
                             addAll(it.studios.take(2))
                         }
                     }
-                    val directors = (scraped?.directors?.map { it.toCast() }
+                    val directors = ((if (manualTmdb) null else scraped?.directors)?.map { it.toCast() }
                         ?: tmdb?.directors?.map { it.toCast() }.orEmpty()
                             .takeIf { it.isNotEmpty() }
                         ?: splitCastNames(item.directors).take(3).map { CastPerson(it, "", "") })
@@ -1051,6 +1052,112 @@ fun DetailScreen(
                 )
             }
         }
+
+        media?.let { current ->
+            if (!loading) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 18.dp, end = 16.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            scrapeError = ""
+                            showMoreMenu = true
+                        },
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(Radius.Md)
+                            .background(Brush.verticalGradient(DetailGlassStops))
+                            .border(1.dp, DetailGlassEdge, Radius.Md)
+                    ) {
+                        Icon(
+                            Icons.Filled.MoreVert,
+                            contentDescription = "更多",
+                            tint = Color.White
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showMoreMenu,
+                        onDismissRequest = { showMoreMenu = false },
+                        containerColor = AppColors.SurfaceHi
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("刮削", color = AppColors.TextPrimary) },
+                            onClick = {
+                                showMoreMenu = false
+                                scrapeError = ""
+                                showScrapeSheet = true
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (showScrapeSheet) {
+                ManualScrapeSheet(
+                    initialTitle = ScrapeTitle.forSearch(current.title),
+                    initialYear = current.year,
+                    initialKind = when {
+                        current.kind == MediaKind.MOVIE -> MediaKind.MOVIE
+                        ScrapeCategory.ofSource(current.genres) == ScrapeCategory.ANIME -> "ANIME"
+                        else -> MediaKind.SERIES
+                    },
+                    submitting = scrapeSubmitting,
+                    error = scrapeError,
+                    onDismiss = { if (!scrapeSubmitting) showScrapeSheet = false },
+                    onSubmit = { inputTitle, inputYear, inputKind ->
+                        val cleanTitle = inputTitle.trim()
+                        val yearText = inputYear.trim()
+                        if (cleanTitle.isBlank() ||
+                            (yearText.isNotEmpty() && (yearText.length != 4 || !yearText.all { it.isDigit() }))
+                        ) {
+                            scrapeError = "请输入片名和 4 位年份（年份可留空）"
+                        } else {
+                            scrapeError = ""
+                            scrapeSubmitting = true
+                            scope.launch {
+                                try {
+                                    val kind = if (inputKind == "ANIME") MediaKind.SERIES else inputKind
+                                    val category = if (inputKind == "ANIME") {
+                                        ScrapeCategory.ANIME
+                                    } else {
+                                        ScrapeCategory.LIVE
+                                    }
+                                    val result = runCatching {
+                                        vm.tmdbScrapeManual(
+                                            title = cleanTitle,
+                                            year = yearText.toIntOrNull() ?: 0,
+                                            kind = kind,
+                                            mediaId = current.id,
+                                            genres = current.genres,
+                                            categoryOverride = category
+                                        )
+                                    }.getOrNull()
+                                    if (result == null) {
+                                        scrapeError = "刮削失败，请检查片名、年份、类型或 TMDB 凭据"
+                                    } else {
+                                        tmdb = result
+                                        manualTmdb = true
+                                        media = vm.mediaOf(current.id) ?: current.copy(
+                                            overview = result.overview.ifBlank { current.overview },
+                                            rating = result.rating.takeIf { it > 0 } ?: current.rating,
+                                            posterUrl = result.posterUrl.ifBlank { current.posterUrl },
+                                            backdropUrl = result.backdropUrl.ifBlank { current.backdropUrl },
+                                            logoUrl = result.logoUrl.ifBlank { current.logoUrl },
+                                            genres = result.genres.ifBlank { current.genres }
+                                        )
+                                        showScrapeSheet = false
+                                    }
+                                } finally {
+                                    scrapeSubmitting = false
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -1058,6 +1165,104 @@ fun DetailScreen(
 internal fun fmtIntroMs(ms: Long): String {
     val totalSec = (ms / 1000L).coerceAtLeast(0L)
     return "%d:%02d".format(totalSec / 60, totalSec % 60)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ManualScrapeSheet(
+    initialTitle: String,
+    initialYear: Int,
+    initialKind: String,
+    submitting: Boolean,
+    error: String,
+    onDismiss: () -> Unit,
+    onSubmit: (String, String, String) -> Unit
+) {
+    var title by remember { mutableStateOf(initialTitle) }
+    var year by remember { mutableStateOf(initialYear.takeIf { it > 0 }?.toString().orEmpty()) }
+    var kind by remember { mutableStateOf(initialKind) }
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = AppColors.TextPrimary,
+        unfocusedTextColor = AppColors.TextPrimary,
+        focusedBorderColor = AppColors.Brand,
+        unfocusedBorderColor = AppColors.SurfaceHi
+    )
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = AppColors.Surface
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .imePadding()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                "手动刮削",
+                style = MaterialTheme.typography.titleLarge,
+                color = AppColors.TextPrimary
+            )
+            OutlinedTextField(
+                value = title,
+                onValueChange = { title = it },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !submitting,
+                singleLine = true,
+                label = { Text("片名") },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                colors = fieldColors
+            )
+            OutlinedTextField(
+                value = year,
+                onValueChange = { year = it.filter(Char::isDigit).take(4) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !submitting,
+                singleLine = true,
+                label = { Text("年份（可留空）") },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Done
+                ),
+                colors = fieldColors
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                listOf(
+                    MediaKind.MOVIE to "电影",
+                    MediaKind.SERIES to "电视剧",
+                    "ANIME" to "动漫"
+                ).forEach { (value, label) ->
+                    FilterChip(
+                        selected = kind == value,
+                        onClick = { if (!submitting) kind = value },
+                        enabled = !submitting,
+                        label = { Text(label) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = AppColors.Brand,
+                            selectedLabelColor = Color.White,
+                            containerColor = AppColors.SurfaceHi,
+                            labelColor = AppColors.TextSecondary
+                        )
+                    )
+                }
+            }
+            if (error.isNotBlank()) {
+                Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+            }
+            AppButton(
+                text = if (submitting) "刮削中…" else "开始刮削",
+                onClick = { onSubmit(title, year, kind) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !submitting
+            )
+        }
+    }
 }
 
 /**

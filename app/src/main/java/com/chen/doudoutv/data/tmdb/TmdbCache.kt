@@ -104,8 +104,15 @@ object TmdbCache {
     suspend fun getOrFetch(
         key: String,
         ignoreNegative: Boolean = false,
+        forceRefresh: Boolean = false,
         fetch: suspend () -> TmdbClient.ScrapeResult?
     ): TmdbClient.ScrapeResult? {
+        if (forceRefresh) {
+            val result = fetch()
+            if (!(ignoreNegative && result == null)) writeEntry(key, result)
+            return result
+        }
+
         // 快路径：命中缓存直接返回，完全不进锁（绝大多数调用走这里）
         readEntry(key)?.let { if (!ignoreNegative || it.result != null) return it.result }
 

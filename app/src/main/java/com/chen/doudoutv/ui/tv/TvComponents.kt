@@ -1,5 +1,6 @@
 package com.chen.doudoutv.ui.tv
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,8 +23,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -35,6 +40,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -58,11 +65,22 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.LocalPinnableContainer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -77,6 +95,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.chen.doudoutv.core.Prefs
 import com.chen.doudoutv.data.model.MediaEntity
 import com.chen.doudoutv.ui.components.ButtonMaterial
@@ -199,6 +218,243 @@ fun tvMoveFocus(
     return false
 }
 
+internal object TvTextFieldBack {
+    private var owner: Any? = null
+    private var action: (() -> Unit)? = null
+
+    fun register(owner: Any, action: () -> Unit) {
+        this.owner = owner
+        this.action = action
+    }
+
+    fun unregister(owner: Any) {
+        if (this.owner === owner) {
+            this.owner = null
+            this.action = null
+        }
+    }
+
+    fun consume(): Boolean {
+        val current = action ?: return false
+        current()
+        return true
+    }
+}
+
+@Composable
+fun TvTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    focusRequester: FocusRequester? = null,
+    label: String? = null,
+    placeholder: String = "",
+    isPassword: Boolean = false,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    imeAction: ImeAction = ImeAction.Done,
+    onImeAction: (() -> Unit)? = null,
+    onEditingChange: ((Boolean) -> Unit)? = null,
+    enabled: Boolean = true,
+    bare: Boolean = false,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    height: Dp = 60.dp,
+    textStyle: TextStyle? = null,
+) {
+    var editing by remember { mutableStateOf(false) }
+    val interactionSource = remember { MutableInteractionSource() }
+    val browseFocused by interactionSource.collectIsFocusedAsState()
+    val editorFocus = remember { FocusRequester() }
+    val internalBrowseFocus = remember { FocusRequester() }
+    val browseFocus = focusRequester ?: internalBrowseFocus
+    val keyboard = LocalSoftwareKeyboardController.current
+    val scope = rememberCoroutineScope()
+    val pageDark = LocalTvPageDark.current
+    val fieldText = if (pageDark) TvPageText.Title else TvText.Title
+    val fieldSecondary = if (pageDark) TvPageText.Meta else TvText.Meta
+    val fieldSurface = if (pageDark) TvPageText.Surface else AppColors.Bg
+    val fieldRaised = if (pageDark) TvPageText.SurfaceHi else AppColors.SurfaceHi
+
+    fun startEditing() {
+        if (!enabled || editing) return
+        editing = true
+        onEditingChange?.invoke(true)
+    }
+
+    fun stopEditing() {
+        if (!editing) return
+        keyboard?.hide()
+        editing = false
+        onEditingChange?.invoke(false)
+        scope.launch {
+            withFrameNanos { }
+            tvMoveFocus(browseFocus)
+        }
+    }
+
+    BackHandler(enabled = editing && enabled) { stopEditing() }
+
+    val keyboardActions = KeyboardActions(
+        onNext = {
+            onImeAction?.invoke()
+            stopEditing()
+        },
+        onDone = {
+            onImeAction?.invoke()
+            stopEditing()
+        },
+        onSearch = {
+            onImeAction?.invoke()
+            stopEditing()
+        }
+    )
+    val keyboardOptions = KeyboardOptions(
+        keyboardType = keyboardType,
+        imeAction = imeAction
+    )
+    val visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None
+    val editorEvents = Modifier
+        .focusRequester(editorFocus)
+        .onPreviewKeyEvent { event ->
+            if (editing && event.type == KeyEventType.KeyDown && event.key == Key.Back) {
+                stopEditing()
+                true
+            } else {
+                false
+            }
+        }
+
+    LaunchedEffect(editing, enabled) {
+        if (editing && enabled) {
+            withFrameNanos { }
+            tvMoveFocus(editorFocus)
+            keyboard?.show()
+        } else if (editing) {
+            stopEditing()
+        }
+    }
+    DisposableEffect(keyboard) {
+        onDispose { keyboard?.hide() }
+    }
+
+    val backOwner = remember { Any() }
+    val currentStopEditing by rememberUpdatedState(::stopEditing)
+    DisposableEffect(editing, enabled) {
+        if (editing && enabled) TvTextFieldBack.register(backOwner) { currentStopEditing() }
+        onDispose { TvTextFieldBack.unregister(backOwner) }
+    }
+
+    val browseModifier = modifier
+        .height(height)
+        .clip(Radius.Md)
+        .background(
+            if (bare) {
+                if (browseFocused) AppColors.SurfaceHi else AppColors.Surface
+            } else if (browseFocused) {
+                fieldRaised
+            } else {
+                fieldSurface
+            }
+        )
+        .then(
+            if (bare) {
+                Modifier.border(1.dp, Edge.HairlineStrong, Radius.Md)
+            } else {
+                Modifier
+            }
+        )
+        .tvFocusRing(browseFocused, 12.dp)
+        .focusRequester(browseFocus)
+        .clickable(
+            enabled = enabled && !editing,
+            interactionSource = interactionSource,
+            indication = null,
+            onClick = ::startEditing
+        )
+
+    Box(browseModifier) {
+        if (bare) {
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                enabled = editing && enabled,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(editorEvents),
+                textStyle = textStyle ?: TextStyle(
+                    color = fieldText,
+                    fontSize = MaterialTheme.typography.bodyLarge.fontSize
+                ),
+                leadingIcon = leadingIcon,
+                singleLine = true,
+                placeholder = {
+                    if (value.isEmpty()) {
+                        Text(
+                            text = placeholder,
+                            color = fieldSecondary,
+                            fontSize = MaterialTheme.typography.bodyLarge.fontSize
+                        )
+                    }
+                },
+                keyboardOptions = keyboardOptions,
+                keyboardActions = keyboardActions,
+                visualTransformation = visualTransformation,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = fieldText,
+                    unfocusedTextColor = fieldText,
+                    disabledTextColor = fieldText,
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent,
+                    focusedBorderColor = Color.Transparent,
+                    unfocusedBorderColor = Color.Transparent,
+                    disabledBorderColor = Color.Transparent,
+                    focusedPlaceholderColor = fieldSecondary,
+                    unfocusedPlaceholderColor = fieldSecondary,
+                    disabledPlaceholderColor = fieldSecondary,
+                    cursorColor = AppColors.FocusRing
+                )
+            )
+        } else {
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                enabled = editing && enabled,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(editorEvents),
+                label = label?.let { { Text(it) } },
+                placeholder = if (placeholder.isEmpty()) null else {
+                    { Text(placeholder) }
+                },
+                textStyle = textStyle ?: TextStyle(color = fieldText),
+                singleLine = true,
+                shape = Radius.Md,
+                keyboardOptions = keyboardOptions,
+                keyboardActions = keyboardActions,
+                visualTransformation = visualTransformation,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = fieldText,
+                    unfocusedTextColor = fieldText,
+                    disabledTextColor = fieldText,
+                    focusedContainerColor = fieldSurface,
+                    unfocusedContainerColor = fieldSurface,
+                    disabledContainerColor = fieldSurface,
+                    focusedBorderColor = AppColors.FocusRing,
+                    unfocusedBorderColor = fieldSecondary.copy(alpha = 0.45f),
+                    disabledBorderColor = fieldSecondary.copy(alpha = 0.45f),
+                    focusedLabelColor = fieldText,
+                    unfocusedLabelColor = fieldSecondary,
+                    disabledLabelColor = fieldSecondary,
+                    focusedPlaceholderColor = fieldSecondary,
+                    unfocusedPlaceholderColor = fieldSecondary,
+                    disabledPlaceholderColor = fieldSecondary,
+                    cursorColor = AppColors.FocusRing
+                )
+            )
+        }
+    }
+}
+
 /** 焦点描边线宽：TV 端所有按键共用这一个数，不再一处 1.5 一处 2 */
 val TvFocusRingWidth = 1.5.dp
 
@@ -206,11 +462,8 @@ val TvFocusRingWidth = 1.5.dp
 private val TvFocusRingKeyline = 1.dp
 
 /**
- * TV 端统一的焦点描边：外圈纯白，紧贴内侧再压一道 40% 黑。不发光、不放大。
- *
- * 为什么要那圈黑：描边画在节点边界之内，海报卡的边界里面就是图片本身 ——
- * 浅色海报的边缘碰上白线等于白对白，三米外直接消失。黑边把白线和底图隔开，
- * 白线两侧（外侧是近黑背景、内侧是黑边）就都有对比，任何底图上都是同一圈白。
+ * TV 端统一的焦点描边：暗色外圈反白，浅色外圈用压暗的品牌色，内侧再压一道 keyline。
+ * 描边画在节点边界之内，keyline 让焦点环与图片边缘保持分离。不发光、不放大。
  *
  * 全部画在节点内，所以挂在 clip 之后也不会被裁掉。和 [androidx.compose.foundation.border]
  * 一样先画内容再画线，图片盖不住它。
@@ -231,7 +484,7 @@ internal fun DrawScope.tvDrawFocusRing(rect: Rect, radiusPx: Float) {
     if (rect.width <= w * 2f || rect.height <= w * 2f) return
     val maxR = minOf(rect.width, rect.height) / 2f
     drawRoundRect(
-        color = AppColors.Focus,
+        color = AppColors.FocusRing,
         topLeft = Offset(rect.left + w / 2f, rect.top + w / 2f),
         size = Size(rect.width - w, rect.height - w),
         cornerRadius = CornerRadius(minOf(radiusPx - w / 2f, maxR).coerceAtLeast(0f)),
@@ -571,10 +824,6 @@ fun TvIconButton(
                     // 焦点态整颗反白：这一档不参与材质统一。
                     // 十英尺下焦点是常态，整颗纯白是隔着三米唯一还能一眼认出的信号。
                     focused -> SolidColor(Color.White)
-                    // 选中态（已收藏等）走品牌渐变 + 黑字，和主按钮同一套语言
-                    active -> Brush.verticalGradient(
-                        ButtonMaterial.primaryStops(AppColors.Brand, AppColors.BrandSoft)
-                    )
                     else -> Brush.verticalGradient(
                         if (onDark) pageGlassStops() else ButtonMaterial.glassStops()
                     )
@@ -583,7 +832,9 @@ fun TvIconButton(
             .tvFocusRing(focused)
             .then(
                 if (focused) Modifier
-                else if (active) Modifier.border(1.dp, ButtonMaterial.highlightEdge, shape)
+                else if (active) Modifier.border(
+                    1.dp, ButtonMaterial.FavoriteRed.copy(alpha = 0.62f), shape
+                )
                 else Modifier.border(
                     1.dp, if (onDark) pageGlassEdge else ButtonMaterial.glassEdge, shape
                 )
@@ -596,8 +847,8 @@ fun TvIconButton(
             imageVector = icon,
             contentDescription = contentDescription,
             tint = when {
+                active -> ButtonMaterial.FavoriteRed
                 focused -> Color.Black
-                active -> Color.Black
                 else -> if (onDark) TvPageText.Title else TvText.Title
             },
             // 图标随按钮等比缩，收小后不会出现「大图标塞在小圆里」

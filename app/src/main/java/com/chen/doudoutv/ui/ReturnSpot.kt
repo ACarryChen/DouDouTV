@@ -117,8 +117,8 @@ object FocusPulse {
 /**
  * 预组合档位（Compose 1.9 [LazyLayoutCacheWindow]）：视口外多留一截，容器提前组合相邻行，
  * 消「先空白下一帧才有图」，回看不重组合。窗口按 dp 定不按视口比例 —— 比例在电视
- * （960×540dp）和手机窄长屏上含义差太远：电视一屏 6 列、网格行约 230dp/横排格 142dp，
- * 往前 480dp 够两行、往后 240dp 够一行；手机格约 122dp，往前 280dp/往后 140dp。
+ * （960×540dp）和手机窄长屏上含义差太远。电视海报网格再按列数分档：小/中图只提前约一行，
+ * 控制同屏组合与图片解码量；大图行高，扩大窗口覆盖两行，给跨行焦点滚动留余量。
  *
  * 用枚举而不是把 [LazyLayoutCacheWindow] 暴露在公开签名里：它带 @ExperimentalFoundationApi，
  * 暴露出去二十多个调用点都要被迫 opt-in，实验 API 关在这一个文件里。
@@ -127,12 +127,22 @@ enum class PrecomposeWindow {
     /** 不预组合：保持 Compose 默认行为（视口外即释放） */
     Off,
 
-    /** 电视端：往前两行、往后一行 */
+    /** 电视端列表：往前两行、往后一格 */
     Tv,
+
+    /** 电视密集网格（小图/中图）：只提前约一行，控制同屏卡片与图片解码量 */
+    TvGridDense,
+
+    /** 电视大图网格：行更高，窗口覆盖两行，给上下跨行焦点滚动留余量 */
+    TvGridLarge,
 
     /** 手机端：往前两格多、往后一格 */
     Phone
 }
+
+/** 海报网格按实际列数选缓存窗口：大图行高，小/中图同屏卡片多。 */
+fun posterGridPrecompose(columns: Int): PrecomposeWindow =
+    if (columns <= 4) PrecomposeWindow.TvGridLarge else PrecomposeWindow.TvGridDense
 
 /**
  * 建带预组合窗口的列表 state。
@@ -145,6 +155,8 @@ enum class PrecomposeWindow {
 private fun newListState(tier: PrecomposeWindow, index: Int, offset: Int): LazyListState = when (tier) {
     PrecomposeWindow.Off -> LazyListState(index, offset)
     PrecomposeWindow.Tv -> LazyListState(LazyLayoutCacheWindow(ahead = 480.dp, behind = 240.dp), index, offset)
+    PrecomposeWindow.TvGridDense -> LazyListState(LazyLayoutCacheWindow(ahead = 240.dp, behind = 120.dp), index, offset)
+    PrecomposeWindow.TvGridLarge -> LazyListState(LazyLayoutCacheWindow(ahead = 720.dp, behind = 360.dp), index, offset)
     PrecomposeWindow.Phone -> LazyListState(LazyLayoutCacheWindow(ahead = 280.dp, behind = 140.dp), index, offset)
 }
 
@@ -153,6 +165,8 @@ private fun newListState(tier: PrecomposeWindow, index: Int, offset: Int): LazyL
 private fun newGridState(tier: PrecomposeWindow, index: Int, offset: Int): LazyGridState = when (tier) {
     PrecomposeWindow.Off -> LazyGridState(index, offset)
     PrecomposeWindow.Tv -> LazyGridState(LazyLayoutCacheWindow(ahead = 480.dp, behind = 240.dp), index, offset)
+    PrecomposeWindow.TvGridDense -> LazyGridState(LazyLayoutCacheWindow(ahead = 240.dp, behind = 120.dp), index, offset)
+    PrecomposeWindow.TvGridLarge -> LazyGridState(LazyLayoutCacheWindow(ahead = 720.dp, behind = 360.dp), index, offset)
     PrecomposeWindow.Phone -> LazyGridState(LazyLayoutCacheWindow(ahead = 280.dp, behind = 140.dp), index, offset)
 }
 
@@ -176,7 +190,7 @@ fun ReturnSpot.listState(key: String, precompose: PrecomposeWindow = PrecomposeW
 @Composable
 fun ReturnSpot.gridState(key: String, precompose: PrecomposeWindow = PrecomposeWindow.Off): LazyGridState {
     val saved = scrollOf(key)
-    val state = remember(key) {
+    val state = remember(key, precompose) {
         newGridState(precompose, saved?.index ?: 0, saved?.offset ?: 0)
     }
     LaunchedEffect(state, key) {

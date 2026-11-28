@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -40,8 +39,6 @@ import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -155,7 +152,8 @@ fun TvSettingsScreen(
     var playerKernel by remember { mutableStateOf(Prefs.playerKernel) }
     var tmdbOn by remember { mutableStateOf(Prefs.tmdbEnabled) }
     var tmdbToken by remember { mutableStateOf(Prefs.tmdbReadToken) }
-    var engineTick by remember { mutableStateOf(0) }
+    var tokenEditing by remember { mutableStateOf(false) }
+    var engineTick by remember { mutableIntStateOf(0) }
     // 只在记忆化里做纯计算（读凭据推导），写全局状态放到副作用里
     val activeEngine = remember(engineTick) { ScrapeStrategy.resolve() }
     // 走 vm.refreshScrapeEngine()：分类页刮削按钮读的是 VM 快照，只刷全局引擎要重启才见效
@@ -327,7 +325,13 @@ fun TvSettingsScreen(
                         if (wide) Modifier.onPreviewKeyEvent { e ->
                             if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                             when (e.key.nativeKeyCode) {
-                                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_BACK -> { exitPane(); true }
+                                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_BACK -> {
+                                    if (tokenEditing) false
+                                    else {
+                                        exitPane()
+                                        true
+                                    }
+                                }
                                 // 信息组（状态 / 关于）右栏没有可聚焦行，整块容器聚焦，上下键直接滚动
                                 KeyEvent.KEYCODE_DPAD_UP ->
                                     if (selected == 0 || selected == 5) {
@@ -503,6 +507,7 @@ fun TvSettingsScreen(
                                         label = "Read Access Token（v4）",
                                         value = tmdbToken,
                                         placeholder = "粘贴以 eyJ 开头的令牌",
+                                        onEditingChange = { tokenEditing = it },
                                         onValueChange = {
                                             tmdbToken = it
                                             Prefs.tmdbReadToken = it
@@ -1115,44 +1120,26 @@ private fun TvSettingAction(
     }
 }
 
-/**
- * 令牌输入行。
- *
- * 电视上没有物理键盘可用时，聚焦输入框会拉起系统软键盘（与来源页的接口地址输入同一条路径）；
- * 60dp 高的框是为遥控器光标准备的，矮了看不清插入点。
- */
 @Composable
 private fun TvSettingField(
     label: String,
     value: String,
     placeholder: String,
+    onEditingChange: (Boolean) -> Unit = {},
     onValueChange: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(label, style = MaterialTheme.typography.titleSmall, color = TvText.Title)
-        OutlinedTextField(
+        TvTextField(
             value = value,
             onValueChange = onValueChange,
-            placeholder = { Text(placeholder, color = TvText.Meta) },
-            singleLine = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(60.dp),
-            textStyle = MaterialTheme.typography.bodyMedium.copy(color = TvText.Title),
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Text,
-                imeAction = ImeAction.Done
-            ),
-            shape = Radius.Md,
-            colors = OutlinedTextFieldDefaults.colors(
-                unfocusedContainerColor = AppColors.Bg,
-                focusedContainerColor = AppColors.Bg,
-                unfocusedBorderColor = AppColors.SurfaceHi,
-                focusedBorderColor = AppColors.Brand,
-                cursorColor = AppColors.Brand,
-                focusedTextColor = TvText.Title,
-                unfocusedTextColor = TvText.Title
-            )
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = placeholder,
+            keyboardType = KeyboardType.Text,
+            imeAction = ImeAction.Done,
+            onEditingChange = onEditingChange,
+            height = 60.dp,
+            textStyle = MaterialTheme.typography.bodyMedium.copy(color = TvText.Title)
         )
     }
 }

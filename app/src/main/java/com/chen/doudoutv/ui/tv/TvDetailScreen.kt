@@ -37,8 +37,6 @@ import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -67,6 +65,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -77,6 +77,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.MoreVert
 import coil.compose.AsyncImage
 import com.chen.doudoutv.MainActivity
 import com.chen.doudoutv.data.emby.EmbyClient
@@ -86,6 +87,8 @@ import com.chen.doudoutv.data.model.MediaKind
 import com.chen.doudoutv.data.model.SourceKind
 import com.chen.doudoutv.data.model.splitCastNames
 import com.chen.doudoutv.data.tvbox.HtmlText
+import com.chen.doudoutv.data.tmdb.ScrapeCategory
+import com.chen.doudoutv.data.tmdb.ScrapeTitle
 import com.chen.doudoutv.ui.LibraryViewModel
 import com.chen.doudoutv.ui.detail.FocusColorCache
 import com.chen.doudoutv.ui.detail.fallbackColorFromTitle
@@ -195,6 +198,8 @@ fun TvDetailScreen(
 
     /** 「跳过片头」预设弹窗（遥控器焦点）显隐：只被下方 UI 树读写，状态交 Body 挂名使用 */
     val showSkipDialogState = remember { mutableStateOf(false) }
+    val showOverflowMenuState = remember { mutableStateOf(false) }
+    val showScrapeDialogState = remember { mutableStateOf(false) }
 
     // 详情页期间把 MainActivity 的 finish() 拦下来：爬虫壳拉详情（网盘线路）时会顺手结束宿主，
     // 不拦就会「点详情直接闪退」。
@@ -213,6 +218,8 @@ fun TvDetailScreen(
      */
     val tmdbState = remember { mutableStateOf<com.chen.doudoutv.data.tmdb.TmdbClient.ScrapeResult?>(null) }
     var tmdb by tmdbState
+    val manualTmdbState = remember(mediaId) { mutableStateOf(false) }
+    var manualTmdb by manualTmdbState
     val loadingState = remember { mutableStateOf(true) }
     var loading by loadingState
 
@@ -248,6 +255,7 @@ fun TvDetailScreen(
      * 不再用全局 onPreviewKeyEvent 切换内容显隐，避免「上键把选集收掉」。
      */
     val favoriteFocusRequester = remember { FocusRequester() }
+    val overflowFocusRequester = remember { FocusRequester() }
     val playFocusRequester = remember { FocusRequester() }
     val controlsFocusRequester = remember { FocusRequester() }
     val firstEpFocusRequester = remember { FocusRequester() }
@@ -322,27 +330,24 @@ fun TvDetailScreen(
     }
 
     LaunchedEffect(mediaId) {
-        // 聚合网盘分类入口检测：只有明确等于网盘类型名的 vodId 才跳 CategoryList
-        val CLOUD_TYPES = setOf("quark", "xunlei", "aliyundrive", "ucwangpan", "douyin", "baidu", "weiyun", "onedrive", "aliyunpan", "pikpak", "115pan", "123pan")
-        val probe = vm.mediaOf(mediaId)
-        if (probe != null) {
-            val parts = probe.remoteId.removePrefix("tvbox:").split(":")
-            if (parts.size >= 3) {
-                val sourceId = parts.getOrNull(0)?.toLongOrNull()
-                val siteKey = parts.getOrNull(1).orEmpty()
-                val cleanVodId = parts.last()
-                val isCategory = cleanVodId.lowercase() in CLOUD_TYPES &&
-                    sourceId != null && onCategoryVodId != null
-                if (isCategory) {
-                    onCategoryVodId(sourceId, siteKey, cleanVodId, cleanVodId.uppercase())
-                    return@LaunchedEffect
-                }
+        manualTmdb = false
+        showOverflowMenuState.value = false
+        showScrapeDialogState.value = false
+        val route = runCatching { vm.resolveTvBoxRoute(mediaId) }.getOrNull()
+        val resolvedId = route?.mediaId ?: mediaId
+        if (route != null && route.mediaId != mediaId) {
+            TvNavHistory.resolvedDetailId = route.mediaId
+        }
+        route?.category?.let { category ->
+            if (onCategoryVodId != null) {
+                onCategoryVodId(category.sourceId, category.siteKey, category.typeId, category.typeName)
+                return@LaunchedEffect
             }
         }
         // 加载链本体在文件下方的 [tvDetailLoadChain]：原来内联在这里，
         // Compose 编译器会把这段并回宿主方法，是 TvDetailScreen 方法超限的头号来源。
         tvDetailLoadChain(
-            vm, mediaId,
+            vm, resolvedId,
             TvDetailLoadSink(
                 mediaState, isEmbySourceState, resumeEpisodeState, scrapedState,
                 playSourcesState, selectedPlaySourceState, episodesState,
@@ -447,8 +452,8 @@ fun TvDetailScreen(
      * TVBox（CatVod 协议只有姓名）没有照片，用姓名首字的圆形占位头像顶上，
      * 与手机端详情页主演行同口径 —— 不再退回纯文字行。
      */
-    val tvCast = remember(scraped, tmdb, sourceActorNames) {
-        computeTvCast(scraped, tmdb, sourceActorNames)
+    val tvCast = remember(scraped, tmdb, manualTmdb, sourceActorNames) {
+        computeTvCast(if (manualTmdb) null else scraped, tmdb, sourceActorNames)
     }
     val hasCast = tvCast.isNotEmpty()
 
@@ -580,21 +585,26 @@ fun TvDetailScreen(
     }
     val logo = tmdb?.logoUrl.orEmpty().ifBlank { item?.logoUrl.orEmpty() }
 
-    // 导演：TMDB 优先，其次 Emby 刮削，最后源自己给的名字（画法在 [TvDetailDescription]）
-    val directors = (tmdb?.directors?.takeIf { it.isNotEmpty() }?.map { it.name }
-        ?: scraped?.directors?.map { it.name }
-        ?: splitCastNames(item?.directors.orEmpty()).take(3))
-        ?.joinToString(" / ").orEmpty()
+    // 导演：手动刮削以 TMDB 为准；自动链路仍保持 TMDB > Emby > 源站姓名
+    val directors = if (manualTmdb) {
+        tmdb?.directors?.takeIf { it.isNotEmpty() }?.map { it.name }?.joinToString(" / ").orEmpty()
+    } else {
+        (tmdb?.directors?.takeIf { it.isNotEmpty() }?.map { it.name }
+            ?: scraped?.directors?.map { it.name }
+            ?: splitCastNames(item?.directors.orEmpty()).take(3))
+            ?.joinToString(" / ").orEmpty()
+    }
 
     TvDetailScreenBody(
         vm = vm,
         sink = TvDetailBodySink(
             mediaState, episodesState, resumeEpisodeState,
             selectedSeasonState, epPageState, recallEpisodeIdState,
-            selectedPlaySourceState, showSkipDialogState, focusedEpIdState
+            selectedPlaySourceState, showSkipDialogState, focusedEpIdState,
+            showOverflowMenuState, showScrapeDialogState, tmdbState, manualTmdbState
         ),
         focus = TvDetailBodyFocus(
-            favoriteFocusRequester, playFocusRequester, controlsFocusRequester,
+            favoriteFocusRequester, overflowFocusRequester, playFocusRequester, controlsFocusRequester,
             firstEpFocusRequester, pageFocusRequester, mediaInfoFocusRequester,
             epStand, stand
         ),
@@ -609,6 +619,7 @@ fun TvDetailScreen(
             directors = directors,
             scraped = scraped,
             tmdb = tmdb,
+            manualTmdb = manualTmdb,
             playSources = playSources,
             badgeInfo = badgeInfo,
             tvCast = tvCast,
@@ -649,12 +660,17 @@ private class TvDetailBodySink(
     val recallEpisodeId: MutableState<Long>,
     val selectedPlaySource: MutableState<String>,
     val showSkipDialog: MutableState<Boolean>,
-    val focusedEpId: MutableState<Long>
+    val focusedEpId: MutableState<Long>,
+    val showOverflowMenu: MutableState<Boolean>,
+    val showScrapeDialog: MutableState<Boolean>,
+    val tmdb: MutableState<com.chen.doudoutv.data.tmdb.TmdbClient.ScrapeResult?>,
+    val manualTmdb: MutableState<Boolean>
 )
 
 /** 页面焦点锚点与落点：纯对象引用，Body 只把它们转交给各区块接线用 */
 private class TvDetailBodyFocus(
     val favorite: FocusRequester,
+    val overflow: FocusRequester,
     val play: FocusRequester,
     val controls: FocusRequester,
     val firstEp: FocusRequester,
@@ -676,6 +692,7 @@ private class TvDetailBodyUi(
     val directors: String,
     val scraped: EmbyClient.ItemDetail?,
     val tmdb: com.chen.doudoutv.data.tmdb.TmdbClient.ScrapeResult?,
+    val manualTmdb: Boolean,
     val playSources: List<String>,
     val badgeInfo: FormatProbe.Info,
     val tvCast: List<TvCast>,
@@ -726,6 +743,8 @@ private fun TvDetailScreenBody(
     var recallEpisodeId by sink.recallEpisodeId
     var selectedPlaySource by sink.selectedPlaySource
     var showSkipDialog by sink.showSkipDialog
+    var showOverflowMenu by sink.showOverflowMenu
+    var showScrapeDialog by sink.showScrapeDialog
     var focusedEpId by sink.focusedEpId
     val item = media
     val loading = ui.loading
@@ -738,6 +757,7 @@ private fun TvDetailScreenBody(
     val directors = ui.directors
     val scraped = ui.scraped
     val tmdb = ui.tmdb
+    val manualTmdb = ui.manualTmdb
     val playSources = ui.playSources
     val badgeInfo = ui.badgeInfo
     val tvCast = ui.tvCast
@@ -758,6 +778,7 @@ private fun TvDetailScreenBody(
     val episodeMediaInfo = ui.episodeMediaInfo
     val infoEpisode = ui.infoEpisode
     val favoriteFocusRequester = focus.favorite
+    val overflowFocusRequester = focus.overflow
     val playFocusRequester = focus.play
     val controlsFocusRequester = focus.controls
     val firstEpFocusRequester = focus.firstEp
@@ -837,9 +858,13 @@ private fun TvDetailScreenBody(
          */
         val overview = (
             item?.let { media ->
-                tmdb?.overview?.takeIf { it.isNotBlank() }
-                    ?: scraped?.tagline?.takeIf { it.isNotBlank() }
-                    ?: media.overview
+                if (manualTmdb) {
+                    tmdb?.overview?.takeIf { it.isNotBlank() } ?: media.overview
+                } else {
+                    tmdb?.overview?.takeIf { it.isNotBlank() }
+                        ?: scraped?.tagline?.takeIf { it.isNotBlank() }
+                        ?: media.overview
+                }
             }.orEmpty()
             ).let { HtmlText.strip(it) }
         var descOverflow by remember(item?.id, overview) { mutableStateOf(false) }
@@ -977,6 +1002,7 @@ private fun TvDetailScreenBody(
                         tmdbAvailable = tmdb != null,
                         resumeEpisode = resumeEpisode,
                         favoriteFocusRequester = favoriteFocusRequester,
+                        overflowFocusRequester = overflowFocusRequester,
                         playFocusRequester = playFocusRequester,
                         publishStand = { target -> publishStand(target) },
                         restoreHeader = { restoreHeaderComposition() },
@@ -1135,6 +1161,65 @@ private fun TvDetailScreenBody(
             }
 
             Spacer(Modifier.height(60.dp))
+        }
+
+        fun restoreOverflowFocus() {
+            scope.launch {
+                withFrameNanos { }
+                tvMoveFocus(overflowFocusRequester)
+            }
+        }
+
+        if (item != null) {
+            TvIconButton(
+                icon = Icons.Filled.MoreVert,
+                contentDescription = "更多",
+                sizeDp = 40.dp,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 18.dp, end = 22.dp)
+                    .zIndex(1f)
+                    .focusRequester(overflowFocusRequester)
+                    .onFocusChanged { if (it.hasFocus) restoreHeaderComposition() }
+                    .then(publishStand(overflowFocusRequester))
+                    .focusProperties {
+                        up = FocusRequester.Cancel
+                        down = favoriteFocusRequester
+                        left = FocusRequester.Cancel
+                        right = FocusRequester.Cancel
+                    },
+                onClick = { showOverflowMenu = true }
+            )
+
+            CompositionLocalProvider(LocalTvPageDark provides false) {
+                if (showOverflowMenu) {
+                    TvOverflowMenuDialog(
+                        onDismiss = {
+                            showOverflowMenu = false
+                            restoreOverflowFocus()
+                        },
+                        onScrape = {
+                            showOverflowMenu = false
+                            showScrapeDialog = true
+                        }
+                    )
+                }
+                if (showScrapeDialog) {
+                    TvManualScrapeDialog(
+                        vm = vm,
+                        current = item,
+                        onDismiss = {
+                            showScrapeDialog = false
+                            restoreOverflowFocus()
+                        },
+                        onSuccess = { result, updated ->
+                            sink.tmdb.value = result
+                            sink.manualTmdb.value = true
+                            if (updated != null) media = updated
+                        }
+                    )
+                }
+            }
         }
         // 遥控器 Back 键 = TvApp.BackHandler 统一处理，不再显示页面内返回按钮
 
@@ -1482,6 +1567,7 @@ private fun TvDetailHeroHeader(
     tmdbAvailable: Boolean,
     resumeEpisode: MediaEntity?,
     favoriteFocusRequester: FocusRequester,
+    overflowFocusRequester: FocusRequester,
     playFocusRequester: FocusRequester,
     publishStand: (FocusRequester) -> Modifier,
     restoreHeader: () -> Unit,
@@ -1504,9 +1590,7 @@ private fun TvDetailHeroHeader(
                 modifier = Modifier.weight(1f, fill = false)
             )
             Spacer(Modifier.width(14.dp))
-            // 收藏是焦点链最顶端：↑ 到此为止，同时把构图送回「海报 + 大标题」的首屏态；
-            // 下键回播放。
-            // focusRequester 必须挂在这里，否则播放按钮的上键是个空引用、按了没反应。
+            // 收藏下接播放，上接右上角更多；更多获得焦点时同样回首屏构图。
             TvIconButton(
                 icon = if (item.favorite) Icons.Filled.Favorite
                 else Icons.Filled.FavoriteBorder,
@@ -1515,19 +1599,10 @@ private fun TvDetailHeroHeader(
                 sizeDp = 40.dp,
                 modifier = Modifier
                     .focusRequester(favoriteFocusRequester)
-                    // 焦点走到这一层 = 用户已经按回到顶，构图跟着回首屏（规范 R7）
                     .onFocusChanged { if (it.hasFocus) restoreHeader() }
                     .then(publishStand(favoriteFocusRequester))
-                    .onPreviewKeyEvent { e ->
-                        if (e.type == KeyEventType.KeyDown && e.key == Key.DirectionUp) {
-                            restoreHeader()
-                            true
-                        } else {
-                            false
-                        }
-                    }
                     .focusProperties {
-                        up = FocusRequester.Cancel
+                        up = overflowFocusRequester
                         down = playFocusRequester
                     },
                 onClick = { onToggleFavorite(!item.favorite) }
@@ -2002,6 +2077,209 @@ private fun TvDetailEpisodesSection(
     }
 }
 
+@Composable
+private fun TvOverflowMenuDialog(
+    onDismiss: () -> Unit,
+    onScrape: () -> Unit
+) {
+    val scrapeFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        tvMoveFocus(scrapeFocus)
+    }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            Modifier
+                .width(320.dp)
+                .clip(Radius.Lg)
+                .background(AppColors.SurfaceHi)
+                .border(1.dp, Edge.HairlineStrong, Radius.Lg)
+                .padding(14.dp)
+        ) {
+            TvMenuRow(
+                text = "刮削",
+                hint = "TMDB",
+                modifier = Modifier.focusRequester(scrapeFocus),
+                onClick = onScrape
+            )
+        }
+    }
+}
+
+@Composable
+private fun TvManualScrapeDialog(
+    vm: LibraryViewModel,
+    current: MediaEntity,
+    onDismiss: () -> Unit,
+    onSuccess: (
+        com.chen.doudoutv.data.tmdb.TmdbClient.ScrapeResult,
+        MediaEntity?
+    ) -> Unit
+) {
+    val initialKind = when {
+        current.kind == MediaKind.MOVIE -> MediaKind.MOVIE
+        ScrapeCategory.ofSource(current.genres) == ScrapeCategory.ANIME -> "ANIME"
+        else -> MediaKind.SERIES
+    }
+    val kinds = listOf(
+        MediaKind.MOVIE to "电影",
+        MediaKind.SERIES to "电视剧",
+        "ANIME" to "动漫"
+    )
+    var title by remember { mutableStateOf(ScrapeTitle.forSearch(current.title)) }
+    var year by remember { mutableStateOf(current.year.takeIf { it > 0 }?.toString().orEmpty()) }
+    var kind by remember { mutableStateOf(initialKind) }
+    var submitting by remember { mutableStateOf(false) }
+    var inputEditing by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val titleFocus = remember { FocusRequester() }
+    val yearFocus = remember { FocusRequester() }
+    val kindFocus = remember { List(kinds.size) { FocusRequester() } }
+    val submitFocus = remember { FocusRequester() }
+
+    fun submit() {
+        if (submitting) return
+        val cleanTitle = title.trim()
+        val cleanYear = year.trim()
+        if (cleanTitle.isBlank() || (cleanYear.isNotEmpty() && cleanYear.length != 4)) {
+            error = "请输入片名和 4 位年份（年份可留空）"
+            return
+        }
+        error = ""
+        submitting = true
+        scope.launch {
+            try {
+                val requestKind = if (kind == "ANIME") MediaKind.SERIES else kind
+                val category = if (kind == "ANIME") ScrapeCategory.ANIME else ScrapeCategory.LIVE
+                val result = runCatching {
+                    vm.tmdbScrapeManual(
+                        title = cleanTitle,
+                        year = cleanYear.toIntOrNull() ?: 0,
+                        kind = requestKind,
+                        mediaId = current.id,
+                        genres = current.genres,
+                        categoryOverride = category
+                    )
+                }.getOrNull()
+                if (result == null) {
+                    error = "刮削失败，请检查片名、年份、类型或 TMDB 凭据"
+                } else {
+                    val updated = vm.mediaOf(current.id) ?: current.copy(
+                        overview = result.overview.ifBlank { current.overview },
+                        rating = result.rating.takeIf { it > 0 } ?: current.rating,
+                        posterUrl = result.posterUrl.ifBlank { current.posterUrl },
+                        backdropUrl = result.backdropUrl.ifBlank { current.backdropUrl },
+                        logoUrl = result.logoUrl.ifBlank { current.logoUrl },
+                        genres = result.genres.ifBlank { current.genres }
+                    )
+                    onSuccess(result, updated)
+                    onDismiss()
+                }
+            } finally {
+                submitting = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        tvMoveFocus(titleFocus)
+    }
+    Dialog(
+        onDismissRequest = { if (!submitting && !inputEditing) onDismiss() },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            val dialogWidth = if (maxWidth < 700.dp) maxWidth - 40.dp
+            else (maxWidth * 0.55f).coerceIn(520.dp, 900.dp)
+            Column(
+                Modifier
+                    .width(dialogWidth)
+                    .clip(Radius.Lg)
+                    .background(AppColors.SurfaceHi)
+                    .border(1.dp, Edge.HairlineStrong, Radius.Lg)
+                    .padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text("手动刮削", style = MaterialTheme.typography.titleLarge, color = TvText.Title)
+                TvTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusProperties {
+                            up = FocusRequester.Cancel
+                            down = yearFocus
+                        },
+                    focusRequester = titleFocus,
+                    label = "片名",
+                    enabled = !submitting,
+                    imeAction = ImeAction.Next,
+                    onEditingChange = { inputEditing = it },
+                    height = 56.dp
+                )
+                TvTextField(
+                    value = year,
+                    onValueChange = { year = it.filter(Char::isDigit).take(4) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusProperties {
+                            up = titleFocus
+                            down = kindFocus[kinds.indexOfFirst { it.first == kind }.coerceAtLeast(0)]
+                        },
+                    focusRequester = yearFocus,
+                    label = "年份（可留空）",
+                    keyboardType = KeyboardType.Number,
+                    enabled = !submitting,
+                    imeAction = ImeAction.Done,
+                    onEditingChange = { inputEditing = it },
+                    height = 56.dp
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    kinds.forEachIndexed { index, (value, label) ->
+                        TvPillButton(
+                            text = label,
+                            primary = kind == value,
+                            size = TvButtonSize.Md,
+                            modifier = Modifier
+                                .weight(1f)
+                                .focusRequester(kindFocus[index])
+                                .focusProperties {
+                                    up = FocusRequester.Cancel
+                                    down = submitFocus
+                                    left = kindFocus.getOrNull(index - 1) ?: FocusRequester.Cancel
+                                    right = kindFocus.getOrNull(index + 1) ?: FocusRequester.Cancel
+                                },
+                            onClick = { if (!submitting) kind = value }
+                        )
+                    }
+                }
+                if (error.isNotBlank()) {
+                    Text(error, color = AppColors.Danger, style = MaterialTheme.typography.bodyMedium)
+                }
+                TvPillButton(
+                    text = if (submitting) "刮削中…" else "开始刮削",
+                    primary = true,
+                    size = TvButtonSize.Md,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(submitFocus)
+                        .focusProperties {
+                            up = kindFocus[kinds.indexOfFirst { it.first == kind }.coerceAtLeast(0)]
+                            down = FocusRequester.Cancel
+                        },
+                    onClick = { submit() }
+                )
+                Text("OK 输入 · Back 取消编辑或关闭", style = MaterialTheme.typography.bodySmall, color = TvText.Muted)
+            }
+        }
+    }
+}
+
 /**
  * 电视端「跳过片头」预设弹窗：预设档位 + 自定义 mm:ss 输入，遥控器焦点操作。
  * 选中即写入剧集壳行（全剧生效），「不跳」= 清除配置。
@@ -2015,6 +2293,7 @@ private fun TvSkipIntroDialog(
     val presets = listOf(0L to "不跳", 30_000L to "30s", 60_000L to "60s", 90_000L to "90s",
         120_000L to "120s", 150_000L to "150s", 180_000L to "180s")
     var custom by remember { mutableStateOf("") }
+    var inputEditing by remember { mutableStateOf(false) }
     val firstFocus = remember { FocusRequester() }
     // 打开即落在当前档位上；未配置落「不跳」
     val focusIndex = presets.indexOfFirst { it.first == currentMs }.coerceAtLeast(0)
@@ -2023,7 +2302,7 @@ private fun TvSkipIntroDialog(
         tvMoveFocus(firstFocus)
     }
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!inputEditing) onDismiss() },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -2072,20 +2351,15 @@ private fun TvSkipIntroDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    OutlinedTextField(
+                    TvTextField(
                         value = custom,
                         onValueChange = { custom = it },
                         modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        placeholder = { Text("自定义 分:秒，如 1:30", color = TvText.Muted) },
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = TvText.Title),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = TvText.Title,
-                            unfocusedTextColor = TvText.Title,
-                            focusedBorderColor = AppColors.Brand,
-                            unfocusedBorderColor = Edge.HairlineStrong,
-                            cursorColor = AppColors.Brand
-                        )
+                        placeholder = "自定义 分:秒，如 1:30",
+                        imeAction = ImeAction.Done,
+                        onEditingChange = { inputEditing = it },
+                        height = 56.dp,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = TvText.Title)
                     )
                     TvPillButton(
                         text = "确定",
@@ -2094,7 +2368,7 @@ private fun TvSkipIntroDialog(
                     )
                 }
                 Text(
-                    "OK 选中 · Back 关闭",
+                    "OK 输入 · Back 取消编辑或关闭",
                     style = MaterialTheme.typography.bodySmall,
                     color = TvText.Muted
                 )
@@ -2534,9 +2808,10 @@ private fun FormatBadgesRow(
                 lineHeight = 20.sp,
                 letterSpacing = 0.2.sp,
                 tmdbIconHeight = 26.dp,
-                dolbyIconHeight = 20.dp,
+                dolbyIconHeight = 18.dp,
                 dolbyCaptionSize = 11.sp,
-                logoHeight = 18.dp
+                logoHeight = 18.dp,
+                chipHeight = 30.dp
             )
         }
     }

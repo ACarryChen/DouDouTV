@@ -44,8 +44,8 @@ import com.chen.doudoutv.ui.KindLikeGenres
 import com.chen.doudoutv.ui.applyLocalFilters
 import com.chen.doudoutv.ui.genreTokens
 import com.chen.doudoutv.ui.localFilterGroups
-import com.chen.doudoutv.ui.PrecomposeWindow
 import com.chen.doudoutv.ui.ReturnSpot
+import com.chen.doudoutv.ui.posterGridPrecompose
 import com.chen.doudoutv.ui.StandTarget
 import com.chen.doudoutv.ui.components.ShimmerCard
 import com.chen.doudoutv.ui.components.rememberBatchScrapeUiState
@@ -181,8 +181,8 @@ fun NfBrowseScreen(
     val scrapeUi = rememberBatchScrapeUiState(vm)
     /** 当前分类已加载的条目：刮削按钮和角标都只认这一份 */
     val scrapeTargetItems = if (isTvBox) onlineItems else localShown
-    // 批次跑完 ViewModel 会自增 scrapeEpoch，这一轮把「已刮」重新查一遍
-    LaunchedEffect(scrapeTargetItems, vm.scrapeEpoch) { scrapeUi.refresh(scrapeTargetItems) }
+    // 批次跑完 ViewModel 会自增 scrapeEpoch；分页原地追加时列表实例不变，用 size 触发已刮标记补查
+    LaunchedEffect(scrapeTargetItems, scrapeTargetItems.size, vm.scrapeEpoch) { scrapeUi.refresh(scrapeTargetItems) }
     val contentReady = if (isTvBox) sitePicked && onlineItems.isNotEmpty() else localShown.isNotEmpty()
     // 分类名要等这条线路的 homeContent 回来才有：换线路那次拉取不带 scanning，光看 scanning 会把「还在读」误报成「没有分类」
     val catsLoading = vm.scanning || vm.homeSiteLoading
@@ -248,7 +248,11 @@ fun NfBrowseScreen(
     // key 必须和下面两个 NfPosterGrid 的 pageKey 逐字一致，否则记账会分成两份。
     val gridPageKey = if (isTvBox) "$NfBrowseKey/$currentTypeId/$filterSig"
         else "$NfBrowseKey/local_${localCats.getOrNull(safeLocalIdx)?.name}/$filterSig"
-    val gridState = ReturnSpot.gridState(gridPageKey, precompose = PrecomposeWindow.Tv)
+    val gridColumns = tvPosterColumns()
+    val gridState = ReturnSpot.gridState(
+        gridPageKey,
+        precompose = posterGridPrecompose(gridColumns)
+    )
 
     NfScaffold(
         vm = vm,

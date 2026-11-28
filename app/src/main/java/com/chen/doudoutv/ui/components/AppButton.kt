@@ -54,6 +54,9 @@ import com.chen.doudoutv.ui.theme.Radius
  */
 object ButtonMaterial {
 
+    /** 收藏选中专用语义红：不跟随主题色，浅色/深色模式保持一致。 */
+    val FavoriteRed = Color(0xFFE50914)
+
     /** 主按钮色阶：顶端受光、底端沉一档 */
     fun primaryStops(brand: Color, brandSoft: Color): List<Color> =
         listOf(brandSoft, brand, lerp(brand, Color.Black, 0.16f))

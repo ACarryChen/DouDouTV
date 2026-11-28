@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Icon
@@ -121,7 +122,6 @@ object BadgeLogos {
     val DolbyTrueHd = R.drawable.ic_badge_dolby_truehd
     val DolbyDigital = R.drawable.ic_badge_dolby_dd
     val DolbyDigitalPlus = R.drawable.ic_badge_dolby_ddplus
-    val Dts = R.drawable.ic_badge_dts
 
     /** HDR 档位 → 官方标。只有 HDR10 / HDR10+ 有干净的黑字版，HLG 与泛称 HDR 走文字。 */
     fun forHdr(label: String): Int? = when (label) {
@@ -130,13 +130,15 @@ object BadgeLogos {
         else -> null
     }
 
-    /** 音轨 → 官方标。Dolby 系与 DTS 有体面的官方字标，其余（AAC / MP3 / FLAC…）走文字。 */
+    /**
+     * 音轨 → 官方标。Dolby 系用透明字标；DTS 当前素材是黑底白字且几乎不透明，
+     * 混在透明徽章里会变成一块突兀的白块，改走文字更清楚。
+     */
     fun forAudio(label: String): Int? = when (label) {
         "Atmos" -> DolbyAtmos
         "TrueHD" -> DolbyTrueHd
         "DD+" -> DolbyDigitalPlus
         "DD" -> DolbyDigital
-        "DTS", "DTS-HD" -> Dts
         else -> null
     }
 }
@@ -201,7 +203,7 @@ private fun Badge.labelText(): String = when (this) {
 /**
  * 单枚徽章的渲染 —— 两端唯一的画法。
  *
- * 只把「字号 / 内边距 / 图标高度」留给调用方分档：手机 12sp，电视 14sp。
+ * 只把「字号 / 容器高度 / 图标高度」留给调用方分档：手机 12sp/24dp，电视 14sp/30dp。
  * 材质（15% 染色底 + 38% 描边）、圆角、取色一律不开放参数，
  * 否则又会像以前那样各自长出两套。
  */
@@ -214,38 +216,60 @@ fun BadgeChip(
     tmdbIconHeight: Dp = 22.dp,
     dolbyIconHeight: Dp = 16.dp,
     dolbyCaptionSize: TextUnit = 9.sp,
-    logoHeight: Dp = 16.dp
+    logoHeight: Dp = 16.dp,
+    chipHeight: Dp = 24.dp
 ) {
     when (badge) {
-        Badge.Tmdb -> TmdbIconOnly(tmdbIconHeight)
+        Badge.Tmdb -> Box(
+            Modifier.heightIn(min = chipHeight),
+            contentAlignment = Alignment.Center
+        ) {
+            TmdbIconOnly(tmdbIconHeight)
+        }
         Badge.DolbyVision -> DolbyVisionBadge(
             iconHeight = dolbyIconHeight,
-            captionSize = dolbyCaptionSize
+            captionSize = dolbyCaptionSize,
+            chipHeight = chipHeight
         )
         is Badge.Hdr -> badge.logoRes?.let {
-            LogoBadge(label = badge.label, logoRes = it, tint = badge.tint(), iconHeight = logoHeight)
+            LogoBadge(
+                label = badge.label,
+                logoRes = it,
+                tint = badge.tint(),
+                iconHeight = logoHeight,
+                chipHeight = chipHeight
+            )
         } ?: TextBadge(
             label = badge.label,
             bg = badge.tint(),
             fontSize = fontSize,
             lineHeight = lineHeight,
-            letterSpacing = letterSpacing
+            letterSpacing = letterSpacing,
+            chipHeight = chipHeight
         )
         is Badge.Audio -> badge.logoRes?.let {
-            LogoBadge(label = badge.label, logoRes = it, tint = badge.tint(), iconHeight = logoHeight)
+            LogoBadge(
+                label = badge.label,
+                logoRes = it,
+                tint = badge.tint(),
+                iconHeight = logoHeight,
+                chipHeight = chipHeight
+            )
         } ?: TextBadge(
             label = badge.label,
             bg = badge.tint(),
             fontSize = fontSize,
             lineHeight = lineHeight,
-            letterSpacing = letterSpacing
+            letterSpacing = letterSpacing,
+            chipHeight = chipHeight
         )
         else -> TextBadge(
             label = badge.labelText(),
             bg = badge.tint(),
             fontSize = fontSize,
             lineHeight = lineHeight,
-            letterSpacing = letterSpacing
+            letterSpacing = letterSpacing,
+            chipHeight = chipHeight
         )
     }
 }
@@ -263,10 +287,12 @@ private fun LogoBadge(
     label: String,
     logoRes: Int,
     tint: Color,
-    iconHeight: Dp
+    iconHeight: Dp,
+    chipHeight: Dp
 ) {
     Box(
         Modifier
+            .heightIn(min = chipHeight)
             .clip(Radius.Sm)
             .background(tint.copy(alpha = 0.15f))
             .border(1.dp, tint.copy(alpha = 0.38f), Radius.Sm)
@@ -320,7 +346,7 @@ fun FormatBadgesRow(
  * 等于在画面上撒了一排彩色贴纸。传入的色值保留下来：它现在表示「这一类信息的色相」，
  * 不再等于色块本身。
  *
- * 尺寸与内边距一字未改，只换材质 —— 徽章行在详情页覆盖层的第三行，动内边距会挤动整行。
+ * 容器高度由 [BadgeChip] 统一，内边距保持不变；文字、Logo、Dolby Vision 不再各自撑高。
  */
 @Composable
 fun TextBadge(
@@ -328,10 +354,12 @@ fun TextBadge(
     bg: Color,
     fontSize: TextUnit = 12.sp,
     lineHeight: TextUnit = 14.sp,
-    letterSpacing: TextUnit = 0.6.sp
+    letterSpacing: TextUnit = 0.6.sp,
+    chipHeight: Dp = 24.dp
 ) {
     Box(
         Modifier
+            .heightIn(min = chipHeight)
             .clip(Radius.Sm)
             .background(bg.copy(alpha = 0.15f))
             .border(1.dp, bg.copy(alpha = 0.38f), Radius.Sm)
@@ -372,10 +400,12 @@ fun TmdbIconOnly(height: Dp = 22.dp) {
 @Composable
 fun DolbyVisionBadge(
     iconHeight: Dp = 16.dp,
-    captionSize: TextUnit = 9.sp
+    captionSize: TextUnit = 9.sp,
+    chipHeight: Dp = 24.dp
 ) {
     Box(
         Modifier
+            .heightIn(min = chipHeight)
             .clip(Radius.Sm)
             .background(Color.White.copy(alpha = 0.13f))
             .border(1.dp, Color.White.copy(alpha = 0.34f), Radius.Sm)

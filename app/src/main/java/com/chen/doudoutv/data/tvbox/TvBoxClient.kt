@@ -77,6 +77,8 @@ class TvBoxClient(
         /** 来自 TVBox 配置时，标记所属站点，保证 remoteId 不冲突 */
         val siteKey: String = "",
         val siteName: String = "",
+        /** CatVod 目录入口标记：folder/cate/type_flag=1 */
+        val isFolder: Boolean = false,
         /** 解析后的播放源列表：源名 → 剧集列表 */
         var playSources: List<PlaySource> = emptyList()
     )
@@ -600,7 +602,7 @@ class TvBoxClient(
         } else {
             spSites
         }
-        Log.e("SpiderProxy", "detail vodId=$vodId siteKey=$siteKey cleanKey=$cleanKey primarySize=${primary.size}")
+        Log.e("SpiderProxy", "detail siteKey=$siteKey cleanKey=$cleanKey primarySize=${primary.size}")
         for (site in primary) {
             val direct = fetchSpiderDetail(site, vodId)
             if (direct != null) {
@@ -611,10 +613,6 @@ class TvBoxClient(
             }
             // detailContent 返回 null：先尝试 homeContent 补
             fetchHomeFallback(site, vodId)?.let { return@withContext it }
-            // 调试：如果 vodId 像分类标识（短、无 URL 特征），试一下 categoryContent 并打印原始 JSON
-            if (vodId.length <= 20 && !vodId.contains("://") && !vodId.contains("/")) {
-                dumpCategoryAndHome(site, vodId)
-            }
         }
         null
     }
@@ -637,15 +635,15 @@ class TvBoxClient(
             return null
         }
         val json = proxy.detailContent(listOf(vodId)) ?: run {
-            Log.e("SpiderProxy", "detail(${site.name}) detailContent($vodId) 返回空")
+            Log.e("SpiderProxy", "detail(${site.name}) detailContent 返回空")
             return null
         }
         val vod = CatVodResultParser.parseDetail(json, site.key, site.name) ?: run {
-            Log.e("SpiderProxy", "detail(${site.name}) parseDetail 失败，vodId=$vodId，json前200字=${json.take(200)}")
+            Log.e("SpiderProxy", "detail(${site.name}) parseDetail 失败")
             return null
         }
         if (vod.playSources.isEmpty()) {
-            Log.e("SpiderProxy", "detail(${site.name}) 解析成功但 playSources 为空，vodId=$vodId")
+            Log.e("SpiderProxy", "detail(${site.name}) 解析成功但 playSources 为空")
         }
         return vod
     }
@@ -667,42 +665,15 @@ class TvBoxClient(
         val match = list.firstOrNull { it.vodId == vodId }
             ?: list.firstOrNull { vodId.endsWith(it.vodId) || it.vodId.endsWith(vodId) }
         if (match == null) {
-            Log.w("SpiderProxy", "homeFallback(${site.name}) homeContent 返回 ${list.size} 条，无 vodId=$vodId 的匹配项")
+            Log.w("SpiderProxy", "homeFallback(${site.name}) homeContent 返回 ${list.size} 条，无匹配项")
             return null
         }
         if (match.playSources.isEmpty()) {
-            Log.w("SpiderProxy", "homeFallback(${site.name}) 命中 vodId=$vodId 但 playSources 仍为空")
+            Log.w("SpiderProxy", "homeFallback(${site.name}) 命中条目但 playSources 仍为空")
             return null
         }
-        Log.w("SpiderProxy", "homeFallback(${site.name}) 命中 vodId=$vodId，playSources.size=${match.playSources.size}")
+        Log.w("SpiderProxy", "homeFallback(${site.name}) 命中条目，playSources.size=${match.playSources.size}")
         return match
-    }
-
-    /**
-     * 调试用：当 detailContent 失败且 vodId 像分类标识时，
-     * 同时调 homeContent 和 categoryContent，把原始 JSON 前 500 字打出来。
-     * 帮助确定聚合网盘源到底返回什么结构。
-     */
-    private suspend fun dumpCategoryAndHome(site: SpiderSite, vodId: String) {
-        val loader = spiderLoader ?: return
-        if (configSpiderUrl.isBlank()) return
-        val loaderKey = runCatching { loader.ensureLoaded(configSpiderUrl) }.getOrNull() ?: return
-        val proxy = loader.getSpider(loaderKey, site.api, site.ext) ?: return
-
-        val homeJson = runCatching { proxy.homeContent(false) }.getOrNull()
-        Log.e("SpiderProxy", "DUMP[homeContent(${site.name})] vodId=$vodId raw=${homeJson?.take(500) ?: "null"}")
-
-        val catJson = runCatching { proxy.categoryContent(vodId, "1", true, null) }.getOrNull()
-        Log.e("SpiderProxy", "DUMP[categoryContent(${site.name},type=$vodId)] raw=${catJson?.take(500) ?: "null"}")
-
-        // 如果 categoryContent 有返回，再 parse 一下看 list 里有多少条、每条 vodId 长什么样
-        if (!catJson.isNullOrBlank()) {
-            val list = runCatching { CatVodResultParser.parseVodList(catJson, site.key, site.name) }.getOrNull()
-            Log.e("SpiderProxy", "DUMP[categoryContent parsed] list.size=${list?.size ?: 0}")
-            list?.take(5)?.forEachIndexed { i, v ->
-                Log.e("SpiderProxy", "DUMP  #$i vodId=${v.vodId.take(60)} name=${v.name.take(30)} playSrc.size=${v.playSources.size}")
-            }
-        }
     }
 
     /**
@@ -924,7 +895,7 @@ class TvBoxClient(
             } else null
             "keys=[$keys] parse=${obj.optInt("parse", 0)} jx=${obj.optInt("jx", 0)} " +
                 "urlLen=${url.length} urlHost=$host msg=$msg"
-        }.getOrElse { "非 JSON，长度=${json.length} 前120字=${json.take(120)}" }
+        }.getOrElse { "非 JSON，长度=${json.length}" }
         Log.w("SpiderProxy", "playerContent($flag) ← flags=$flags $brief")
     }
 

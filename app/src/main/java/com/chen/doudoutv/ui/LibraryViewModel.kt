@@ -1136,6 +1136,25 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     ): com.chen.doudoutv.data.tmdb.TmdbClient.ScrapeResult? =
         repo.tmdbScrape(title, year, kind, mediaId, genres)
 
+    /** 手动刮削：绕过缓存并尊重用户填写的片名、年份和类型。 */
+    suspend fun tmdbScrapeManual(
+        title: String,
+        year: Int,
+        kind: String,
+        mediaId: Long,
+        genres: String = "",
+        categoryOverride: Int? = null
+    ): com.chen.doudoutv.data.tmdb.TmdbClient.ScrapeResult? =
+        repo.tmdbScrape(
+            title = title,
+            year = year,
+            rawKind = kind,
+            mediaId = mediaId,
+            genres = genres,
+            manual = true,
+            categoryOverride = categoryOverride
+        )
+
     /**
      * 只查刮削表、绝不联网的那一份：详情页首帧拿它抢在分集/详情那条慢链之前，
      * 把已经刮到的海报 / 背景图 / 片名 Logo 先摆上屏。表里没有就是 null。
@@ -1426,6 +1445,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 远程搜索结果（负 id）落库并返回真实 id；失败返回 null */
     suspend fun materializeRemote(id: Long): Long? = repo.materializeRemote(id)
+
+    /** 按 TVBox 响应结构统一判断进入分类列表还是详情页 */
+    suspend fun resolveTvBoxRoute(id: Long): MediaRepository.TvBoxRoute? = repo.resolveTvBoxRoute(id)
 
     fun saveProgress(mediaId: Long, positionMs: Long) {
         viewModelScope.launch { repo.saveProgress(mediaId, positionMs) }

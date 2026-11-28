@@ -310,6 +310,24 @@ interface MediaDao {
         scrapedAt: Long
     )
 
+    /** 手动刮削：用户明确修正后覆盖源站元数据，避免下次进详情又被旧值盖回去。 */
+    @Query(
+        "UPDATE media SET " +
+            "posterUrl = :posterUrl, backdropUrl = :backdropUrl, logoUrl = :logoUrl, " +
+            "overview = :overview, genres = :genres, rating = :rating, scrapedAt = :scrapedAt " +
+            "WHERE id = :id"
+    )
+    suspend fun replaceScrapedMeta(
+        id: Long,
+        posterUrl: String,
+        backdropUrl: String,
+        logoUrl: String,
+        overview: String,
+        genres: String,
+        rating: Double,
+        scrapedAt: Long
+    )
+
     /** 取单条，刮削前核对库里是否已有可用元数据 */
     @Query("SELECT * FROM media WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): MediaEntity?

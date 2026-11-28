@@ -55,7 +55,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -215,6 +217,7 @@ class PhonePlayerActivity : ComponentActivity() {
     private val gestureHandler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
     private var longPressActive = false
+    private var longPressHintVisible by mutableStateOf(false)
     private var speedBeforeLongPress: Float? = null
 
     /** 0=适应 1=铺满 2=缩放 */
@@ -292,6 +295,7 @@ class PhonePlayerActivity : ComponentActivity() {
                     toast = toastState,
                     seekPreview = seekPreview,
                     buffering = bufferHint,
+                    longPressSpeed = longPressHintVisible,
                     onViewCreated = { view, _ ->
                         playerView = view
                         player?.let { view.player = it }
@@ -607,6 +611,7 @@ class PhonePlayerActivity : ComponentActivity() {
                             longPressRunnable = null
                             speedBeforeLongPress = currentPlayer.playbackParameters.speed
                             longPressActive = true
+                            longPressHintVisible = true
                             currentPlayer.setPlaybackSpeed(2f)
                             speedView?.text = formatSpeed(2f)
                         }
@@ -696,6 +701,7 @@ class PhonePlayerActivity : ComponentActivity() {
         cancelLongPress()
         if (!longPressActive) return false
         longPressActive = false
+        longPressHintVisible = false
         val restoreSpeed = speedBeforeLongPress ?: speedState
         speedBeforeLongPress = null
         player?.setPlaybackSpeed(restoreSpeed)
@@ -1800,6 +1806,7 @@ private fun PlayerScreen(
     toast: String?,
     seekPreview: String?,
     buffering: String?,
+    longPressSpeed: Boolean,
     onViewCreated: (PlayerView, Context) -> Unit,
     updateResizeMode: (PlayerView) -> Unit
 ) {
@@ -1820,6 +1827,21 @@ private fun PlayerScreen(
         // ---------- 装载中的黑幕与转圈 ----------
         // 不是 Compose 浮层，而是挂在 PlayerView 里的原生 View（见 buildLoadingViews）：
         // 黑幕只盖画面，控制条照常能弹出来，转圈和播放器缓冲时那个是同款控件。
+
+        // 长按倍速只显示轻量文字，不加底板，避免挡住画面或接住触摸。
+        if (longPressSpeed) {
+            Text(
+                "2.0×  倍速中",
+                color = Color.White.copy(alpha = 0.94f),
+                style = MaterialTheme.typography.titleMedium.copy(
+                    shadow = Shadow(Color.Black.copy(alpha = 0.78f), Offset(0f, 2f), 6f)
+                ),
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 104.dp)
+            )
+        }
 
         // 顶部标题仅在控制条里展示；这里只保留拖动进度预览与错误提示
         if (!seekPreview.isNullOrBlank()) {

@@ -165,11 +165,11 @@ fun ScrapedBadge(rating: Double?, compact: Boolean) {
     )
     Row(
         modifier = Modifier
-            .clip(Radius.Sm)
             .background(
                 Brush.verticalGradient(
                     listOf(Color.Black.copy(alpha = 0.48f), Color.Black.copy(alpha = 0.36f))
-                )
+                ),
+                shape = Radius.Sm
             )
             .padding(
                 horizontal = if (compact) 5.dp else 6.dp,

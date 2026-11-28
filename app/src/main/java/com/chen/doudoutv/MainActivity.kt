@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.remember
@@ -16,6 +17,7 @@ import com.chen.doudoutv.ui.theme.AppColors
 import com.chen.doudoutv.ui.theme.DouDouTvTheme
 import com.chen.doudoutv.ui.theme.isTelevision
 import com.chen.doudoutv.ui.tv.TvApp
+import com.chen.doudoutv.ui.tv.TvTextFieldBack
 
 /**
  * 唯一的 Activity 入口，只做一件事：判断这是不是电视，然后交给对应的一套实现。
@@ -42,6 +44,22 @@ class MainActivity : ComponentActivity() {
          */
         @Volatile
         var detailVisible = false
+    }
+
+    private var textFieldBackConsumed = false
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.action == KeyEvent.ACTION_DOWN && TvTextFieldBack.consume()) {
+                textFieldBackConsumed = true
+                return true
+            }
+            if (event.action == KeyEvent.ACTION_UP && textFieldBackConsumed) {
+                textFieldBackConsumed = false
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
